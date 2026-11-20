@@ -73,7 +73,9 @@ struct ProfileDraft: Equatable {
         if cpu.isEmpty {
             value.fingerprint.cpuCount = nil
         } else {
-            guard let count = Int(cpu), count > 0 else { throw DraftError("逻辑 CPU 数必须为正整数。") }
+            guard let count = Int(cpu), (1...256).contains(count) else {
+                throw DraftError("逻辑 CPU 数必须为 1–256 之间的整数。")
+            }
             value.fingerprint.cpuCount = count
         }
         return value
@@ -166,16 +168,15 @@ final class Workbench: ObservableObject {
     func hasPendingRestart(_ id: UUID) -> Bool {
         guard case .running(_, let port, _) = state(for: id),
               let stored = profiles.first(where: { $0.id == id }) else { return false }
-        return stored.port != port || runningConfigurations[id].map { $0.fingerprint != stored.fingerprint } == true
+        if stored.port != port { return true }
+        if let running = runningConfigurations[id] {
+            return running.fingerprint != stored.fingerprint
+        }
+        return runtime?.matchesRunningConfiguration(stored) != true
     }
 
     func refresh() async {
         await runtime?.refresh(profiles)
-        for profile in profiles where state(for: profile.id).isRunning {
-            if runningConfigurations[profile.id] == nil {
-                runningConfigurations[profile.id] = profile
-            }
-        }
     }
 
     func request(_ destination: Destination) {
@@ -224,6 +225,9 @@ final class Workbench: ObservableObject {
         guard var draft, let store else { return false }
         do {
             var profile = draft.profile
+            if let seed = Int(draft.seedText.trimmingCharacters(in: .whitespaces)) {
+                profile.fingerprint.seed = seed
+            }
             profile.fingerprint = try store.randomize(profile, fields: fields).fingerprint
             draft.profile = profile
             if fields.contains(.seed) { draft.seedText = String(profile.fingerprint.seed) }
