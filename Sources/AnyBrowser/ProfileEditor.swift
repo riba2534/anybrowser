@@ -51,13 +51,20 @@ struct ProfileEditor: View {
                     ForEach(FingerprintAdjustment.allCases, id: \.self) { adjustment in
                         Toggle(adjustment.title, isOn: adjustmentBinding(adjustment))
                             .toggleStyle(.checkbox)
+                            .disabled(adjustment == .gpu && draft.profile.fingerprint.platform == .linux)
                             .accessibilityIdentifier("adjustment-\(adjustment.rawValue)")
                     }
                 }
-                Text("设备内存和可用的 WebGL 参数由内置引擎根据种子与平台决定。")
+                Text("设备内存由种子决定。WebGL 默认使用 Windows 档位，选择 Linux 时不可用。")
                     .font(.system(size: 12))
                     .foregroundColor(WorkbenchPalette.muted)
             }
+        }
+        .onChange(of: draft.profile.fingerprint.platform) { platform in
+            if platform == nil { draft.profile.fingerprint.platformVersion = "" }
+        }
+        .onChange(of: draft.profile.fingerprint.brand) { brand in
+            if brand == nil { draft.profile.fingerprint.brandVersion = "" }
         }
     }
 
@@ -66,13 +73,16 @@ struct ProfileEditor: View {
             EditorPicker(title: "平台", identifier: "fingerprint-platform",
                          selection: $draft.profile.fingerprint.platform,
                          choices: [(nil, "引擎默认")] + BrowserPlatform.allCases.map { (Optional($0), $0.title) })
-            EditorInput("平台版本", placeholder: "引擎默认",
+            EditorInput("平台版本",
+                        placeholder: draft.profile.fingerprint.platform == nil ? "先选择平台" : "引擎默认",
                         value: $draft.profile.fingerprint.platformVersion, identifier: "platform-version")
+                .disabled(draft.profile.fingerprint.platform == nil)
             EditorPicker(title: "浏览器品牌", identifier: "fingerprint-brand",
                          selection: $draft.profile.fingerprint.brand,
                          choices: [(nil, "引擎默认")] + BrowserBrand.allCases.map { (Optional($0), $0.rawValue) })
-            EditorInput("品牌版本", placeholder: "引擎默认",
+            EditorInput("品牌版本", placeholder: brandVersionPlaceholder,
                         value: $draft.profile.fingerprint.brandVersion, identifier: "brand-version")
+                .disabled(draft.profile.fingerprint.brand == nil)
             EditorInput("指纹种子", placeholder: "输入整数",
                         value: $draft.seedText, identifier: "fingerprint-seed", numeric: true)
             EditorInput("逻辑 CPU", placeholder: "由种子计算",
@@ -81,6 +91,14 @@ struct ProfileEditor: View {
                         value: $draft.profile.fingerprint.language, identifier: "fingerprint-language")
             EditorInput("时区", placeholder: "如 Asia/Shanghai",
                         value: $draft.profile.fingerprint.timeZone, identifier: "fingerprint-time-zone")
+        }
+    }
+
+    private var brandVersionPlaceholder: String {
+        switch draft.profile.fingerprint.brand {
+        case nil: return "先选择品牌"
+        case .opera, .vivaldi: return "请输入版本"
+        case .chrome, .edge: return "引擎默认"
         }
     }
 
@@ -265,22 +283,13 @@ private struct EditorPicker<Value: Hashable>: View {
                 }
                 .pickerStyle(.inline)
             } label: {
-                HStack {
-                    Text(choices.first { $0.value == selection }?.title ?? "")
-                        .lineLimit(1)
-                    Spacer()
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(WorkbenchPalette.muted)
-                }
-                .font(.system(size: 13))
-                .padding(.horizontal, 10)
-                .frame(height: 34)
-                .background(WorkbenchPalette.field, in: fieldShape)
-                .overlay { fieldShape.strokeBorder(WorkbenchPalette.rule, lineWidth: 1) }
+                Text(choices.first { $0.value == selection }?.title ?? "")
             }
             .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+            .background(WorkbenchPalette.field, in: fieldShape)
+            .overlay { fieldShape.strokeBorder(WorkbenchPalette.rule, lineWidth: 1) }
             .accessibilityLabel(title)
             .accessibilityIdentifier(identifier)
         }
