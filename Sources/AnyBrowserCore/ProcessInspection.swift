@@ -16,6 +16,11 @@ struct ProcessStamp: Codable, Equatable {
 }
 
 enum ProcessInspection {
+    struct Image {
+        let executablePath: String
+        let arguments: [String]
+    }
+
     static func canonicalURL(_ url: URL, isDirectory: Bool = false) -> URL? {
         guard let path = realpath(url.path, nil) else { return nil }
         defer { free(path) }
@@ -29,7 +34,9 @@ enum ProcessInspection {
         return canonicalURL(URL(fileURLWithPath: String(cString: path)))
     }
 
-    static func arguments(_ pid: Int32) -> [String]? {
+    static func arguments(_ pid: Int32) -> [String]? { image(pid)?.arguments }
+
+    static func image(_ pid: Int32) -> Image? {
         var mib = [CTL_KERN, KERN_PROCARGS2, pid]
         var size = 0
         guard sysctl(&mib, 3, nil, &size, nil, 0) == 0,
@@ -38,8 +45,10 @@ enum ProcessInspection {
         let result = bytes.withUnsafeMutableBytes { sysctl(&mib, 3, $0.baseAddress, &size, nil, 0) }
         guard result == 0, size > 4, size <= bytes.count else { return nil }
         let count = bytes.withUnsafeBytes { Int($0.loadUnaligned(as: Int32.self)) }
+        // The initial executable path precedes argv in the process argument area.
         guard (1..<16_384).contains(count),
-              let firstEnd = bytes[4..<size].firstIndex(of: 0) else { return nil }
+              let firstEnd = bytes[4..<size].firstIndex(of: 0), firstEnd > 4,
+              let executablePath = String(bytes: bytes[4..<firstEnd], encoding: .utf8) else { return nil }
         var cursor = firstEnd + 1
         while cursor < size && bytes[cursor] == 0 { cursor += 1 }
         var resultArguments: [String] = []
@@ -49,7 +58,7 @@ enum ProcessInspection {
             resultArguments.append(argument)
             cursor = end + 1
         }
-        return resultArguments
+        return Image(executablePath: executablePath, arguments: resultArguments)
     }
 
     static func hasFlag(_ flag: String, value: String, arguments: [String]) -> Bool {
