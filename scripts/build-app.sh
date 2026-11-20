@@ -7,6 +7,12 @@ engine_sha256=b72f091e2e1a7583eed389c4b8e3534ed355e568af8c8bbf8fc30a25e23ca679
 engine_filename="ungoogled-chromium_${engine_version}-1.1_macos.dmg"
 engine_url="https://github.com/adryfish/fingerprint-chromium/releases/download/${engine_version}/${engine_filename}"
 
+passkey_version=0.2.0
+passkey_sha256=a3db26b75283fbe93a26c2c7c3cecfd1bce8d82c6b8e90c8a234e187d36a1c52
+passkey_id=gfejlnakeokbjdhoionfappnfepjoili
+passkey_filename="passkey-box-extension-anybrowser-v${passkey_version}.zip"
+passkey_url="https://github.com/riba2534/passkey-box/releases/download/v${passkey_version}/${passkey_filename}"
+
 fail() {
     printf 'AnyBrowser build: %s\n' "$*" >&2
     exit 1
@@ -20,6 +26,7 @@ cache_dir="${ANYBROWSER_ENGINE_CACHE:-$root/.build/engine-cache}"
 mkdir -p "$cache_dir" "$root/.build" "$root/dist"
 cache_dir="$(cd "$cache_dir" && pwd -P)"
 dmg="$cache_dir/$engine_filename"
+passkey_zip="$cache_dir/$passkey_filename"
 output="$root/dist/AnyBrowser.app"
 
 lock="$root/.build/anybrowser-package.lock"
@@ -50,19 +57,24 @@ trap 'exit 143' TERM
 
 digest_matches() {
     [[ -f "$1" ]] &&
-        [[ "$(/usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}')" == "$engine_sha256" ]]
+        [[ "$(/usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}')" == "$2" ]]
 }
 
-if ! digest_matches "$dmg"; then
-    printf 'Downloading Fingerprint Chromium %s for macOS ARM64…\n' "$engine_version"
-    download="$(mktemp "$cache_dir/.engine.XXXXXX")"
+prepare_asset() {
+    local destination="$1" digest="$2" url="$3" title="$4"
+    if digest_matches "$destination" "$digest"; then return; fi
+    printf 'Downloading %s…\n' "$title"
+    download="$(mktemp "$cache_dir/.release-asset.XXXXXX")"
     /usr/bin/curl --fail --location --retry 3 --connect-timeout 15 \
         --proto '=https' --proto-redir '=https' --silent --show-error \
-        --output "$download" "$engine_url"
-    digest_matches "$download" || fail "downloaded engine SHA-256 differs from the pinned upstream digest"
-    /bin/mv -f -- "$download" "$dmg"
+        --output "$download" "$url"
+    digest_matches "$download" "$digest" || fail "downloaded $title SHA-256 differs from the pinned digest"
+    /bin/mv -f -- "$download" "$destination"
     download=''
-fi
+}
+
+prepare_asset "$dmg" "$engine_sha256" "$engine_url" "Fingerprint Chromium $engine_version for macOS ARM64"
+prepare_asset "$passkey_zip" "$passkey_sha256" "$passkey_url" "Passkey Box $passkey_version for AnyBrowser"
 
 printf 'Building AnyBrowser for ARM64…\n'
 swift build --configuration release --arch arm64 --product AnyBrowser
@@ -91,6 +103,26 @@ bundle_value() { /usr/libexec/PlistBuddy -c "Print :$1" "$2"; }
 /usr/bin/codesign --verify --deep --strict "$embedded"
 /bin/cp "$root/Resources/Info.plist" "$contents/Info.plist"
 /bin/cp "$root/Resources/FingerprintChromium.LICENSE.txt" "$contents/Resources/"
+printf 'Embedding Passkey Box %s…\n' "$passkey_version"
+staged_zip="$staging/$passkey_filename"
+extension="$contents/Resources/Extensions/PasskeyBox"
+/bin/cp "$passkey_zip" "$staged_zip"
+digest_matches "$staged_zip" "$passkey_sha256" || fail "staged Passkey Box ZIP differs from the pinned digest"
+mkdir -p "$extension"
+/usr/bin/unzip -q "$staged_zip" -d "$extension"
+for entry in manifest.json LICENSE THIRD-PARTY-NOTICES.txt background.js content.js inject.js \
+    options.html options.js popup.html popup.js device.html device.js ui.css; do
+    [[ -f "$extension/$entry" && ! -L "$extension/$entry" ]] || fail "missing Passkey Box file: $entry"
+done
+manifest="$extension/manifest.json"
+manifest_value() { /usr/bin/plutil -extract "$1" raw -o - "$manifest"; }
+[[ "$(manifest_value name)" == "Passkey Box" &&
+    "$(manifest_value manifest_version)" == 3 &&
+    "$(manifest_value version)" == "$passkey_version" ]] || fail "unexpected Passkey Box manifest"
+embedded_id="$(manifest_value key | /usr/bin/base64 -D | /usr/bin/shasum -a 256 |
+    /usr/bin/cut -c 1-32 | LC_ALL=C /usr/bin/tr '0123456789abcdef' 'abcdefghijklmnop')" ||
+    fail "could not verify the Passkey Box manifest key"
+[[ "$embedded_id" == "$passkey_id" ]] || fail "unexpected Passkey Box extension ID"
 iconset="$staging/AnyBrowser.iconset"
 mkdir "$iconset"
 for size in 16 32 128 256 512; do
@@ -104,6 +136,9 @@ done
 /usr/bin/install -m 755 "$bin_path/AnyBrowser" "$contents/MacOS/AnyBrowser"
 /usr/bin/plutil -insert AnyBrowserEngineVersion -string "$engine_version" "$contents/Info.plist"
 /usr/bin/plutil -insert AnyBrowserEngineSHA256 -string "$engine_sha256" "$contents/Info.plist"
+/usr/bin/plutil -insert AnyBrowserPasskeyBoxVersion -string "$passkey_version" "$contents/Info.plist"
+/usr/bin/plutil -insert AnyBrowserPasskeyBoxSHA256 -string "$passkey_sha256" "$contents/Info.plist"
+/usr/bin/plutil -insert AnyBrowserPasskeyBoxExtensionID -string "$passkey_id" "$contents/Info.plist"
 /usr/bin/plutil -lint "$contents/Info.plist"
 /usr/bin/codesign --force --sign - --timestamp=none "$bundle"
 /usr/bin/codesign --verify --deep --strict "$bundle"
