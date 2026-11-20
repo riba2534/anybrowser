@@ -6,6 +6,7 @@ import Foundation
 public struct BrowserEngine: Sendable {
     public let version: String
     let executable: URL
+    let passkeyBoxDirectory: URL
 
     public static func bundled(in bundleURL: URL = Bundle.main.bundleURL) throws -> BrowserEngine {
         guard let root = ProcessInspection.canonicalURL(bundleURL, isDirectory: true) else {
@@ -21,7 +22,18 @@ public struct BrowserEngine: Sendable {
               FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw BrowserRuntimeError.message("内置 Chromium 不可用，请重新安装 AnyBrowser。")
         }
-        return BrowserEngine(version: version, executable: executable)
+        let extensionURL = root.appendingPathComponent("Contents/Resources/Extensions/PasskeyBox", isDirectory: true)
+        let manifest = extensionURL.appendingPathComponent("manifest.json")
+        guard ProcessInspection.canonicalURL(extensionURL, isDirectory: true)?.path == extensionURL.path,
+              ProcessInspection.canonicalURL(manifest)?.path == manifest.path,
+              FileManager.default.isReadableFile(atPath: manifest.path) else {
+            throw BrowserRuntimeError.message("内置 Passkey Box 不可用，请重新安装 AnyBrowser。")
+        }
+        // Chromium parses --load-extension as a comma-separated list.
+        guard !extensionURL.path.contains(",") else {
+            throw BrowserRuntimeError.message("请将 AnyBrowser 移到路径不含逗号的目录。")
+        }
+        return BrowserEngine(version: version, executable: executable, passkeyBoxDirectory: extensionURL)
     }
 }
 
@@ -89,7 +101,7 @@ public final class BrowserRuntime: ObservableObject {
         let directory = dataDirectory(for: profile.id)
         guard let receipt = readReceipt(directory), receipt.pid == pid, owns(receipt, directory: directory),
               let arguments = ProcessInspection.arguments(pid), ProcessStamp.read(pid) == receipt.stamp else { return nil }
-        return arguments.dropFirst().elementsEqual(profile.launchArguments(userDataDirectory: directory))
+        return arguments.dropFirst().elementsEqual(launchArguments(profile, directory: directory))
     }
 
     public func start(_ profile: BrowserProfile) async throws {
@@ -124,7 +136,7 @@ public final class BrowserRuntime: ObservableObject {
             }
             let child = Process()
             child.executableURL = engine.executable
-            child.arguments = profile.launchArguments(userDataDirectory: directory)
+            child.arguments = launchArguments(profile, directory: directory)
             child.standardInput = FileHandle.nullDevice
             child.standardOutput = FileHandle.nullDevice
             child.standardError = FileHandle.nullDevice
@@ -247,6 +259,10 @@ public final class BrowserRuntime: ObservableObject {
         if case .running(let runningPID, _, _) = status(for: id), runningPID == pid {
             states[id] = .stopped
         }
+    }
+
+    private func launchArguments(_ profile: BrowserProfile, directory: URL) -> [String] {
+        profile.launchArguments(userDataDirectory: directory) + ["--load-extension=\(engine.passkeyBoxDirectory.path)"]
     }
 
     private func runningState(_ receipt: Receipt, directory: URL) async -> BrowserRunState {

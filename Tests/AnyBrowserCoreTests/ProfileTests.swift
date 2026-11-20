@@ -54,6 +54,7 @@ final class ProfileTests: XCTestCase {
         let arguments = profile.launchArguments(userDataDirectory: userDataDirectory)
         XCTAssertTrue(arguments.contains("--user-data-dir=/tmp/AnyBrowser Testing/Profile Space"))
         XCTAssertTrue(arguments.contains("--remote-debugging-port=9235"))
+        XCTAssertTrue(arguments.contains("--proxy-server=http://127.0.0.1:7890"))
         XCTAssertTrue(arguments.contains("--fingerprint=87"))
         XCTAssertTrue(arguments.contains("--fingerprint-platform=macos"))
         XCTAssertTrue(arguments.contains("--fingerprint-platform-version=26.2.0"))
@@ -63,6 +64,35 @@ final class ProfileTests: XCTestCase {
         XCTAssertTrue(arguments.contains("--accept-lang=zh-CN,zh"))
         XCTAssertTrue(arguments.contains("--timezone=Asia/Shanghai"))
         XCTAssertTrue(arguments.contains("--disable-spoofing=font,audio,gpu"))
+    }
+
+    func testProxyAddressesAndLegacyProfiles() throws {
+        let home = URL(fileURLWithPath: "/tmp/AnyBrowser Profile")
+        var profile = BrowserProfile(name: "Proxy", port: 9222, fingerprint: FingerprintSettings(seed: 1))
+        let encoded = try JSONEncoder().encode(profile)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacy.removeValue(forKey: "proxy")
+        let decoded = try JSONDecoder().decode(BrowserProfile.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertEqual(decoded, profile)
+
+        profile.proxy = " SOCKS5://[::1]:7891/ "
+        XCTAssertTrue(try profile.validated().launchArguments(userDataDirectory: home)
+            .contains("--proxy-server=socks5://[::1]:7891"))
+        profile.proxy = "https://proxy.example:443"
+        XCTAssertTrue(try profile.validated().launchArguments(userDataDirectory: home)
+            .contains("--proxy-server=https://proxy.example:443"))
+
+        profile.proxy = ""
+        let reopened = try JSONDecoder().decode(BrowserProfile.self, from: JSONEncoder().encode(profile))
+        XCTAssertEqual(reopened.proxy, "")
+        XCTAssertFalse(reopened.launchArguments(userDataDirectory: home).contains { $0.hasPrefix("--proxy-server=") })
+
+        for address in ["localhost", "localhost:0", "localhost:65536", "http://proxy:80/path",
+                        "http://name:secret@localhost:7890", "localhost:7890 --other-flag",
+                        "http://proxy:80;direct://", "http://[not-an-ip]:7890", "http://-proxy:443"] {
+            profile.proxy = address
+            XCTAssertThrowsError(try profile.validated(), address)
+        }
     }
 
     func testInvalidConfigurationCannotBeSaved() async throws {

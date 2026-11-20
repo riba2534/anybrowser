@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum BrowserPlatform: String, CaseIterable, Codable, Sendable {
@@ -65,16 +66,30 @@ public struct FingerprintSettings: Codable, Equatable, Sendable {
 }
 
 public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
+    public static let defaultProxy = "127.0.0.1:7890"
+
     public var id: UUID
     public var name: String
     public var port: Int
     public var fingerprint: FingerprintSettings
+    public var proxy: String
 
-    public init(id: UUID = UUID(), name: String, port: Int, fingerprint: FingerprintSettings) {
+    public init(id: UUID = UUID(), name: String, port: Int, fingerprint: FingerprintSettings,
+                proxy: String = BrowserProfile.defaultProxy) {
         self.id = id
         self.name = name
         self.port = port
         self.fingerprint = fingerprint
+        self.proxy = proxy
+    }
+
+    public init(from decoder: Decoder) throws {
+        let data = try decoder.container(keyedBy: CodingKeys.self)
+        id = try data.decode(UUID.self, forKey: .id)
+        name = try data.decode(String.self, forKey: .name)
+        port = try data.decode(Int.self, forKey: .port)
+        fingerprint = try data.decode(FingerprintSettings.self, forKey: .fingerprint)
+        proxy = try data.decodeIfPresent(String.self, forKey: .proxy) ?? Self.defaultProxy
     }
 }
 
@@ -106,6 +121,8 @@ extension BrowserProfile {
             throw ProfileError.invalid("调试端口须为 1024–65535。")
         }
         try fingerprint.validate()
+        result.proxy = proxy.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = try result.proxyServer()
         return result
     }
 
@@ -118,6 +135,9 @@ extension BrowserProfile {
             "--no-default-browser-check",
             "--fingerprint=\(settings.seed)",
         ]
+        if let proxyServer = try? proxyServer() {
+            arguments.append("--proxy-server=\(proxyServer)")
+        }
         if let platform = settings.platform {
             arguments.append("--fingerprint-platform=\(platform.rawValue)")
         }
@@ -147,6 +167,33 @@ extension BrowserProfile {
             arguments.append("--disable-spoofing=\(disabled.map(\.rawValue).joined(separator: ","))")
         }
         return arguments
+    }
+
+    private func proxyServer() throws -> String? {
+        let address = proxy.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty else { return nil }
+        let invalid = ProfileError.invalid("代理须为主机:端口，或使用 http://、https://、socks5://，无需填写用户名和密码。")
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.:/[]")
+        guard address.utf8.count <= 512, address.unicodeScalars.allSatisfy(allowed.contains) else { throw invalid }
+
+        let uri = address.contains("://") ? address : "http://\(address)"
+        guard let parts = URLComponents(string: uri), let scheme = parts.scheme?.lowercased(),
+              ["http", "https", "socks5"].contains(scheme),
+              let host = parts.host?.lowercased(), !host.isEmpty,
+              let port = parts.port, (1...65535).contains(port),
+              parts.path.isEmpty || parts.path == "/" else { throw invalid }
+        if host.hasPrefix("[") {
+            var ip = in6_addr()
+            let literal = String(host.dropFirst().dropLast())
+            guard host.hasSuffix("]"), inet_pton(AF_INET6, literal, &ip) == 1 else { throw invalid }
+        } else {
+            let name = host.hasSuffix(".") ? String(host.dropLast()) : host
+            guard name.utf8.count <= 253, name.split(separator: ".", omittingEmptySubsequences: false).allSatisfy({
+                !$0.isEmpty && $0.utf8.count <= 63 && $0.first != "-" && $0.last != "-"
+                    && !$0.contains(":") && !$0.contains("[") && !$0.contains("]")
+            }), !name.isEmpty else { throw invalid }
+        }
+        return "\(scheme)://\(host):\(port)"
     }
 }
 

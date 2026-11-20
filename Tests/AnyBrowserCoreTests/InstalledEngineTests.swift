@@ -20,8 +20,11 @@ final class InstalledEngineTests: XCTestCase {
 
         let page = try await LoopbackPage.start()
         defer { page.listener.cancel() }
+        let proxy = try await LoopbackPage.start(title: "AnyBrowser proxy fixture")
+        defer { proxy.listener.cancel() }
         let store = try ProfileStore(directory: directory)
         var first = try store.makeDraft()
+        first.proxy = "127.0.0.1:\(try XCTUnwrap(proxy.url.port))"
         first.fingerprint.platform = .macOS
         first.fingerprint.cpuCount = 8
         first.fingerprint.timeZone = "UTC"
@@ -53,6 +56,9 @@ final class InstalledEngineTests: XCTestCase {
             var changed = first
             changed.fingerprint.cpuCount = 16
             XCTAssertEqual(restored.matchesRunningConfiguration(changed), false)
+            changed = first
+            changed.proxy = ""
+            XCTAssertEqual(restored.matchesRunningConfiguration(changed), false)
 
             let firstPage = try await DevToolsPage.open(port: first.port, url: page.url)
             let secondPage = try await DevToolsPage.open(port: second.port, url: page.url)
@@ -69,6 +75,24 @@ final class InstalledEngineTests: XCTestCase {
             _ = try await secondPage.evaluate("localStorage.setItem('anybrowser-fixture', 'profile-two')")
             let firstStored = try await firstPage.evaluate("localStorage.getItem('anybrowser-fixture')")
             XCTAssertEqual(firstStored as? String, "profile-one")
+
+            let proxyTarget = try XCTUnwrap(URL(string: "http://anybrowser-proxy.invalid/"))
+            try await firstPage.navigate(to: proxyTarget)
+            let proxyTitle = try await firstPage.evaluate("document.title")
+            XCTAssertEqual(proxyTitle as? String, "AnyBrowser proxy fixture")
+
+            let extensionID = "gfejlnakeokbjdhoionfappnfepjoili"
+            let optionsURL = try XCTUnwrap(URL(string: "chrome-extension://\(extensionID)/options.html"))
+            for tab in [firstPage, secondPage] {
+                try await tab.navigate(to: optionsURL)
+                try await assertPasskeyBox(tab, id: extensionID)
+            }
+            _ = try await firstPage.evaluate(
+                "chrome.storage.local.set({anybrowserFixture: 'profile-one'}).then(() => true)",
+                awaitPromise: true
+            )
+            let initialSecondExtensionValue = try await passkeyBoxFixture(secondPage)
+            XCTAssertTrue(initialSecondExtensionValue is NSNull)
 
             var conflict = try store.makeDraft()
             conflict.port = first.port
@@ -89,6 +113,10 @@ final class InstalledEngineTests: XCTestCase {
             try await assertPage(reopened, platform: "macOS", cores: 8, timezone: "UTC")
             let reopenedValue = try await reopened.evaluate("localStorage.getItem('anybrowser-fixture')")
             XCTAssertEqual(reopenedValue as? String, "profile-one")
+            try await reopened.navigate(to: optionsURL)
+            try await assertPasskeyBox(reopened, id: extensionID)
+            let reopenedExtensionValue = try await passkeyBoxFixture(reopened)
+            XCTAssertEqual(reopenedExtensionValue as? String, "profile-one")
 
             try await runtime.stop(first.id)
             try await runtime.stop(second.id)
@@ -108,6 +136,33 @@ final class InstalledEngineTests: XCTestCase {
         XCTAssertEqual(fields["cores"] as? Int, cores)
         XCTAssertEqual(fields["zone"] as? String, timezone)
     }
+
+    private func assertPasskeyBox(_ page: DevToolsPage, id: String) async throws {
+        for _ in 0..<50 {
+            let observed = try await page.evaluate("""
+                (() => {
+                    const input = document.querySelector('[name=serverUrl]');
+                    if (!input || !chrome.runtime?.id) return null;
+                    return { id: chrome.runtime.id, version: chrome.runtime.getManifest().version, server: input.value };
+                })()
+                """)
+            if let fields = observed as? [String: Any] {
+                XCTAssertEqual(fields["id"] as? String, id)
+                XCTAssertEqual(fields["version"] as? String, "0.2.0")
+                XCTAssertEqual(fields["server"] as? String, "https://password.riba2534.cn/")
+                return
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw VerificationFailure.message("Passkey Box 设置页没有就绪")
+    }
+
+    private func passkeyBoxFixture(_ page: DevToolsPage) async throws -> Any {
+        try await page.evaluate(
+            "chrome.storage.local.get('anybrowserFixture').then(data => data.anybrowserFixture ?? null)",
+            awaitPromise: true
+        )
+    }
 }
 
 private enum VerificationFailure: LocalizedError {
@@ -124,7 +179,7 @@ private struct LoopbackPage {
     var listener: NWListener
     var url: URL
 
-    static func start() async throws -> LoopbackPage {
+    static func start(title: String = "AnyBrowser local test") async throws -> LoopbackPage {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         let listener = try NWListener(using: parameters)
@@ -132,7 +187,7 @@ private struct LoopbackPage {
         listener.newConnectionHandler = { connection in
             connection.start(queue: queue)
             connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { _, _, _, _ in
-                let body = "<!doctype html><meta charset=utf-8><title>AnyBrowser local test</title>"
+                let body = "<!doctype html><meta charset=utf-8><title>\(title)</title>"
                 let response = Data("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)".utf8)
                 connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
             }
@@ -182,23 +237,30 @@ private final class DevToolsPage {
         task.resume()
         let page = DevToolsPage(socket: task)
         do {
-            _ = try await page.command("Page.navigate", ["url": url.absoluteString])
-            for _ in 0..<50 {
-                if let location = try? await page.evaluate("document.readyState === 'complete' && location.href"),
-                   (location as? String) == url.absoluteString {
-                    return page
-                }
-                try await Task.sleep(nanoseconds: 100_000_000)
-            }
-            throw VerificationFailure.message("Timed out waiting for the local page")
+            try await page.navigate(to: url)
+            return page
         } catch {
             task.cancel(with: .normalClosure, reason: nil)
             throw error
         }
     }
 
-    func evaluate(_ expression: String) async throws -> Any {
-        let response = try await command("Runtime.evaluate", ["expression": expression, "returnByValue": true])
+    func navigate(to url: URL) async throws {
+        _ = try await command("Page.navigate", ["url": url.absoluteString])
+        for _ in 0..<50 {
+            if let location = try? await evaluate("document.readyState === 'complete' && location.href"),
+               (location as? String) == url.absoluteString {
+                return
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw VerificationFailure.message("Timed out waiting for the local page")
+    }
+
+    func evaluate(_ expression: String, awaitPromise: Bool = false) async throws -> Any {
+        let response = try await command("Runtime.evaluate", [
+            "expression": expression, "returnByValue": true, "awaitPromise": awaitPromise,
+        ])
         let result = try XCTUnwrap(response["result"] as? [String: Any])
         return result["value"] ?? NSNull()
     }

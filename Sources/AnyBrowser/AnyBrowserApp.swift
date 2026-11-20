@@ -170,7 +170,7 @@ final class Workbench: ObservableObject {
               let stored = profiles.first(where: { $0.id == id }) else { return false }
         if stored.port != port { return true }
         if let running = runningConfigurations[id] {
-            return running.fingerprint != stored.fingerprint
+            return running.fingerprint != stored.fingerprint || running.proxy != stored.proxy
         }
         return runtime?.matchesRunningConfiguration(stored) != true
     }

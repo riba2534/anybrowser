@@ -42,6 +42,11 @@ struct ProfileEditor: View {
                     }
                 }
                 fingerprintFields
+                EditorInput("代理地址", placeholder: "留空使用系统网络设置",
+                            value: $draft.profile.proxy, identifier: "profile-proxy")
+                Text("主机:端口默认为 HTTP，也可指定 HTTPS 或 SOCKS5。保存并重启后生效。")
+                    .font(.system(size: 12))
+                    .foregroundColor(WorkbenchPalette.muted)
             }
 
             WorkbenchCard {
