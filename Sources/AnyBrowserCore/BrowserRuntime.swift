@@ -265,13 +265,20 @@ public final class BrowserRuntime: ObservableObject {
 
     private func owns(_ receipt: Receipt, directory: URL) -> Bool {
         guard ProcessStamp.read(receipt.pid) == receipt.stamp,
-              ProcessInspection.executable(receipt.pid) == engine.executable,
               let details = try? directoryDetails(directory),
               details.st_dev == receipt.device, details.st_ino == receipt.inode,
-              let arguments = ProcessInspection.arguments(receipt.pid) else { return false }
-        return ProcessInspection.hasFlag("--user-data-dir", value: directory.path, arguments: arguments)
-            && ProcessInspection.hasFlag("--remote-debugging-port", value: String(receipt.port), arguments: arguments)
-            && ProcessStamp.read(receipt.pid) == receipt.stamp
+              let image = ProcessInspection.image(receipt.pid),
+              ProcessInspection.hasFlag("--user-data-dir", value: directory.path, arguments: image.arguments),
+              ProcessInspection.hasFlag("--remote-debugging-port", value: String(receipt.port), arguments: image.arguments)
+        else { return false }
+
+        let child = UUID(uuidString: directory.lastPathComponent).flatMap { children[$0] }
+        let trackedChild = child?.processIdentifier == receipt.pid && child?.isRunning == true
+        // macOS can report a code-signing clone through proc_pidpath. The initial
+        // executable path in the process argument area still identifies the bundle we launched.
+        let executableConfirmed = trackedChild || image.executablePath == engine.executable.path
+            || ProcessInspection.executable(receipt.pid) == engine.executable
+        return executableConfirmed && ProcessStamp.read(receipt.pid) == receipt.stamp
     }
 
     private func profileInUse(_ directory: URL) -> Bool {
