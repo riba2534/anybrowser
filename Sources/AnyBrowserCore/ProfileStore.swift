@@ -126,6 +126,12 @@ public final class ProfileStore: ObservableObject {
     }
 
     public func randomize(_ profile: BrowserProfile, fields: Set<FingerprintField>) throws -> BrowserProfile {
+        if fields.contains(.platformVersion), !fields.contains(.platform), profile.fingerprint.platform == nil {
+            throw ProfileError.invalid("先选择平台，或同时勾选平台与平台版本。")
+        }
+        if fields.contains(.brandVersion), !fields.contains(.brand), profile.fingerprint.brand == nil {
+            throw ProfileError.invalid("先选择浏览器品牌，或同时勾选品牌与品牌版本。")
+        }
         var draft = profile
         draft.fingerprint.randomize(fields, excluding: Set(profiles.map(\.fingerprint.seed)))
         return draft

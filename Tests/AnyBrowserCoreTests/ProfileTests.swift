@@ -82,4 +82,22 @@ final class ProfileTests: XCTestCase {
             XCTAssertTrue(store.profiles.isEmpty)
         }
     }
+
+    func testRandomizingVersionsRequiresTheirBaseFields() async throws {
+        try await MainActor.run {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let store = try ProfileStore(directory: directory)
+            let draft = try store.makeDraft()
+            XCTAssertThrowsError(try store.randomize(draft, fields: [.platformVersion]))
+            XCTAssertThrowsError(try store.randomize(draft, fields: [.brandVersion]))
+            let changed = try store.randomize(draft, fields: [.platform, .platformVersion, .brand, .brandVersion])
+            XCTAssertNotNil(changed.fingerprint.platform)
+            XCTAssertFalse(changed.fingerprint.platformVersion.isEmpty)
+            XCTAssertNotNil(changed.fingerprint.brand)
+            XCTAssertFalse(changed.fingerprint.brandVersion.isEmpty)
+            XCTAssertEqual(changed.fingerprint.seed, draft.fingerprint.seed)
+            XCTAssertNoThrow(try changed.validated())
+        }
+    }
 }

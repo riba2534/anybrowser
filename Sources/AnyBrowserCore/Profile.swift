@@ -166,6 +166,9 @@ extension FingerprintSettings {
         if platform == nil, !platformVersion.isEmpty {
             throw ProfileError.invalid("先选择平台，再指定平台版本。")
         }
+        if brand == nil, !brandVersion.isEmpty {
+            throw ProfileError.invalid("先选择浏览器品牌，再指定品牌版本。")
+        }
         if brand == .opera || brand == .vivaldi, brandVersion.isEmpty {
             throw ProfileError.invalid("Opera 和 Vivaldi 需要显式填写品牌版本。")
         }
