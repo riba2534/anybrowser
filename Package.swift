@@ -8,5 +8,6 @@ let package = Package(
     targets: [
         .target(name: "AnyBrowserCore", linkerSettings: [.linkedLibrary("sqlite3")]),
         .executableTarget(name: "AnyBrowser", dependencies: ["AnyBrowserCore"]),
+        .testTarget(name: "AnyBrowserCoreTests", dependencies: ["AnyBrowserCore"]),
     ]
 )
