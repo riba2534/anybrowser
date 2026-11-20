@@ -84,6 +84,14 @@ public final class BrowserRuntime: ObservableObject {
 
     public func status(for id: UUID) -> BrowserRunState { states[id] ?? .stopped }
 
+    public func matchesRunningConfiguration(_ profile: BrowserProfile) -> Bool? {
+        guard case let .running(pid, _, _) = status(for: profile.id) else { return nil }
+        let directory = dataDirectory(for: profile.id)
+        guard let receipt = readReceipt(directory), receipt.pid == pid, owns(receipt, directory: directory),
+              let arguments = ProcessInspection.arguments(pid), ProcessStamp.read(pid) == receipt.stamp else { return nil }
+        return arguments.dropFirst().elementsEqual(profile.launchArguments(userDataDirectory: directory))
+    }
+
     public func start(_ profile: BrowserProfile) async throws {
         let profile = try profile.validated()
         let id = profile.id
