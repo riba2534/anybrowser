@@ -194,12 +194,15 @@ extension FingerprintSettings {
             }
         }
         if fields.contains(.brand) {
-            brand = [BrowserBrand.chrome, .edge].randomElement()
+            let brands = fields.contains(.brandVersion) || !brandVersion.isEmpty
+                ? BrowserBrand.allCases : [.chrome, .edge]
+            brand = brands.randomElement()
         }
         if fields.contains(.brandVersion) {
             brandVersion = switch brand {
             case .edge: ["148.0.3967.54", "148.0.3967.96", "148.0.3967.73"].randomElement()!
-            case .opera, .vivaldi: "\(Int.random(in: 1...99)).0"
+            case .opera: ["120.0", "121.0"].randomElement()!
+            case .vivaldi: ["7.5", "7.6"].randomElement()!
             default: ["148.0.7778.215", "148.0.7778.217", "148.0.7778.168"].randomElement()!
             }
         }

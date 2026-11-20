@@ -1,4 +1,5 @@
 import Combine
+import Darwin
 import Foundation
 import SQLite3
 
@@ -15,9 +16,13 @@ public final class ProfileStore: ObservableObject {
     }
 
     public init(directory: URL) throws {
-        self.directory = directory.standardizedFileURL
-        try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true,
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
+        guard let canonical = realpath(directory.path, nil) else {
+            throw ProfileError.invalid("无法定位本机 Profile 资料目录。")
+        }
+        defer { free(canonical) }
+        self.directory = URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
         let path = self.directory.appendingPathComponent("profiles.sqlite3")
         var opened: OpaquePointer?
         guard sqlite3_open_v2(path.path, &opened, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK,
