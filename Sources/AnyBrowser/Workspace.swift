@@ -1,9 +1,12 @@
 import AnyBrowserCore
+import AppKit
 import SwiftUI
 
 struct Workspace: View {
     @ObservedObject var workbench: Workbench
     @State private var removeCandidate: BrowserProfile?
+    private static let brandImage = Bundle.main.url(forResource: "AnyBrowser", withExtension: "icns")
+        .flatMap(NSImage.init(contentsOf:))
 
     var body: some View {
         HStack(spacing: 0) {
@@ -94,21 +97,7 @@ struct Workspace: View {
 
     private var brand: some View {
         HStack(spacing: 10) {
-            ZStack(alignment: .bottomTrailing) {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(LinearGradient(colors: [Color(white: 0.29), Color(white: 0.13)],
-                                         startPoint: .top, endPoint: .bottom))
-                Image(systemName: "rectangle.on.rectangle")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                Circle()
-                    .fill(WorkbenchPalette.mint)
-                    .frame(width: 5, height: 5)
-                    .padding(6)
-            }
-            .frame(width: 36, height: 36)
-            .accessibilityHidden(true)
+            brandMark(size: 44)
             VStack(alignment: .leading, spacing: 3) {
                 Text("AnyBrowser")
                     .font(.system(size: 16, weight: .semibold))
@@ -117,6 +106,23 @@ struct Workspace: View {
                     .foregroundColor(WorkbenchPalette.muted)
             }
         }
+    }
+
+    private func brandMark(size: CGFloat) -> some View {
+        Group {
+            if let image = Self.brandImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+            } else {
+                Image(systemName: "rectangle.on.rectangle")
+                    .font(.system(size: size * 0.4, weight: .medium))
+                    .foregroundColor(WorkbenchPalette.muted)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 
     private func profileRow(_ profile: BrowserProfile, isDraft: Bool = false) -> some View {
@@ -301,12 +307,7 @@ struct Workspace: View {
                 message(engineError, error: true, dismissible: false)
             }
             Spacer()
-            Image(systemName: "rectangle.on.rectangle")
-                .font(.system(size: 27, weight: .light))
-                .frame(width: 64, height: 64)
-                .background(WorkbenchPalette.iconSurface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .foregroundColor(WorkbenchPalette.ink)
-                .accessibilityHidden(true)
+            brandMark(size: 84)
             Text("新建浏览器 Profile")
                 .font(.system(size: 26, weight: .semibold))
                 .accessibilityAddTraits(.isHeader)

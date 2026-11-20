@@ -91,7 +91,16 @@ bundle_value() { /usr/libexec/PlistBuddy -c "Print :$1" "$2"; }
 /usr/bin/codesign --verify --deep --strict "$embedded"
 /bin/cp "$root/Resources/Info.plist" "$contents/Info.plist"
 /bin/cp "$root/Resources/FingerprintChromium.LICENSE.txt" "$contents/Resources/"
-/bin/cp "$root/Resources/AnyBrowser.icns" "$contents/Resources/"
+iconset="$staging/AnyBrowser.iconset"
+mkdir "$iconset"
+for size in 16 32 128 256 512; do
+    /usr/bin/sips -z "$size" "$size" "$root/Resources/AnyBrowser.png" \
+        --out "$iconset/icon_${size}x${size}.png" >/dev/null
+    retina_size=$((size * 2))
+    /usr/bin/sips -z "$retina_size" "$retina_size" "$root/Resources/AnyBrowser.png" \
+        --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+done
+/usr/bin/iconutil -c icns "$iconset" -o "$contents/Resources/AnyBrowser.icns"
 /usr/bin/install -m 755 "$bin_path/AnyBrowser" "$contents/MacOS/AnyBrowser"
 /usr/bin/plutil -insert AnyBrowserEngineVersion -string "$engine_version" "$contents/Info.plist"
 /usr/bin/plutil -insert AnyBrowserEngineSHA256 -string "$engine_sha256" "$contents/Info.plist"
