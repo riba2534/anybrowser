@@ -35,27 +35,36 @@ public enum CookieTransfer {
 
     /// Adds the file's cookies to the Profile; existing cookies stay, and ones with the same name, domain
     /// and path are replaced. Entries that can't be read or that the browser refuses count as skipped.
+    /// When the connection fails part way, the error says how many cookies were already set.
     public static func importCookies(_ data: Data, into endpoint: URL) async throws -> (imported: Int, skipped: Int) {
         let file = try decode(data, now: Date())
         guard !file.cookies.isEmpty else { return (0, file.skipped) }
         let client = try DevToolsClient(endpoint: endpoint)
         defer { client.close() }
+        var stored = 0
         var refused = 0
-        for start in stride(from: 0, to: file.cookies.count, by: batchSize) {
-            let batch = file.cookies[start..<min(start + batchSize, file.cookies.count)].map(parameters)
-            do {
-                _ = try await client.send("Storage.setCookies", ["cookies": batch])
-            } catch is DevToolsCommandError {
-                for cookie in batch {
-                    do {
-                        _ = try await client.send("Storage.setCookies", ["cookies": [cookie]])
-                    } catch is DevToolsCommandError {
-                        refused += 1
+        do {
+            for start in stride(from: 0, to: file.cookies.count, by: batchSize) {
+                let batch = file.cookies[start..<min(start + batchSize, file.cookies.count)].map(parameters)
+                do {
+                    _ = try await client.send("Storage.setCookies", ["cookies": batch])
+                    stored += batch.count
+                } catch is DevToolsCommandError {
+                    for cookie in batch {
+                        do {
+                            _ = try await client.send("Storage.setCookies", ["cookies": [cookie]])
+                            stored += 1
+                        } catch is DevToolsCommandError {
+                            refused += 1
+                        }
                     }
                 }
             }
+        } catch where stored > 0 {
+            // Earlier batches are already in the Profile, so retrying the whole file would set them again.
+            throw ProfileError.invalid("导入中断：已导入 \(stored) 条 Cookie，其余未导入。\(error.localizedDescription)")
         }
-        return (file.cookies.count - refused, file.skipped + refused)
+        return (stored, file.skipped + refused)
     }
 
     /// Writes an export that only the current user can read, replacing any existing file.
