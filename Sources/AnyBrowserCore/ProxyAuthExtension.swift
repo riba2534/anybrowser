@@ -18,11 +18,7 @@ enum ProxyAuthExtension {
             if lstat(target.path, &details) == 0 { try FileManager.default.removeItem(at: target) }
             return
         }
-        // Chromium parses --load-extension as a comma-separated list.
-        guard !target.path.contains(",") else {
-            throw ProfileError.invalid("AnyBrowser 资料目录的路径不能包含逗号。")
-        }
-        _ = try ProfileExtensions.prepareRoot(in: storage, for: profile.id)
+        try ProfileExtensions.prepareRoot(in: storage, for: profile.id)
         // Only a real directory of ours is reused; a link or file in its place is replaced.
         if lstat(target.path, &details) == 0, details.st_mode & S_IFMT != S_IFDIR || details.st_uid != getuid() {
             try FileManager.default.removeItem(at: target)
@@ -37,7 +33,7 @@ enum ProxyAuthExtension {
                                                          username: username, password: password))
         let files = ["manifest.json": Data(manifest.utf8), "background.js": Data(script.utf8), credentialsFile: credentials]
         for (name, data) in files {
-            try write(data, to: target.appendingPathComponent(name))
+            try PrivateFile.update(data, at: target.appendingPathComponent(name), failure: "无法写入代理登录扩展。")
         }
         // Drops anything else, such as a temporary copy of old credentials left by an interrupted write.
         for name in try FileManager.default.contentsOfDirectory(atPath: target.path) where files[name] == nil {
@@ -50,23 +46,6 @@ enum ProxyAuthExtension {
         let port: Int
         let username: String
         let password: String
-    }
-
-    /// Leaves an identical private file alone; otherwise replaces it atomically.
-    private static func write(_ data: Data, to url: URL) throws {
-        var details = stat()
-        if lstat(url.path, &details) == 0, details.st_mode & S_IFMT == S_IFREG, details.st_uid == getuid(),
-           details.st_mode & 0o777 == 0o600, (try? Data(contentsOf: url)) == data {
-            return
-        }
-        let temporary = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent)-\(UUID().uuidString)")
-        guard FileManager.default.createFile(atPath: temporary.path, contents: data,
-                                             attributes: [.posixPermissions: 0o600]),
-              rename(temporary.path, url.path) == 0 else {
-            try? FileManager.default.removeItem(at: temporary)
-            throw ProfileError.invalid("无法写入代理登录扩展。")
-        }
     }
 
     static let manifest = """

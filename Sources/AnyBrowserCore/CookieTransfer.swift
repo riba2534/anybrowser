@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 /// A cookie in AnyBrowser's export format; `expires` is nil for session cookies.
@@ -61,35 +60,13 @@ public enum CookieTransfer {
 
     /// Writes an export that only the current user can read, replacing any existing file.
     public static func writeFile(_ data: Data, to url: URL) throws {
-        let temporary = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent)-\(UUID().uuidString)")
-        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { throw ProfileError.invalid("无法写入 Cookie 文件，请换一个位置。") }
-        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        do {
-            // The umask can still change the mode passed to open.
-            guard fchmod(fd, 0o600) == 0 else { throw ProfileError.invalid("无法设置 Cookie 文件权限。") }
-            try file.write(contentsOf: data)
-            try file.close()
-            guard rename(temporary.path, url.path) == 0 else { throw ProfileError.invalid("无法写入 Cookie 文件。") }
-        } catch {
-            unlink(temporary.path)
-            throw error as? ProfileError ?? ProfileError.invalid("无法写入 Cookie 文件：\(error.localizedDescription)")
-        }
+        try PrivateFile.write(data, to: url, failure: "无法写入 Cookie 文件，请换一个位置。")
     }
 
     /// Reads a cookie file, refusing anything but a regular file of reasonable size.
     public static func readFile(_ url: URL) throws -> Data {
-        let fd = open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
-        guard fd >= 0 else { throw ProfileError.invalid("无法读取 Cookie 文件。") }
-        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        var details = stat()
-        guard fstat(fd, &details) == 0, details.st_mode & S_IFMT == S_IFREG else {
-            throw ProfileError.invalid("请选择一个 Cookie 文件。")
-        }
-        guard let data = try? file.read(upToCount: maximumFileSize + 1) ?? Data() else {
-            throw ProfileError.invalid("无法读取 Cookie 文件。")
-        }
+        let data = try PrivateFile.read(url, limit: maximumFileSize, failure: "无法读取 Cookie 文件。",
+                                        notAFile: "请选择一个 Cookie 文件。")
         guard data.count <= maximumFileSize else {
             throw ProfileError.invalid("Cookie 文件超过 32 MB，无法导入。")
         }

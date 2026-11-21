@@ -86,14 +86,6 @@ public struct PasskeyBoxAccount: Codable, Equatable, Sendable {
     }
 }
 
-/// Never forward the Authorization header to another location.
-private final class RedirectRefusal: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(nil)
-    }
-}
-
 /// The unpacked Passkey Box a Profile loads: a copy of the bundled extension under the Profile's
 /// extension root, plus managed-config.json when it has an account. The app bundle stays untouched.
 enum PasskeyBoxInstall {
@@ -105,10 +97,6 @@ enum PasskeyBoxInstall {
 
     static func prepare(bundled source: URL, in storage: URL, for id: UUID, account: PasskeyBoxAccount?) throws {
         let target = directory(in: storage, for: id)
-        // Chromium parses --load-extension as a comma-separated list.
-        guard !target.path.contains(",") else {
-            throw ProfileError.invalid("AnyBrowser 资料目录的路径不能包含逗号。")
-        }
         let parent = try ProfileExtensions.prepareRoot(in: storage, for: id)
         var details = stat()
 
@@ -139,20 +127,9 @@ enum PasskeyBoxInstall {
             if lstat(config.path, &details) == 0 { try FileManager.default.removeItem(at: config) }
             return
         }
-        let data = try account.managedConfiguration()
-        if lstat(config.path, &details) == 0, details.st_mode & S_IFMT == S_IFREG, details.st_mode & 0o077 == 0,
-           (try? Data(contentsOf: config)) == data {
-            return
-        }
-        let temporary = parent.appendingPathComponent(".managed-config-\(UUID().uuidString)")
-        guard FileManager.default.createFile(atPath: temporary.path, contents: data,
-                                             attributes: [.posixPermissions: 0o600]) else {
-            throw ProfileError.invalid("无法写入 Passkey Box 账号配置。")
-        }
-        guard rename(temporary.path, config.path) == 0 else {
-            try? FileManager.default.removeItem(at: temporary)
-            throw ProfileError.invalid("无法写入 Passkey Box 账号配置。")
-        }
+        // Staged outside the extension, whose files must match the bundled copy.
+        try PrivateFile.update(account.managedConfiguration(), at: config, stagingIn: parent,
+                               failure: "无法写入 Passkey Box 账号配置。")
     }
 
     /// Relative path → contents of every regular file, or nil when the tree is missing or holds links.

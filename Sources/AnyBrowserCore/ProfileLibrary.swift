@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 /// Profile import and export, cloning, batch creation and sidebar arrangement.
@@ -110,33 +109,12 @@ public enum ProfileLibrary {
 
     /// Reads a file chosen for import without loading more than an export can hold.
     public static func contents(of url: URL) throws -> Data {
-        do {
-            let file = try FileHandle(forReadingFrom: url)
-            defer { try? file.close() }
-            return try file.read(upToCount: maxImportBytes + 1) ?? Data()
-        } catch {
-            throw ProfileError.invalid("无法读取文件「\(url.lastPathComponent)」。")
-        }
+        try PrivateFile.read(url, limit: maxImportBytes, failure: "无法读取文件「\(url.lastPathComponent)」。")
     }
 
-    /// Writes a file only the current user can read, replacing any file at `url`.
+    /// Writes an export only the current user can read, replacing any file at `url`.
     public static func writePrivately(_ data: Data, to url: URL) throws {
-        let failure = ProfileError.invalid("无法写入文件「\(url.lastPathComponent)」。")
-        let temporary = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString)")
-        let fd = open(temporary.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { throw failure }
-        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        do {
-            guard fchmod(fd, 0o600) == 0 else { throw failure }
-            try file.write(contentsOf: data)
-            try file.synchronize()
-            try file.close()
-            guard rename(temporary.path, url.path) == 0 else { throw failure }
-        } catch {
-            unlink(temporary.path)
-            throw failure
-        }
+        try PrivateFile.write(data, to: url, failure: "无法写入文件「\(url.lastPathComponent)」。")
     }
 
     // MARK: New Profiles

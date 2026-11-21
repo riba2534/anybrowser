@@ -374,7 +374,7 @@ private struct DataFixture {
     @discardableResult
     func populate(_ id: UUID) throws -> (data: URL, extensions: URL) {
         let data = runtime.dataDirectory(for: id)
-        try runtime.ensureDirectory(data)
+        try PrivateDirectory.ensure(data)
         try Data("cookie".utf8).write(to: data.appendingPathComponent("Cookies"))
         let extensions = try ProfileExtensions.prepareRoot(in: runtime.storage, for: id)
         try Data("{}".utf8).write(to: extensions.appendingPathComponent("manifest.json"))
@@ -456,7 +456,7 @@ struct BrowserDataRemovalTests {
         let standIn = try fixture.standIn(for: target.data, port: profile.port)
         defer { fixture.finish(standIn) }
         let pid = standIn.process.processIdentifier
-        let details = try fixture.runtime.directoryDetails(target.data)
+        let details = try PrivateDirectory.check(target.data)
         let receipt = BrowserRuntime.Receipt(pid: pid, stamp: try #require(ProcessStamp.read(pid)), port: profile.port,
                                              device: details.st_dev, inode: details.st_ino)
         try JSONEncoder().encode(receipt).write(to: fixture.runtime.receiptURL(target.data))
@@ -503,7 +503,7 @@ struct BrowserDataRemovalTests {
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
         try Data("keep".utf8).write(to: outside.appendingPathComponent("Keep"))
         let data = fixture.runtime.dataDirectory(for: id)
-        try fixture.runtime.ensureDirectory(data.deletingLastPathComponent())
+        try PrivateDirectory.ensure(data.deletingLastPathComponent())
         try FileManager.default.createSymbolicLink(at: data, withDestinationURL: outside)
 
         var recordRemoved = false
@@ -560,7 +560,7 @@ struct BrowserDataRemovalTests {
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let id = UUID()
         let data = fixture.runtime.dataDirectory(for: id)
-        try fixture.runtime.ensureDirectory(data.deletingLastPathComponent())
+        try PrivateDirectory.ensure(data.deletingLastPathComponent())
         try Data("file".utf8).write(to: data)
         await #expect(throws: ProfileError.self) { try await fixture.runtime.removeData(for: id) }
         #expect(fixture.exists(data))

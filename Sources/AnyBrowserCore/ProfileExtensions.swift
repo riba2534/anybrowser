@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 /// Per-Profile unpacked extensions under `<storage>/Extensions/<uuid>/`.
@@ -9,16 +8,15 @@ enum ProfileExtensions {
     }
 
     /// Creates the Profile's extension root, readable only by the current user.
+    @discardableResult
     static func prepareRoot(in storage: URL, for id: UUID) throws -> URL {
         let root = root(in: storage, for: id)
+        // Chromium parses --load-extension as a comma-separated list.
+        guard !root.path.contains(",") else {
+            throw ProfileError.invalid("AnyBrowser 资料目录的路径不能包含逗号。")
+        }
         for directory in [root.deletingLastPathComponent(), root] {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
-                                                    attributes: [.posixPermissions: 0o700])
-            var details = stat()
-            guard lstat(directory.path, &details) == 0, details.st_uid == getuid(),
-                  details.st_mode & S_IFMT == S_IFDIR else {
-                throw ProfileError.invalid("扩展目录不可用，请检查本机目录权限。")
-            }
+            try PrivateDirectory.ensure(directory, failure: "扩展目录不可用，请检查本机目录权限。")
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
         }
         return root

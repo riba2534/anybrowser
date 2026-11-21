@@ -41,19 +41,15 @@ extension BrowserRuntime {
         }
     }
 
-    /// False when `url` does not exist; true when it is exactly the real directory we expect,
-    /// owned by this user and inside the storage directory; throws otherwise.
+    /// False when `url` does not exist; true when it is a private directory of this user at its
+    /// canonical path inside the storage directory; throws otherwise.
     private func verifiedForRemoval(_ url: URL) throws -> Bool {
         var details = stat()
         guard lstat(url.path, &details) == 0 else {
             guard errno == ENOENT else { throw unsafePath(url) }
             return false
         }
-        guard details.st_mode & S_IFMT == S_IFDIR, details.st_uid == getuid(),
-              let canonical = realpath(url.path, nil) else { throw unsafePath(url) }
-        defer { free(canonical) }
-        let resolved = String(cString: canonical)
-        guard resolved == url.path, resolved.hasPrefix(storage.path + "/"),
+        guard (try? PrivateDirectory.check(url)) != nil, url.path.hasPrefix(storage.path + "/"),
               ProcessInspection.canonicalURL(storage, isDirectory: true)?.path == storage.path else {
             throw unsafePath(url)
         }

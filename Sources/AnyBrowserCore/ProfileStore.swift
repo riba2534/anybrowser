@@ -3,6 +3,9 @@ import Darwin
 import Foundation
 import SQLite3
 
+/// SQLITE_TRANSIENT: SQLite copies bound values before the call returns.
+private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
 @MainActor
 public final class ProfileStore: ObservableObject {
     @Published public private(set) var profiles: [BrowserProfile] = []
@@ -123,7 +126,6 @@ public final class ProfileStore: ObservableObject {
             ON CONFLICT(id) DO UPDATE SET port=excluded.port, seed=excluded.seed, payload=excluded.payload
             """)
         defer { sqlite3_finalize(write) }
-        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         guard sqlite3_bind_text(write, 1, profile.id.uuidString, -1, transient) == SQLITE_OK,
               sqlite3_bind_int(write, 2, Int32(profile.port)) == SQLITE_OK,
               sqlite3_bind_int(write, 3, Int32(profile.fingerprint.seed)) == SQLITE_OK,
@@ -151,7 +153,6 @@ public final class ProfileStore: ObservableObject {
             for sql in ["DELETE FROM profiles WHERE id=?", "DELETE FROM profile_usage WHERE id=?"] {
                 let delete = try statement(sql)
                 defer { sqlite3_finalize(delete) }
-                let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
                 guard sqlite3_bind_text(delete, 1, id.uuidString, -1, transient) == SQLITE_OK,
                       sqlite3_step(delete) == SQLITE_DONE else {
                     throw databaseError()
@@ -194,7 +195,6 @@ public final class ProfileStore: ObservableObject {
             ON CONFLICT(id) DO UPDATE SET last_launched_at=excluded.last_launched_at
             """) else { return }
         defer { sqlite3_finalize(write) }
-        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         guard sqlite3_bind_text(write, 1, id.uuidString, -1, transient) == SQLITE_OK,
               sqlite3_bind_double(write, 2, now.timeIntervalSince1970) == SQLITE_OK,
               sqlite3_step(write) == SQLITE_DONE else { return }
@@ -207,7 +207,6 @@ public final class ProfileStore: ObservableObject {
     public func setting<Value: Decodable>(_ type: Value.Type, forKey key: String) throws -> Value? {
         let read = try statement("SELECT value FROM settings WHERE key=?")
         defer { sqlite3_finalize(read) }
-        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         guard sqlite3_bind_text(read, 1, key, -1, transient) == SQLITE_OK else { throw databaseError() }
         switch sqlite3_step(read) {
         case SQLITE_ROW:
@@ -223,7 +222,6 @@ public final class ProfileStore: ObservableObject {
 
     /// Stores an app-wide setting as JSON, or deletes it when `value` is nil.
     public func saveSetting<Value: Encodable>(_ value: Value?, forKey key: String) throws {
-        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         guard let value else {
             let delete = try statement("DELETE FROM settings WHERE key=?")
             defer { sqlite3_finalize(delete) }

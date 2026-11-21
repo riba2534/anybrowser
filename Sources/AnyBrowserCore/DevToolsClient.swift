@@ -37,11 +37,8 @@ public actor DevToolsClient {
         guard Self.accepts(endpoint) else {
             throw ProfileError.invalid("只能连接本机浏览器的调试地址。")
         }
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.connectionProxyDictionary = ["HTTPEnable": 0, "HTTPSEnable": 0, "SOCKSEnable": 0]
+        let configuration = URLSessionConfiguration.loopback
         configuration.timeoutIntervalForRequest = timeout
-        configuration.httpShouldSetCookies = false
-        configuration.urlCredentialStorage = nil
         session = URLSession(configuration: configuration, delegate: RedirectRefusal(), delegateQueue: nil)
         socket = session.webSocketTask(with: endpoint)
         // Storage.getCookies returns every cookie of the Profile in one message.
@@ -122,12 +119,5 @@ public actor DevToolsClient {
         guard let entry = pending.removeValue(forKey: id) else { return }
         entry.timer.cancel()
         entry.continuation.resume(with: result)
-    }
-}
-
-private final class RedirectRefusal: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(nil)
     }
 }

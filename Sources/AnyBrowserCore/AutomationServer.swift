@@ -109,8 +109,7 @@ public final class AutomationServer: @unchecked Sendable {
                 self.listener = nil
                 self.pendingStart?.resume(throwing: ProfileError.invalid("自动化接口已停止。"))
                 self.pendingStart = nil
-                for exchange in self.exchanges.values { exchange.connection.cancel() }
-                self.exchanges = [:]
+                self.dropConnections()
                 // The handler keeps the listener alive until the socket is closed.
                 listener.stateUpdateHandler = { state in
                     guard case .cancelled = state else { return }
@@ -156,8 +155,7 @@ public final class AutomationServer: @unchecked Sendable {
                 // Waiting would retry in the background; a taken port should be reported instead.
                 self.listener = nil
                 listener.cancel()
-                for exchange in self.exchanges.values { exchange.connection.cancel() }
-                self.exchanges = [:]
+                self.dropConnections()
                 let text = self.message(for: error)
                 if let pending = self.pendingStart {
                     self.pendingStart = nil
@@ -171,6 +169,11 @@ public final class AutomationServer: @unchecked Sendable {
         }
         listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
         listener.start(queue: queue)
+    }
+
+    private func dropConnections() {
+        for exchange in exchanges.values { exchange.connection.cancel() }
+        exchanges = [:]
     }
 
     private func message(for error: Error) -> String {
@@ -399,7 +402,7 @@ enum AutomationHTTP {
         return difference == 0
     }
 
-    struct ProfileObject: Encodable, Equatable {
+    struct ProfileObject: Encodable {
         var id: UUID
         var name: String
         var group: String
@@ -408,7 +411,7 @@ enum AutomationHTTP {
         var debugReady: Bool
     }
 
-    struct DebugAddress: Encodable, Equatable {
+    struct DebugAddress: Encodable {
         var http: String
         var webSocket: String
     }
