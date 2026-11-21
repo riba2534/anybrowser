@@ -62,7 +62,7 @@ struct FingerprintTests {
 
     // MARK: Identity presets
 
-    @Test("Identity presets set a whole identity and keep the seed, language, time zone and adjustments")
+    @Test("Identity presets set a whole identity and keep the seed, language, time zone and other adjustments")
     func identityPresets() throws {
         let expected: [(id: String, title: String, platform: BrowserPlatform, version: String,
                         brand: BrowserBrand, brandVersion: String, cpus: Set<Int>)] = [
@@ -78,17 +78,20 @@ struct FingerprintTests {
 
         for item in expected {
             let preset = try #require(IdentityPreset.all.first { $0.id == item.id })
-            for _ in 0..<20 {
+            // Also start from a Linux identity, whose WebGL spoofing is off.
+            for start in [(platform: BrowserPlatform.macOS, gpu: true), (platform: .linux, gpu: false)] {
                 var fingerprint = FingerprintSettings(seed: 4242)
-                fingerprint.platform = .macOS
-                fingerprint.platformVersion = "26.4.1"
+                fingerprint.platform = start.platform
+                fingerprint.platformVersion = start.platform == .linux ? "6.8.0" : "26.4.1"
                 fingerprint.brand = .vivaldi
                 fingerprint.brandVersion = "7.6"
                 fingerprint.cpuCount = 32
                 fingerprint.language = "ja-JP"
                 fingerprint.timeZone = "Asia/Tokyo"
-                fingerprint.adjustments = [.font, .gpu, .clientRects]
+                fingerprint.adjustments = start.gpu ? [.font, .gpu, .clientRects] : [.font, .clientRects]
                 preset.apply(to: &fingerprint)
+                #expect(fingerprint.arguments().contains { $0.hasPrefix("--disable-spoofing=") && $0.contains("gpu") }
+                        == (item.platform == .linux), "\(item.id) from \(start.platform)")
 
                 #expect(fingerprint.platform == item.platform, "\(item.id)")
                 #expect(fingerprint.platformVersion == item.version, "\(item.id)")
@@ -154,7 +157,12 @@ struct FingerprintTests {
             var everything = FingerprintSettings(seed: 23)
             everything.randomize(Set(FingerprintField.allCases), excluding: [])
             #expect(matches(everything.brandVersion, everything.brand))
-            #expect(issueIDs(everything) == (everything.platform == .linux ? ["linux-webgl"] : []), "\(everything)")
+            let webGL: [String] = switch everything.platform {
+            case .linux: ["linux-webgl"]
+            case .windows where !everything.adjustments.contains(.gpu): ["webgl-real-gpu"]
+            default: []
+            }
+            #expect(issueIDs(everything) == webGL, "\(everything)")
         }
         #expect(seen == Set(BrowserBrand.allCases))
     }
@@ -212,30 +220,50 @@ struct FingerprintTests {
             var fingerprint = FingerprintSettings(seed: 51)
             fingerprint.platform = platform
             fingerprint.platformVersion = version
-            fingerprint.adjustments = []
+            fingerprint.adjustments = [.gpu]
             let expected = (fits ? [] : ["platform-version"]) + (platform == .linux ? ["linux-webgl"] : [])
             #expect(issueIDs(fingerprint) == expected, "\(platform) \(version)")
         }
         var windows = FingerprintSettings(seed: 52)
         windows.platform = .windows
         windows.platformVersion = "26.2.0"
+        windows.adjustments = [.gpu]
         #expect(BrowserProfile(name: "W", port: 9301, fingerprint: windows).consistencyIssues(engineVersion: nil, exit: nil)
             .map(\.message) == ["平台版本 26.2.0 与 Windows 不匹配（Windows 主版本应为 0–20）"])
         windows.platformVersion = ""
         #expect(issueIDs(windows).isEmpty)
     }
 
-    @Test("Linux identities are flagged: the engine shows this Mac's GPU for them")
-    func linuxWithWebGL() {
-        var fingerprint = FingerprintSettings(seed: 61)
-        fingerprint.adjustments = [.gpu]
-        #expect(issueIDs(fingerprint).isEmpty)
-        fingerprint.platform = .windows
-        #expect(issueIDs(fingerprint).isEmpty)
-        fingerprint.platform = .linux
-        #expect(issueIDs(fingerprint) == ["linux-webgl"])
-        fingerprint.adjustments = [.canvas]
-        #expect(issueIDs(fingerprint) == ["linux-webgl"])
+    @Test("WebGL must agree with the platform: Linux and unspoofed Windows show this Mac's GPU")
+    func webGLAgainstPlatform() {
+        let cases: [(BrowserPlatform?, gpu: Bool, [String])] = [
+            (nil, false, []), (nil, true, ["webgl-windows-gpu"]),
+            (.windows, true, []), (.windows, false, ["webgl-real-gpu"]),
+            (.macOS, true, []), (.macOS, false, []),
+            (.linux, true, ["linux-webgl"]), (.linux, false, ["linux-webgl"]),
+        ]
+        for (platform, gpu, expected) in cases {
+            var fingerprint = FingerprintSettings(seed: 61)
+            fingerprint.platform = platform
+            fingerprint.adjustments = gpu ? [.canvas, .gpu] : [.canvas]
+            #expect(issueIDs(fingerprint) == expected, "\(String(describing: platform)) gpu=\(gpu)")
+        }
+        var windows = FingerprintSettings(seed: 62)
+        windows.platform = .windows
+        windows.adjustments = []
+        #expect(BrowserProfile(name: "W", port: 9301, fingerprint: windows).consistencyIssues(engineVersion: nil, exit: nil)
+            .map(\.message) == ["WebGL 改写已关闭，网页会读到本机真实显卡，与 Windows 身份不符"])
+    }
+
+    @Test("A new Profile with default settings shows no consistency hints")
+    func newProfileHasNoHints() async throws {
+        try await MainActor.run {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let draft = try ProfileStore(directory: directory).makeDraft()
+            #expect(draft.fingerprint.platform == nil && !draft.fingerprint.adjustments.contains(.gpu))
+            #expect(draft.consistencyIssues(engineVersion: Self.engine, exit: nil).isEmpty)
+        }
     }
 
     @Test("Time zone must match the proxy exit")

@@ -53,6 +53,16 @@ extension BrowserProfile {
             issues.append(ConsistencyIssue(id: "linux-webgl",
                                            message: "Linux 平台下内核不改写 WebGL，网页会读到本机真实显卡，与 Linux 身份不符"))
         }
+        // Spoofed WebGL follows the platform, and without a platform it claims a Windows GPU while
+        // everything else still reports this Mac. Unspoofed WebGL shows this Mac's GPU.
+        let spoofsWebGL = fingerprint.adjustments.contains(.gpu)
+        if fingerprint.platform == .windows, !spoofsWebGL {
+            issues.append(ConsistencyIssue(id: "webgl-real-gpu",
+                                           message: "WebGL 改写已关闭，网页会读到本机真实显卡，与 Windows 身份不符"))
+        } else if fingerprint.platform == nil, spoofsWebGL {
+            issues.append(ConsistencyIssue(id: "webgl-windows-gpu",
+                                           message: "未选平台时 WebGL 按 Windows 显卡改写，与本机 macOS 身份不符"))
+        }
 
         guard let exit else { return issues }
         let location = [exit.city, exit.countryCode].filter { !$0.isEmpty }.joined(separator: ", ")
