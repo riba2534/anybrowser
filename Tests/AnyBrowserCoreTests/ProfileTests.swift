@@ -91,7 +91,7 @@ struct ProfileTests {
         #expect(!reopened.launchArguments(userDataDirectory: home).contains { $0.hasPrefix("--proxy-server=") })
 
         for address in ["localhost", "localhost:0", "localhost:65536", "http://proxy:80/path",
-                        "http://name:secret@localhost:7890", "localhost:7890 --other-flag",
+                        "socks5://name:secret@localhost:7890", "localhost:7890 --other-flag",
                         "http://proxy:80;direct://", "http://[not-an-ip]:7890", "http://-proxy:443"] {
             profile.proxy = address
             #expect(throws: (any Error).self, "\(address)") { try profile.validated() }
