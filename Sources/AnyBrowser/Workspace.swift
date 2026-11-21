@@ -50,13 +50,15 @@ struct Workspace: View {
             BatchCreateSheet(workbench: workbench)
         }
         .alert("移除 Profile？", isPresented: showRemovalAlert, presenting: removeCandidate) { candidate in
-            Button("仅移除记录") { workbench.remove(candidate.id) }
+            Button("仅移除记录") {
+                Task { await workbench.removeProfile(candidate.id, deletingBrowserData: false) }
+            }
             Button("移除并删除浏览器资料", role: .destructive) {
-                Task { await workbench.removeDeletingData(candidate.id) }
+                Task { await workbench.removeProfile(candidate.id, deletingBrowserData: true) }
             }
             Button("取消", role: .cancel) {}
         } message: { candidate in
-            Text("「\(candidate.name)」将从列表移除。仅移除记录会把浏览器资料留在本机；删除浏览器资料会同时清除它的 Cookie、登录状态、历史记录和扩展数据，删除后无法恢复。")
+            Text("「\(candidate.name)」将从列表移除，AnyBrowser 为它生成的扩展文件（含 Passkey Box 和代理密码）一并删除。仅移除记录会把浏览器资料留在本机；删除浏览器资料会同时清除它的 Cookie、登录状态、历史记录和扩展数据，删除后无法恢复。")
         }
     }
 
@@ -395,7 +397,8 @@ struct Workspace: View {
                     Label("移除 Profile", systemImage: "trash")
                 }
                 .buttonStyle(WorkbenchButtonStyle(.quiet))
-                .disabled(workbench.isBusy(value.id) || workbench.state(for: value.id).isRunning)
+                .disabled(workbench.removalBlocker(value.id) != nil)
+                .help(workbench.removalBlocker(value.id) ?? "移除此 Profile")
                 .accessibilityIdentifier("remove-profile")
             }
             Spacer()

@@ -91,7 +91,7 @@ final class Workbench: ObservableObject {
     }
 
     func isBusy(_ id: UUID) -> Bool {
-        launches.contains(id) || state(for: id) == .starting || state(for: id) == .stopping
+        launches.contains(id) || library.removing.contains(id) || state(for: id) == .starting || state(for: id) == .stopping
     }
 
     func hasPendingRestart(_ id: UUID) -> Bool {
