@@ -338,10 +338,44 @@ struct CookieTests {
         defer { server.stop() }
         let data = Data(#"[{"name": "a", "value": "1", "domain": "example.com"}]"#.utf8)
         let started = Date()
-        await #expect(throws: ProfileError.self) { try await CookieTransfer.importCookies(data, into: server.endpoint) }
+        // Nothing was set, so the connection error is reported as it is.
+        #expect(try await importError(data, into: server.endpoint) == "与浏览器的调试连接已断开。")
         // Fails as soon as the connection drops rather than after the command timeout.
         #expect(Date().timeIntervalSince(started) < 5)
         #expect(server.methods == ["Storage.setCookies"])
+    }
+
+    @Test("An interrupted import says how many cookies were already set")
+    func interruptedImportReportsProgress() async throws {
+        // The second batch never arrives.
+        let batches = try await FakeDevTools.start { _, params in
+            let names = (params["cookies"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
+            return names.contains("c100") ? .hangUp : .result([:])
+        }
+        defer { batches.stop() }
+        let many = try JSONSerialization.data(withJSONObject: (0..<150).map { ["name": "c\($0)", "domain": "example.com"] })
+        #expect(try await importError(many, into: batches.endpoint)
+            == "导入中断：已导入 100 条 Cookie，其余未导入。与浏览器的调试连接已断开。")
+
+        // A refused batch is retried one cookie at a time, and the connection drops after the first.
+        let single = try await FakeDevTools.start { _, params in
+            let names = (params["cookies"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
+            if names.count > 1 { return .error(-32602, "Invalid cookie fields") }
+            return names == ["c0"] ? .result([:]) : .hangUp
+        }
+        defer { single.stop() }
+        let few = Data(#"[{"name": "c0", "domain": "example.com"}, {"name": "c1", "domain": "example.com"}]"#.utf8)
+        #expect(try await importError(few, into: single.endpoint)
+            == "导入中断：已导入 1 条 Cookie，其余未导入。与浏览器的调试连接已断开。")
+    }
+
+    private func importError(_ data: Data, into endpoint: URL) async throws -> String {
+        do {
+            _ = try await CookieTransfer.importCookies(data, into: endpoint)
+        } catch let error as ProfileError {
+            return error.localizedDescription
+        }
+        throw VerificationFailure.message("The import did not fail")
     }
 }
 
