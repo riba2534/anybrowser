@@ -97,6 +97,7 @@ final class Workbench: ObservableObject {
         if stored.port != port { return true }
         if let running = runningConfigurations[id] {
             return running.fingerprint != stored.fingerprint || running.proxy != stored.proxy
+                || running.launch != stored.launch || running.passkeyBox != stored.passkeyBox
         }
         return runtime?.matchesRunningConfiguration(stored) != true
     }

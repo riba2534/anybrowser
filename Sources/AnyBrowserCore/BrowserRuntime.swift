@@ -135,6 +135,7 @@ public final class BrowserRuntime: ObservableObject {
             guard ProcessInspection.portAvailable(profile.port) else {
                 throw BrowserRuntimeError.message("调试端口 \(profile.port) 已占用，请修改此 Profile 的端口。")
             }
+            try profile.launch.checkExtensionDirectories()
             try PasskeyBoxInstall.prepare(bundled: engine.passkeyBoxDirectory, in: storage, for: id, account: passkeyBox)
             try ProxyAuthExtension.prepare(for: profile, in: storage)
             let child = Process()
