@@ -33,14 +33,32 @@ struct Workspace: View {
             Button("保存并继续") { workbench.resolveNavigation(destination, saveChanges: true) }
             Button("放弃修改", role: .destructive) { workbench.resolveNavigation(destination, saveChanges: false) }
             Button("取消", role: .cancel) { workbench.pendingDestination = nil }
-        } message: { _ in
-            Text("当前 Profile 有尚未保存的修改。")
+        } message: { destination in
+            if case .clone = destination {
+                Text("当前 Profile 有尚未保存的修改。复制的是保存后的配置。")
+            } else {
+                Text("当前 Profile 有尚未保存的修改。")
+            }
+        }
+        .sheet(isPresented: $workbench.showingPasskeyBox) {
+            PasskeyBoxSettings(workbench: workbench)
+        }
+        .sheet(isPresented: $workbench.showingAutomation) {
+            AutomationSettings(workbench: workbench)
+        }
+        .sheet(isPresented: $workbench.showingBatchCreate) {
+            BatchCreateSheet(workbench: workbench)
         }
         .alert("移除 Profile？", isPresented: showRemovalAlert, presenting: removeCandidate) { candidate in
-            Button("移除", role: .destructive) { workbench.remove(candidate.id) }
+            Button("仅移除记录") {
+                Task { await workbench.removeProfile(candidate.id, deletingBrowserData: false) }
+            }
+            Button("移除并删除浏览器资料", role: .destructive) {
+                Task { await workbench.removeProfile(candidate.id, deletingBrowserData: true) }
+            }
             Button("取消", role: .cancel) {}
         } message: { candidate in
-            Text("「\(candidate.name)」将从列表移除。浏览器资料保留在本机。")
+            Text("「\(candidate.name)」将从列表移除，AnyBrowser 为它生成的扩展文件（含 Passkey Box 和代理密码）一并删除。仅移除记录会把浏览器资料留在本机；删除浏览器资料会同时清除它的 Cookie、登录状态、历史记录和扩展数据，删除后无法恢复。")
         }
     }
 
@@ -49,8 +67,11 @@ struct Workspace: View {
             brand
                 .padding(.horizontal, 20)
                 .padding(.top, 48)
-                .padding(.bottom, 26)
-            HStack {
+                .padding(.bottom, 20)
+            LibrarySearchField(library: workbench.library)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 14)
+            HStack(spacing: 8) {
                 Text("Profiles")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(WorkbenchPalette.muted)
@@ -59,14 +80,30 @@ struct Workspace: View {
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundColor(WorkbenchPalette.muted)
                     .accessibilityLabel("Profile 数量 \(workbench.profiles.count)")
+                LibrarySortMenu(library: workbench.library)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 8)
 
             ScrollView {
-                LazyVStack(spacing: 4) {
-                    ForEach(workbench.profiles) { profile in
-                        profileRow(profile)
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    let sections = workbench.librarySections
+                    // Headers only help once at least one Profile has a group.
+                    let showsHeaders = sections.contains { !$0.group.isEmpty }
+                    ForEach(sections, id: \.group) { section in
+                        if showsHeaders {
+                            sectionHeader(section)
+                        }
+                        ForEach(section.profiles) { profile in
+                            profileRow(profile)
+                        }
+                    }
+                    if sections.isEmpty && !workbench.profiles.isEmpty {
+                        Text("没有匹配的 Profile")
+                            .font(.system(size: 12))
+                            .foregroundColor(WorkbenchPalette.muted)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
                     }
                     if let draft = workbench.draft, workbench.saved == nil {
                         profileRow(draft.profile, isDraft: true)
@@ -74,22 +111,31 @@ struct Workspace: View {
                 }
                 .padding(.horizontal, 12)
             }
-            Button {
-                workbench.request(.new)
-            } label: {
-                Label("新建 Profile", systemImage: "plus")
-                    .frame(maxWidth: .infinity)
+            Group {
+                if workbench.batchSelection.isEmpty {
+                    Button {
+                        workbench.request(.new)
+                    } label: {
+                        Label("新建 Profile", systemImage: "plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(WorkbenchButtonStyle(.quiet))
+                    .disabled(workbench.store == nil)
+                    .accessibilityIdentifier("new-profile")
+                } else {
+                    LibraryBatchBar(workbench: workbench)
+                }
             }
-            .buttonStyle(WorkbenchButtonStyle(.quiet))
-            .disabled(workbench.store == nil)
-            .accessibilityIdentifier("new-profile")
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
 
             Rectangle().fill(WorkbenchPalette.rule).frame(height: 1)
-            engineFootnote
-                .padding(.horizontal, 20)
-                .padding(.vertical, 16)
+            VStack(spacing: 12) {
+                passkeyBoxFootnote
+                engineFootnote
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
         }
         .frame(maxHeight: .infinity)
         .background(WorkbenchPalette.sidebar)
@@ -125,18 +171,41 @@ struct Workspace: View {
         .accessibilityHidden(true)
     }
 
+    private func sectionHeader(_ section: ProfileLibrary.Section) -> some View {
+        HStack(spacing: 6) {
+            Text(section.group.isEmpty ? "未分组" : section.group)
+                .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text(section.profiles.count.formatted())
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+        }
+        .foregroundColor(WorkbenchPalette.muted)
+        .padding(.horizontal, 8)
+        .padding(.top, 10)
+        .padding(.bottom, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+
     private func profileRow(_ profile: BrowserProfile, isDraft: Bool = false) -> some View {
         let isSelected = profile.id == workbench.selectedID
+        let isPicked = !isDraft && workbench.library.selection.contains(profile.id)
         let state = workbench.state(for: profile.id)
         return Button {
-            workbench.request(.profile(profile.id))
+            if !isDraft, NSEvent.modifierFlags.contains(.command) {
+                workbench.library.toggle(profile.id)
+            } else {
+                workbench.request(.profile(profile.id))
+            }
         } label: {
             HStack(spacing: 9) {
-                Image(systemName: platformIcon(profile.fingerprint.platform))
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(WorkbenchPalette.ink)
+                Image(systemName: isPicked ? "checkmark" : platformIcon(profile.fingerprint.platform))
+                    .font(.system(size: 13, weight: isPicked ? .bold : .medium))
+                    .foregroundColor(isPicked ? .white : WorkbenchPalette.ink)
                     .frame(width: 30, height: 30)
-                    .background(WorkbenchPalette.iconSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(isPicked ? Color.accentColor : WorkbenchPalette.iconSurface,
+                                in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(profile.name.isEmpty ? "未命名 Profile" : profile.name)
@@ -168,9 +237,42 @@ struct Workspace: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if !isDraft {
+                Button(isPicked ? "取消选择" : "加入批量选择") { workbench.library.toggle(profile.id) }
+            }
+        }
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityValue(isPicked ? "已加入批量选择" : "")
         .accessibilityIdentifier("profile-row-\(profile.id.uuidString)")
-        .help(profile.name)
+        .help(isDraft ? profile.name : "\(profile.name)（按住 Command 点击可多选）")
+    }
+
+    private var passkeyBoxFootnote: some View {
+        Button {
+            workbench.showingPasskeyBox = true
+        } label: {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(workbench.passkeyBoxAccount == nil ? WorkbenchPalette.amber : WorkbenchPalette.green)
+                    .frame(width: 6, height: 6)
+                    .accessibilityHidden(true)
+                Text("Passkey Box")
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 2)
+                Text(workbench.passkeyBoxAccount?.username ?? "未设置账号")
+                    .font(.system(size: 10))
+                    .foregroundColor(WorkbenchPalette.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(workbench.store == nil)
+        .help("设置各 Profile 内置 Passkey Box 使用的账号")
+        .accessibilityIdentifier("passkey-box-account")
     }
 
     private var engineFootnote: some View {
@@ -206,6 +308,24 @@ struct Workspace: View {
                     .accessibilityAddTraits(.isHeader)
             }
             Spacer(minLength: 0)
+            if workbench.saved != nil {
+                Menu {
+                    Button("复制为新 Profile") { workbench.request(.clone) }
+                    Divider()
+                    Button("导出 Cookie…") { workbench.exportCookies(value.id) }
+                        .disabled(!state.isRunning)
+                    Button("导入 Cookie…") { workbench.importCookies(value.id) }
+                        .disabled(!state.isRunning)
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .disabled(busy)
+                .help("更多操作")
+                .accessibilityIdentifier("profile-actions")
+            }
             if state.isRunning {
                 Button {
                     Task { await workbench.stop(value.id) }
@@ -252,13 +372,7 @@ struct Workspace: View {
                     if let engineError = workbench.engineError {
                         message(engineError, error: true, dismissible: false)
                     }
-                    ProfileEditor(
-                        draft: draft,
-                        state: state,
-                        pendingRestart: workbench.hasPendingRestart(id),
-                        copyAddress: workbench.copyAddress,
-                        randomize: workbench.randomize
-                    )
+                    ProfileEditor(draft: draft, workbench: workbench)
                     .id(id)
                     .disabled(workbench.isBusy(id))
                 }
@@ -283,7 +397,8 @@ struct Workspace: View {
                     Label("移除 Profile", systemImage: "trash")
                 }
                 .buttonStyle(WorkbenchButtonStyle(.quiet))
-                .disabled(workbench.isBusy(value.id) || workbench.state(for: value.id).isRunning)
+                .disabled(workbench.removalBlocker(value.id) != nil)
+                .help(workbench.removalBlocker(value.id) ?? "移除此 Profile")
                 .accessibilityIdentifier("remove-profile")
             }
             Spacer()

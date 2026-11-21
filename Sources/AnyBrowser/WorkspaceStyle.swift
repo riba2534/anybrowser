@@ -149,3 +149,56 @@ extension BrowserRunState {
         }
     }
 }
+
+extension View {
+    /// The rounded surface and border every input field uses.
+    func fieldSurface(focused: Bool = false) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        return background(WorkbenchPalette.field, in: shape)
+            .overlay { shape.strokeBorder(focused ? Color.accentColor : WorkbenchPalette.rule, lineWidth: 1) }
+    }
+}
+
+/// An error shown inline in a form or sheet.
+struct ErrorLabel: View {
+    let message: String
+
+    init(_ message: String) {
+        self.message = message
+    }
+
+    var body: some View {
+        Label(message, systemImage: "exclamationmark.circle")
+            .font(.system(size: 12))
+            .foregroundColor(WorkbenchPalette.danger)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+    }
+}
+
+/// A settings sheet with a title and a caption above its content.
+struct WorkbenchSheet<Content: View>: View {
+    let title: String
+    let caption: String
+    let width: CGFloat
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.system(size: 18, weight: .semibold))
+                    .accessibilityAddTraits(.isHeader)
+                Text(caption)
+                    .font(.system(size: 12))
+                    .foregroundColor(WorkbenchPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            content
+        }
+        .padding(24)
+        .frame(width: width)
+        .background(WorkbenchPalette.workspace)
+        .foregroundColor(WorkbenchPalette.ink)
+    }
+}

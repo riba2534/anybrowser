@@ -73,14 +73,25 @@ public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
     public var port: Int
     public var fingerprint: FingerprintSettings
     public var proxy: String
+    /// Free-form group shown in the sidebar; empty means ungrouped.
+    public var group: String
+    public var notes: String
+    /// This Profile's own Passkey Box account; nil uses the account set in AnyBrowser.
+    public var passkeyBox: PasskeyBoxAccount?
+    public var launch: LaunchOptions
 
     public init(id: UUID = UUID(), name: String, port: Int, fingerprint: FingerprintSettings,
-                proxy: String = BrowserProfile.defaultProxy) {
+                proxy: String = BrowserProfile.defaultProxy, group: String = "", notes: String = "",
+                passkeyBox: PasskeyBoxAccount? = nil, launch: LaunchOptions = LaunchOptions()) {
         self.id = id
         self.name = name
         self.port = port
         self.fingerprint = fingerprint
         self.proxy = proxy
+        self.group = group
+        self.notes = notes
+        self.passkeyBox = passkeyBox
+        self.launch = launch
     }
 
     public init(from decoder: Decoder) throws {
@@ -90,6 +101,10 @@ public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
         port = try data.decode(Int.self, forKey: .port)
         fingerprint = try data.decode(FingerprintSettings.self, forKey: .fingerprint)
         proxy = try data.decodeIfPresent(String.self, forKey: .proxy) ?? Self.defaultProxy
+        group = try data.decodeIfPresent(String.self, forKey: .group) ?? ""
+        notes = try data.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        passkeyBox = try data.decodeIfPresent(PasskeyBoxAccount.self, forKey: .passkeyBox)
+        launch = try data.decodeIfPresent(LaunchOptions.self, forKey: .launch) ?? LaunchOptions()
     }
 }
 
@@ -113,7 +128,9 @@ extension BrowserProfile {
     public func validated() throws -> BrowserProfile {
         var result = self
         result.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !result.name.isEmpty, result.name.count <= 80,
+        // Combining marks can stack without limit on one character, so scalars are bounded too,
+        // generously enough for emoji sequences (up to 8 scalars per character).
+        guard !result.name.isEmpty, result.name.count <= 80, result.name.unicodeScalars.count <= 640,
               !result.name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
             throw ProfileError.invalid("输入 1–80 字的 Profile 名称。")
         }
@@ -122,78 +139,79 @@ extension BrowserProfile {
         }
         try fingerprint.validate()
         result.proxy = proxy.trimmingCharacters(in: .whitespacesAndNewlines)
-        _ = try result.proxyServer()
+        _ = try ProxyEndpoint.parse(result.proxy)
+        result.group = group.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard result.group.count <= 40, result.group.unicodeScalars.count <= 320,
+              !result.group.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            throw ProfileError.invalid("分组名称最多 40 个字符。")
+        }
+        guard notes.count <= 2000, notes.unicodeScalars.count <= 16000 else {
+            throw ProfileError.invalid("备注最多 2000 个字符。")
+        }
+        result.passkeyBox = try passkeyBox?.validated()
+        result.launch = try launch.validated()
         return result
     }
 
-    public func launchArguments(userDataDirectory: URL) -> [String] {
-        let settings = fingerprint
+    /// Chromium arguments for this Profile. `extensions` are the unpacked extension directories
+    /// it loads; start URLs always come last.
+    public func launchArguments(userDataDirectory: URL, extensions: [URL] = []) -> [String] {
         var arguments = [
             "--user-data-dir=\(userDataDirectory.path)",
             "--remote-debugging-port=\(port)",
             "--no-first-run",
             "--no-default-browser-check",
-            "--fingerprint=\(settings.seed)",
+            "--fingerprint=\(fingerprint.seed)",
         ]
-        if let proxyServer = try? proxyServer() {
-            arguments.append("--proxy-server=\(proxyServer)")
+        if let endpoint = try? ProxyEndpoint.parse(proxy) {
+            arguments.append("--proxy-server=\(endpoint.server)")
         }
-        if let platform = settings.platform {
+        arguments += fingerprint.arguments()
+        if !extensions.isEmpty {
+            // Chromium parses --load-extension as a comma-separated list.
+            arguments.append("--load-extension=\(extensions.map(\.path).joined(separator: ","))")
+        }
+        arguments += launch.arguments()
+        return arguments
+    }
+}
+
+extension FingerprintSettings {
+    /// The fingerprint switches after `--fingerprint=<seed>`.
+    func arguments() -> [String] {
+        var arguments: [String] = []
+        if let platform {
             arguments.append("--fingerprint-platform=\(platform.rawValue)")
         }
-        if !settings.platformVersion.isEmpty {
-            arguments.append("--fingerprint-platform-version=\(settings.platformVersion)")
+        if !platformVersion.isEmpty {
+            arguments.append("--fingerprint-platform-version=\(platformVersion)")
         }
-        if let brand = settings.brand {
+        if let brand {
             arguments.append("--fingerprint-brand=\(brand.rawValue)")
         }
-        if !settings.brandVersion.isEmpty {
-            arguments.append("--fingerprint-brand-version=\(settings.brandVersion)")
+        if !brandVersion.isEmpty {
+            arguments.append("--fingerprint-brand-version=\(brandVersion)")
         }
-        if let cpuCount = settings.cpuCount {
+        if let cpuCount {
             arguments.append("--fingerprint-hardware-concurrency=\(cpuCount)")
         }
-        if !settings.language.isEmpty {
-            arguments.append("--lang=\(settings.language)")
-            let base = settings.language.split(separator: "-").first.map(String.init)
-            let accepted = base == settings.language ? settings.language : [settings.language, base].compactMap { $0 }.joined(separator: ",")
+        if !language.isEmpty {
+            arguments.append("--lang=\(language)")
+            let base = language.split(separator: "-").first.map(String.init)
+            let accepted = base == language ? language : [language, base].compactMap { $0 }.joined(separator: ",")
             arguments.append("--accept-lang=\(accepted)")
         }
-        if !settings.timeZone.isEmpty {
-            arguments.append("--timezone=\(settings.timeZone)")
+        if !timeZone.isEmpty {
+            arguments.append("--timezone=\(timeZone)")
         }
-        let disabled = FingerprintAdjustment.allCases.filter { !settings.adjustments.contains($0) }
+        // The engine has no Linux GPU values to spoof WebGL with; say so rather than rely on it.
+        let disabled = FingerprintAdjustment.allCases.filter {
+            !adjustments.contains($0) || ($0 == .gpu && platform == .linux)
+        }
         if !disabled.isEmpty {
             arguments.append("--disable-spoofing=\(disabled.map(\.rawValue).joined(separator: ","))")
         }
         return arguments
-    }
-
-    private func proxyServer() throws -> String? {
-        let address = proxy.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !address.isEmpty else { return nil }
-        let invalid = ProfileError.invalid("代理须为主机:端口，或使用 http://、https://、socks5://，无需填写用户名和密码。")
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.:/[]")
-        guard address.utf8.count <= 512, address.unicodeScalars.allSatisfy(allowed.contains) else { throw invalid }
-
-        let uri = address.contains("://") ? address : "http://\(address)"
-        guard let parts = URLComponents(string: uri), let scheme = parts.scheme?.lowercased(),
-              ["http", "https", "socks5"].contains(scheme),
-              let host = parts.host?.lowercased(), !host.isEmpty,
-              let port = parts.port, (1...65535).contains(port),
-              parts.path.isEmpty || parts.path == "/" else { throw invalid }
-        if host.hasPrefix("[") {
-            var ip = in6_addr()
-            let literal = String(host.dropFirst().dropLast())
-            guard host.hasSuffix("]"), inet_pton(AF_INET6, literal, &ip) == 1 else { throw invalid }
-        } else {
-            let name = host.hasSuffix(".") ? String(host.dropLast()) : host
-            guard name.utf8.count <= 253, name.split(separator: ".", omittingEmptySubsequences: false).allSatisfy({
-                !$0.isEmpty && $0.utf8.count <= 63 && $0.first != "-" && $0.last != "-"
-                    && !$0.contains(":") && !$0.contains("[") && !$0.contains("]")
-            }), !name.isEmpty else { throw invalid }
-        }
-        return "\(scheme)://\(host):\(port)"
     }
 }
 
@@ -219,13 +237,22 @@ extension FingerprintSettings {
         if brand == .opera || brand == .vivaldi, brandVersion.isEmpty {
             throw ProfileError.invalid("Opera 和 Vivaldi 需要显式填写品牌版本。")
         }
-        if !language.isEmpty,
-           language.range(of: #"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$"#, options: .regularExpression) != language.startIndex..<language.endIndex {
+        if !language.isEmpty, !Self.isLanguageTag(language) {
             throw ProfileError.invalid("输入有效的语言标签，例如 zh-CN 或 en-US。")
         }
-        if !timeZone.isEmpty, !TimeZone.knownTimeZoneIdentifiers.contains(timeZone) && timeZone != "UTC" {
+        if !timeZone.isEmpty, !Self.isTimeZone(timeZone) {
             throw ProfileError.invalid("输入 IANA 时区，例如 Asia/Shanghai 或 UTC。")
         }
+    }
+
+    /// A language tag such as zh-CN or en-US, as a whole.
+    static func isLanguageTag(_ text: String) -> Bool {
+        text.range(of: #"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$"#, options: .regularExpression) == text.startIndex..<text.endIndex
+    }
+
+    /// An IANA time zone this Mac knows, or UTC.
+    static func isTimeZone(_ text: String) -> Bool {
+        TimeZone.knownTimeZoneIdentifiers.contains(text) || text == "UTC"
     }
 
     mutating func randomize(_ fields: Set<FingerprintField>, excluding seeds: Set<Int>) {
@@ -235,26 +262,19 @@ extension FingerprintSettings {
         if fields.contains(.platform) {
             platform = BrowserPlatform.allCases.randomElement()
         }
-        if fields.contains(.platformVersion) {
-            platformVersion = switch platform {
-            case .macOS: ["15.7.1", "26.2.0", "26.4.1"].randomElement()!
-            case .windows: "19.0.0"
-            case .linux: ["6.8.0", "6.14.0"].randomElement()!
-            case nil: ""
-            }
+        // A version kept from the previous platform or brand would contradict the new one.
+        if fields.contains(.platformVersion) || fields.contains(.platform) && !platformVersion.isEmpty {
+            platformVersion = Self.randomPlatformVersion(for: platform)
         }
         if fields.contains(.brand) {
-            let brands = fields.contains(.brandVersion) || !brandVersion.isEmpty
-                ? BrowserBrand.allCases : [.chrome, .edge]
-            brand = brands.randomElement()
+            brand = BrowserBrand.allCases.randomElement()
         }
         if fields.contains(.brandVersion) {
-            brandVersion = switch brand {
-            case .edge: ["148.0.3967.54", "148.0.3967.96", "148.0.3967.73"].randomElement()!
-            case .opera: ["120.0", "121.0"].randomElement()!
-            case .vivaldi: ["7.5", "7.6"].randomElement()!
-            default: ["148.0.7778.215", "148.0.7778.217", "148.0.7778.168"].randomElement()!
-            }
+            brandVersion = Self.randomBrandVersion(for: brand)
+        } else if fields.contains(.brand) {
+            // Opera and Vivaldi have no engine default; an empty Chrome or Edge version follows the engine.
+            brandVersion = brand == .opera || brand == .vivaldi || !brandVersion.isEmpty
+                ? Self.randomBrandVersion(for: brand) : ""
         }
         if fields.contains(.cpuCount) {
             cpuCount = [4, 6, 8, 10, 12, 16, 24, 32].randomElement()
@@ -267,9 +287,36 @@ extension FingerprintSettings {
         }
         if fields.contains(.adjustments) {
             adjustments = Set(FingerprintAdjustment.allCases.filter { _ in Bool.random() })
-            if platform == .linux {
-                adjustments.remove(.gpu)
-            }
+        }
+        adaptToPlatform()
+    }
+
+    /// Drops what the platform cannot use: a version without a platform, and WebGL spoofing on Linux.
+    public mutating func adaptToPlatform() {
+        if platform == nil {
+            platformVersion = ""
+        }
+        if platform == .linux {
+            adjustments.remove(.gpu)
+        }
+    }
+
+    private static func randomPlatformVersion(for platform: BrowserPlatform?) -> String {
+        switch platform {
+        case .macOS: return ["15.7.1", "26.2.0", "26.4.1"].randomElement()!
+        case .windows: return "19.0.0"
+        case .linux: return ["6.8.0", "6.14.0"].randomElement()!
+        case nil: return ""
+        }
+    }
+
+    private static func randomBrandVersion(for brand: BrowserBrand?) -> String {
+        switch brand {
+        case .chrome: return ["148.0.7778.215", "148.0.7778.217", "148.0.7778.168"].randomElement()!
+        case .edge: return ["148.0.3967.54", "148.0.3967.96", "148.0.3967.73"].randomElement()!
+        case .opera: return ["120.0", "121.0"].randomElement()!
+        case .vivaldi: return ["7.5", "7.6"].randomElement()!
+        case nil: return ""
         }
     }
 
