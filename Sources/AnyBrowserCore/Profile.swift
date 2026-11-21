@@ -202,7 +202,10 @@ extension FingerprintSettings {
         if !timeZone.isEmpty {
             arguments.append("--timezone=\(timeZone)")
         }
-        let disabled = FingerprintAdjustment.allCases.filter { !adjustments.contains($0) }
+        // The engine has no Linux GPU values to spoof WebGL with; say so rather than rely on it.
+        let disabled = FingerprintAdjustment.allCases.filter {
+            !adjustments.contains($0) || ($0 == .gpu && platform == .linux)
+        }
         if !disabled.isEmpty {
             arguments.append("--disable-spoofing=\(disabled.map(\.rawValue).joined(separator: ","))")
         }
@@ -248,26 +251,19 @@ extension FingerprintSettings {
         if fields.contains(.platform) {
             platform = BrowserPlatform.allCases.randomElement()
         }
-        if fields.contains(.platformVersion) {
-            platformVersion = switch platform {
-            case .macOS: ["15.7.1", "26.2.0", "26.4.1"].randomElement()!
-            case .windows: "19.0.0"
-            case .linux: ["6.8.0", "6.14.0"].randomElement()!
-            case nil: ""
-            }
+        // A version kept from the previous platform or brand would contradict the new one.
+        if fields.contains(.platformVersion) || fields.contains(.platform) && !platformVersion.isEmpty {
+            platformVersion = Self.randomPlatformVersion(for: platform)
         }
         if fields.contains(.brand) {
-            let brands = fields.contains(.brandVersion) || !brandVersion.isEmpty
-                ? BrowserBrand.allCases : [.chrome, .edge]
-            brand = brands.randomElement()
+            brand = BrowserBrand.allCases.randomElement()
         }
         if fields.contains(.brandVersion) {
-            brandVersion = switch brand {
-            case .edge: ["148.0.3967.54", "148.0.3967.96", "148.0.3967.73"].randomElement()!
-            case .opera: ["120.0", "121.0"].randomElement()!
-            case .vivaldi: ["7.5", "7.6"].randomElement()!
-            default: ["148.0.7778.215", "148.0.7778.217", "148.0.7778.168"].randomElement()!
-            }
+            brandVersion = Self.randomBrandVersion(for: brand)
+        } else if fields.contains(.brand) {
+            // Opera and Vivaldi have no engine default; an empty Chrome or Edge version follows the engine.
+            brandVersion = brand == .opera || brand == .vivaldi || !brandVersion.isEmpty
+                ? Self.randomBrandVersion(for: brand) : ""
         }
         if fields.contains(.cpuCount) {
             cpuCount = [4, 6, 8, 10, 12, 16, 24, 32].randomElement()
@@ -280,9 +276,36 @@ extension FingerprintSettings {
         }
         if fields.contains(.adjustments) {
             adjustments = Set(FingerprintAdjustment.allCases.filter { _ in Bool.random() })
-            if platform == .linux {
-                adjustments.remove(.gpu)
-            }
+        }
+        adaptToPlatform()
+    }
+
+    /// Drops what the platform cannot use: a version without a platform, and WebGL spoofing on Linux.
+    public mutating func adaptToPlatform() {
+        if platform == nil {
+            platformVersion = ""
+        }
+        if platform == .linux {
+            adjustments.remove(.gpu)
+        }
+    }
+
+    private static func randomPlatformVersion(for platform: BrowserPlatform?) -> String {
+        switch platform {
+        case .macOS: return ["15.7.1", "26.2.0", "26.4.1"].randomElement()!
+        case .windows: return "19.0.0"
+        case .linux: return ["6.8.0", "6.14.0"].randomElement()!
+        case nil: return ""
+        }
+    }
+
+    private static func randomBrandVersion(for brand: BrowserBrand?) -> String {
+        switch brand {
+        case .chrome: return ["148.0.7778.215", "148.0.7778.217", "148.0.7778.168"].randomElement()!
+        case .edge: return ["148.0.3967.54", "148.0.3967.96", "148.0.3967.73"].randomElement()!
+        case .opera: return ["120.0", "121.0"].randomElement()!
+        case .vivaldi: return ["7.5", "7.6"].randomElement()!
+        case nil: return ""
         }
     }
 

@@ -7,6 +7,7 @@ struct FingerprintCard: View {
     @ObservedObject var workbench: Workbench
 
     @State private var showRandomizer = false
+    @State private var showPresets = false
     @State private var randomFields: Set<FingerprintField> = [.seed]
     private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
 
@@ -16,6 +17,16 @@ struct FingerprintCard: View {
                 HStack(alignment: .center, spacing: 12) {
                     CardHeading(title: "浏览器指纹", icon: "switch.2")
                     Spacer(minLength: 1)
+                    Button {
+                        showPresets.toggle()
+                    } label: {
+                        Label("身份模板", systemImage: "person.crop.rectangle")
+                    }
+                    .buttonStyle(WorkbenchButtonStyle(.neutral))
+                    .accessibilityIdentifier("identity-presets")
+                    .popover(isPresented: $showPresets, arrowEdge: .bottom) {
+                        presetMenu
+                    }
                     Button {
                         showRandomizer.toggle()
                     } label: {
@@ -28,6 +39,7 @@ struct FingerprintCard: View {
                     }
                 }
                 fingerprintFields
+                consistencyWarnings
             }
 
             WorkbenchCard {
@@ -41,13 +53,13 @@ struct FingerprintCard: View {
                             .accessibilityIdentifier("adjustment-\(adjustment.rawValue)")
                     }
                 }
-                Text("设备内存由种子决定。WebGL 默认使用 Windows 档位，选择 Linux 时不可用。")
+                Text("设备内存由种子决定。WebGL 参数按平台改写，未选平台时按 Windows；平台为 Linux 时不改写。")
                     .font(.system(size: 12))
                     .foregroundColor(WorkbenchPalette.muted)
             }
         }
-        .onChange(of: draft.profile.fingerprint.platform) { platform in
-            if platform == nil { draft.profile.fingerprint.platformVersion = "" }
+        .onChange(of: draft.profile.fingerprint.platform) { _ in
+            draft.profile.fingerprint.adaptToPlatform()
         }
         .onChange(of: draft.profile.fingerprint.brand) { brand in
             if brand == nil { draft.profile.fingerprint.brandVersion = "" }
@@ -86,6 +98,55 @@ struct FingerprintCard: View {
         case .opera, .vivaldi: return "请输入版本"
         case .chrome, .edge: return "引擎默认"
         }
+    }
+
+    /// Hints only: a mismatch never blocks saving or launching.
+    @ViewBuilder private var consistencyWarnings: some View {
+        let issues = draft.profile.consistencyIssues(engineVersion: workbench.engineVersion,
+                                                      exit: workbench.proxyCenter.exit(for: draft.profile.id))
+        if !issues.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(issues) { issue in
+                    Label(issue.message, systemImage: "exclamationmark.triangle")
+                        .font(.system(size: 12))
+                        .foregroundColor(WorkbenchPalette.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("consistency-\(issue.id)")
+                }
+            }
+        }
+    }
+
+    private var presetMenu: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("套用身份模板")
+                .font(.system(size: 16, weight: .semibold))
+                .accessibilityAddTraits(.isHeader)
+            Text("调整平台、版本、品牌、CPU 和改写项，保留种子、语言和时区。")
+                .font(.system(size: 12))
+                .foregroundColor(WorkbenchPalette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 6)
+            ForEach(IdentityPreset.all) { preset in
+                Button {
+                    apply(preset)
+                } label: {
+                    Text(preset.title)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(WorkbenchButtonStyle(.quiet))
+                .accessibilityIdentifier("identity-preset-\(preset.id)")
+            }
+        }
+        .padding(20)
+        .frame(width: 280)
+    }
+
+    private func apply(_ preset: IdentityPreset) {
+        showPresets = false
+        preset.apply(to: &draft.profile.fingerprint)
+        draft.cpuText = draft.profile.fingerprint.cpuCount.map(String.init) ?? ""
+        workbench.notice = Workbench.Notice(text: "已套用「\(preset.title)」，保存后应用。")
     }
 
     private var randomizer: some View {
