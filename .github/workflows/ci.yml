@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version
+      - name: Build and test
+        run: swift test --arch arm64
+      - uses: actions/cache@v4
+        with:
+          path: .build/engine-cache
+          key: engine-${{ hashFiles('scripts/build-app.sh') }}
+      - name: Package the app
+        run: ./scripts/build-app.sh
+      - name: Check the package
+        run: |
+          /usr/bin/codesign --verify --deep --strict dist/AnyBrowser.app
+          test -f dist/AnyBrowser.app/Contents/Resources/Extensions/PasskeyBox/manifest.json
