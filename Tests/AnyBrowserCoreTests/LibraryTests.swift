@@ -313,6 +313,82 @@ struct LibraryTests {
         #expect(store.profiles.count == 5)
     }
 
+    @Test("A batch is saved in one transaction, so a failure leaves nothing to create twice")
+    func batchIsAllOrNothing() throws {
+        let directory = try scratchDirectory("library")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        try execute("""
+            CREATE TRIGGER third_fails BEFORE INSERT ON profiles WHEN (SELECT COUNT(*) FROM profiles) >= 2
+            BEGIN SELECT RAISE(ABORT, 'full'); END
+            """, in: directory)
+        #expect(throws: ProfileError.self) { try store.saveBatch(.init(count: 3)) }
+        #expect(store.profiles.isEmpty)
+        #expect(try rowCount("profiles", in: directory) == 0)
+
+        try execute("DROP TRIGGER third_fails", in: directory)
+        #expect(try store.saveBatch(.init(count: 3)).map(\.name) == ["Profile 1", "Profile 2", "Profile 3"])
+        #expect(try ProfileStore(directory: directory).profiles == store.profiles)
+    }
+
+    @Test("Imports point out accounts, extensions, start pages and proxies brought in from the file")
+    func importReview() throws {
+        func profile(_ port: Int, proxy: String = BrowserProfile.defaultProxy) -> BrowserProfile {
+            BrowserProfile(name: "P\(port)", port: port, fingerprint: FingerprintSettings(seed: port), proxy: proxy)
+        }
+        var accounts = [profile(9222), profile(9223)]
+        accounts[0].passkeyBox = PasskeyBoxAccount(serverURL: "https://pk.example.com", username: "u", password: "p")
+        accounts[1].passkeyBox = PasskeyBoxAccount(serverURL: "https://other.example.org/box", username: "u", password: "p")
+        var extended = profile(9224)
+        extended.launch.extensionDirectories = ["/tmp/Ext"]
+        var opening = profile(9225)
+        opening.launch.startURLs = ["https://example.com/"]
+        let plain = [profile(9226), profile(9227, proxy: "http://127.0.0.1:7890"), profile(9228, proxy: "")]
+        let proxied = profile(9229, proxy: "socks5://10.0.0.1:1080")
+
+        #expect(ProfileLibrary.importReview(plain) == nil)
+        let review = try #require(ProfileLibrary.importReview(accounts + [extended, opening, proxied] + plain))
+        #expect(review == "其中 2 个使用单独的 Passkey Box 账号（other.example.org、pk.example.com），1 个加载额外扩展，"
+            + "1 个设置了启动网址，1 个使用其他代理。请确认文件来源可信，必要时在编辑器里检查。")
+    }
+
+    // MARK: Batch actions
+
+    @Test("Removal waits for batches, other operations and the browser to finish")
+    func removalBlocker() {
+        let running = BrowserRunState.running(pid: 2, port: 9222, debugReady: true)
+        #expect(ProfileLibrary.removalBlocker(state: .stopped, busy: false, batchRunning: true)?.contains("批量") == true)
+        #expect(ProfileLibrary.removalBlocker(state: .stopped, busy: true, batchRunning: false)?.contains("另一个操作") == true)
+        for state in [running, .starting, .stopping] {
+            #expect(ProfileLibrary.removalBlocker(state: state, busy: false, batchRunning: false)?.contains("停止") == true)
+        }
+        #expect(ProfileLibrary.removalBlocker(state: .stopped, busy: false, batchRunning: false) == nil)
+        #expect(ProfileLibrary.removalBlocker(state: .failed("x"), busy: false, batchRunning: false) == nil)
+    }
+
+    @Test("Batches look each Profile up again before its turn and skip ones removed meanwhile")
+    func batchRunnerLooksUpEachProfile() async {
+        let first = BrowserProfile(name: "A", port: 9222, fingerprint: FingerprintSettings(seed: 1))
+        let removed = BrowserProfile(name: "B", port: 9223, fingerprint: FingerprintSettings(seed: 2))
+        let renamed = BrowserProfile(name: "C", port: 9224, fingerprint: FingerprintSettings(seed: 3))
+        let running = BrowserProfile(name: "D", port: 9225, fingerprint: FingerprintSettings(seed: 4))
+        var saved = [first.id: first, removed.id: removed, renamed.id: renamed, running.id: running]
+        var acted: [String] = []
+        let outcome = await ProfileLibrary.runBatch([first, removed, renamed, running].map(\.id),
+                                                    lookup: { saved[$0] }, applies: { $0.name != "D" }) { profile in
+            acted.append(profile.name)
+            if profile.id == first.id {
+                saved[removed.id] = nil
+                saved[renamed.id]?.name = "C2"
+                return "代理不可达"
+            }
+            throw ProfileError.invalid("端口已占用")
+        }
+        #expect(acted == ["A", "C2"])
+        #expect(outcome.succeeded == 1 && outcome.skipped == 2)
+        #expect(outcome.summary(verb: "启动") == "已启动 1 个 Profile，跳过 2 个。1 个未能启动：C2：端口已占用。提醒：A：代理不可达")
+    }
+
     // MARK: Sidebar
 
     @Test("Sidebar search, sorting and group sections")
@@ -426,6 +502,38 @@ struct BrowserDataRemovalTests {
         try await fixture.runtime.removeData(for: UUID())
     }
 
+    @Test("Removing only the record still deletes the extension directory with its passwords")
+    func keepingBrowserDataRemovesExtensions() async throws {
+        let fixture = try DataFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let id = UUID()
+        let target = try fixture.populate(id)
+        var recordRemoved = false
+        try await fixture.runtime.removeData(for: id, keepingBrowserData: true) { recordRemoved = true }
+        #expect(recordRemoved)
+        #expect(!fixture.exists(target.extensions))
+        #expect(fixture.exists(target.data.appendingPathComponent("Cookies")))
+    }
+
+    @Test("A directory that cannot be deleted does not stop the other, and its full path is reported")
+    func deletionFailureTriesBoth() async throws {
+        let fixture = try DataFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let id = UUID()
+        let target = try fixture.populate(id)
+        let locked = target.data.appendingPathComponent("Locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: false)
+        try Data("keep".utf8).write(to: locked.appendingPathComponent("Keep"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: locked.path) }
+
+        let error = await #expect(throws: ProfileError.self) { try await fixture.runtime.removeData(for: id) }
+        #expect(message(error).contains(target.data.path + "（"))
+        #expect(!message(error).contains(target.extensions.path))
+        #expect(!fixture.exists(target.extensions))
+        #expect(fixture.exists(locked.appendingPathComponent("Keep")))
+    }
+
     @Test("Nothing is deleted when removing the record fails")
     func recordFailureKeepsData() async throws {
         let fixture = try DataFixture()
@@ -526,6 +634,8 @@ struct BrowserDataRemovalTests {
         }
         #expect(message(error).contains("路径异常"))
         #expect(!recordRemoved)
+        #expect(fixture.exists(victim.appendingPathComponent("Keep")))
+        await #expect(throws: ProfileError.self) { try await fixture.runtime.removeData(for: id, keepingBrowserData: true) }
         #expect(fixture.exists(victim.appendingPathComponent("Keep")))
     }
 

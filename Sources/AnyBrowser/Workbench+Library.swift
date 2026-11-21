@@ -10,6 +10,8 @@ final class LibraryModel: ObservableObject {
     /// Profiles picked with ⌘-click for batch actions; separate from the Profile being edited.
     @Published var selection: Set<UUID> = []
     @Published var batchRunning = false
+    /// Profiles whose files are being deleted; `Workbench.isBusy` treats them as busy.
+    @Published var removing: Set<UUID> = []
 
     func toggle(_ id: UUID) {
         if selection.remove(id) == nil { selection.insert(id) }
@@ -51,7 +53,9 @@ extension Workbench {
             let result = try store.importProfiles(from: ProfileLibrary.contents(of: url))
             var text = "已导入 \(result.profiles.count) 个 Profile"
             if result.skipped > 0 { text += "，跳过 \(result.skipped) 个无效条目" }
-            notice = Notice(text: text + "。", isError: result.profiles.isEmpty)
+            text += "。"
+            let review = ProfileLibrary.importReview(result.profiles)
+            notice = Notice(text: text + (review ?? ""), isError: result.profiles.isEmpty || review != nil)
             if draft == nil, let first = result.profiles.first { draft = ProfileDraft(first) }
         } catch {
             show(error)
@@ -90,49 +94,34 @@ extension Workbench {
     }
 
     func startBatch() async {
-        let picked = batchSelection
-        let targets = picked.filter { !state(for: $0.id).isRunning && !isBusy($0.id) }
-        await runBatch(targets, skipped: picked.count - targets.count, verb: "启动", skippedReason: "已在运行") {
+        let startable = { (profile: BrowserProfile) in !self.state(for: profile.id).isRunning && !self.isBusy(profile.id) }
+        await runBatch(verb: "启动", noneApplies: "所选 Profile 都已在运行。", applies: startable) {
             try await self.start($0)
         }
     }
 
     func stopBatch() async {
-        let picked = batchSelection
-        let targets = picked.filter { state(for: $0.id).isRunning && !isBusy($0.id) }
-        await runBatch(targets, skipped: picked.count - targets.count, verb: "停止", skippedReason: "未在运行") {
+        let stoppable = { (profile: BrowserProfile) in self.state(for: profile.id).isRunning && !self.isBusy(profile.id) }
+        await runBatch(verb: "停止", noneApplies: "所选 Profile 都未在运行。", applies: stoppable) {
             try await self.stopProfile($0.id)
             return nil
         }
     }
 
-    /// Runs one Profile at a time and sums up the outcome, with any warnings `action` returns, in a single notice.
-    private func runBatch(_ targets: [BrowserProfile], skipped: Int, verb: String, skippedReason: String,
+    /// Runs the picked Profiles one at a time and sums up the outcome in a single notice.
+    private func runBatch(verb: String, noneApplies: String, applies: (BrowserProfile) -> Bool,
                           action: (BrowserProfile) async throws -> String?) async {
-        guard !targets.isEmpty else {
-            notice = Notice(text: "所选 Profile 都\(skippedReason)。")
+        let picked = batchSelection
+        guard picked.contains(where: applies) else {
+            notice = Notice(text: noneApplies)
             return
         }
         library.batchRunning = true
         defer { library.batchRunning = false }
-        var succeeded = 0
-        var failures: [String] = []
-        var warnings: [String] = []
         notice = nil
-        for profile in targets {
-            do {
-                if let warning = try await action(profile) { warnings.append("\(profile.name)：\(warning)") }
-                succeeded += 1
-            } catch {
-                failures.append("\(profile.name)：\(error.localizedDescription)")
-            }
-        }
-        var text = "已\(verb) \(succeeded) 个 Profile"
-        if skipped > 0 { text += "，跳过 \(skipped) 个\(skippedReason)的" }
-        text += "。"
-        if !failures.isEmpty { text += "\(failures.count) 个未能\(verb)：\(failures.joined(separator: "；"))。" }
-        if !warnings.isEmpty { text += "提醒：\(warnings.joined(separator: "；"))" }
-        notice = Notice(text: text, isError: !failures.isEmpty || !warnings.isEmpty)
+        let outcome = await ProfileLibrary.runBatch(picked.map(\.id), lookup: { id in self.profiles.first { $0.id == id } },
+                                                    applies: applies, action: action)
+        notice = Notice(text: outcome.summary(verb: verb), isError: !outcome.failures.isEmpty || !outcome.warnings.isEmpty)
     }
 
     /// Moves the picked Profiles into `group`; an empty group removes them from their group.
@@ -158,18 +147,36 @@ extension Workbench {
 
     // MARK: Removal
 
-    /// Removes the record, then the browser data. Refuses while the Profile runs.
-    func removeDeletingData(_ id: UUID) async {
-        guard let runtime, let store, !isBusy(id), !state(for: id).isRunning else { return }
+    /// Why the Profile cannot be removed right now, or nil.
+    func removalBlocker(_ id: UUID) -> String? {
+        ProfileLibrary.removalBlocker(state: state(for: id), busy: isBusy(id), batchRunning: library.batchRunning)
+    }
+
+    /// Removes the record, then the extension directory holding the passwords AnyBrowser wrote for the
+    /// Profile, and with `deletingBrowserData` its browser data too. Refuses while the Profile runs.
+    func removeProfile(_ id: UUID, deletingBrowserData: Bool) async {
+        if let blocker = removalBlocker(id) {
+            notice = Notice(text: blocker, isError: true)
+            return
+        }
+        guard let runtime, let store else {
+            remove(id)
+            return
+        }
         var removed = false
+        defer {
+            library.removing.remove(id)
+            library.selection.remove(id)
+        }
         do {
-            try await runtime.removeData(for: id) {
+            try await runtime.removeData(for: id, keepingBrowserData: !deletingBrowserData) {
                 remove(id)
-                removed = !store.profiles.contains { $0.id == id }
                 // remove(_:) has already shown why the record stayed.
-                if !removed { throw CancellationError() }
+                guard !store.profiles.contains(where: { $0.id == id }) else { throw CancellationError() }
+                removed = true
+                library.removing.insert(id)
             }
-            notice = Notice(text: "已移除 Profile 并删除浏览器资料。")
+            notice = Notice(text: deletingBrowserData ? "已移除 Profile 并删除浏览器资料。" : "已移除 Profile，浏览器资料保留在本机。")
         } catch {
             if removed {
                 notice = Notice(text: "已移除 Profile，但\(error.localizedDescription)", isError: true)
@@ -177,6 +184,5 @@ extension Workbench {
                 show(error)
             }
         }
-        library.selection.remove(id)
     }
 }

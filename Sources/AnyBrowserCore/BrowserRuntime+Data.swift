@@ -2,42 +2,45 @@ import Darwin
 import Foundation
 
 extension BrowserRuntime {
-    /// Deletes a Profile's browser data and extension directories, and nothing else.
-    /// Refuses while its browser runs or when either path is not the plain directory AnyBrowser created.
-    /// `beforeDeleting` runs once every check has passed (the caller removes the record there);
-    /// when it throws, nothing is deleted.
-    public func removeData(for id: UUID, beforeDeleting: () throws -> Void = {}) async throws {
+    /// Deletes a Profile's browser data and extension directories, and nothing else. With
+    /// `keepingBrowserData`, only the extension directory goes: AnyBrowser writes the Profile's
+    /// Passkey Box and proxy passwords there. Refuses while its browser runs or when a path is not
+    /// the plain directory AnyBrowser created. `beforeDeleting` runs once every check has passed
+    /// (the caller removes the record there); when it throws, nothing is deleted.
+    public func removeData(for id: UUID, keepingBrowserData: Bool = false,
+                           beforeDeleting: () throws -> Void = {}) async throws {
         switch status(for: id) {
         case .running, .starting, .stopping:
-            throw ProfileError.invalid("请先停止此 Profile 的浏览器，再删除浏览器资料。")
+            throw ProfileError.invalid("请先停止此 Profile 的浏览器，再移除。")
         case .stopped, .failed:
             break
         }
         let data = dataDirectory(for: id)
-        let targets = try [data, ProfileExtensions.root(in: storage, for: id)].filter(verifiedForRemoval)
+        let existing = try [data, ProfileExtensions.root(in: storage, for: id)].filter(verifiedForRemoval)
+        let targets = keepingBrowserData ? existing.filter { $0 != data } : existing
         var lock: Int32?
         defer { lock.map { _ = close($0) } }
-        if targets.contains(data) {
+        if existing.contains(data) {
             guard !profileInUse(data) else {
                 throw ProfileError.invalid("此 Profile 的浏览器资料正在使用，请先在浏览器中退出。")
             }
-            // Holding the runtime lock keeps a concurrent start or stop out until the data is gone.
+            // Holding the runtime lock keeps a concurrent start or stop out until the deletion is done.
             lock = try lockDirectory(data)
         }
         try beforeDeleting()
-        // Chromium data can be large; delete off the main thread.
-        let failure: String? = await Task.detached {
-            for target in targets {
+        // Chromium data can be large; delete off the main thread. One failure does not stop the rest.
+        let failures: [String] = await Task.detached {
+            targets.compactMap { target in
                 do {
                     try FileManager.default.removeItem(at: target)
+                    return nil
                 } catch {
-                    return "\(target.lastPathComponent)：\(error.localizedDescription)"
+                    return "\(target.path)（\(error.localizedDescription)）"
                 }
             }
-            return nil
         }.value
-        if let failure {
-            throw ProfileError.invalid("浏览器资料未能完全删除（\(failure)）。")
+        if !failures.isEmpty {
+            throw ProfileError.invalid("以下目录未能删除，可以手动删除：\(failures.joined(separator: "；"))")
         }
     }
 
