@@ -9,7 +9,6 @@ struct FingerprintCard: View {
     @State private var showRandomizer = false
     @State private var showPresets = false
     @State private var randomFields: Set<FingerprintField> = [.seed]
-    private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -67,7 +66,7 @@ struct FingerprintCard: View {
     }
 
     private var fingerprintFields: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+        LazyVGrid(columns: EditorInput.columns, alignment: .leading, spacing: 12) {
             EditorPicker(title: "平台", identifier: "fingerprint-platform",
                          selection: $draft.profile.fingerprint.platform,
                          choices: [(nil, "引擎默认")] + BrowserPlatform.allCases.map { (Optional($0), $0.title) })
@@ -154,7 +153,7 @@ struct FingerprintCard: View {
             Text("选择随机生成的字段")
                 .font(.system(size: 16, weight: .semibold))
                 .accessibilityAddTraits(.isHeader)
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
+            LazyVGrid(columns: EditorInput.columns, alignment: .leading, spacing: 10) {
                 ForEach(FingerprintField.allCases, id: \.self) { field in
                     Toggle(field.title, isOn: randomBinding(field))
                         .toggleStyle(.checkbox)

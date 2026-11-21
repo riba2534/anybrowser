@@ -11,7 +11,6 @@ struct IdentityCard: View {
     }
 
     @State private var verification: Verification?
-    private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
 
     var body: some View {
         WorkbenchCard {
@@ -70,7 +69,7 @@ struct IdentityCard: View {
         VStack(alignment: .leading, spacing: 12) {
             EditorInput("服务器地址", placeholder: PasskeyBoxAccount.defaultServerURL,
                         value: account.serverURL, identifier: "identity-server")
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+            LazyVGrid(columns: EditorInput.columns, alignment: .leading, spacing: 12) {
                 EditorInput("用户名", placeholder: "Passkey Box 用户名",
                             value: account.username, identifier: "identity-username")
                 EditorInput("密码", placeholder: "Passkey Box 密码",
@@ -94,11 +93,7 @@ struct IdentityCard: View {
                 .font(.system(size: 12))
                 .foregroundColor(WorkbenchPalette.green)
         case .failed(let message):
-            Label(message, systemImage: "exclamationmark.circle")
-                .font(.system(size: 12))
-                .foregroundColor(WorkbenchPalette.danger)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+            ErrorLabel(message)
         case .checking, nil:
             EmptyView()
         }

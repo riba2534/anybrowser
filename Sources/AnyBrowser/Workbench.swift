@@ -7,6 +7,8 @@ import SwiftUI
 final class Workbench: ObservableObject {
     enum Destination {
         case new, profile(UUID)
+        /// A copy of the selected Profile as saved.
+        case clone
     }
 
     struct Notice {
@@ -24,11 +26,8 @@ final class Workbench: ObservableObject {
     @Published var showingPasskeyBox = false
     @Published var showingAutomation = false
     @Published var showingBatchCreate = false
-    /// Proxy checks and exit information per Profile (Workbench+Proxy.swift).
     let proxyCenter = ProxyCenter()
-    /// Sidebar search, grouping, sorting and selection (Workbench+Library.swift).
     let library = LibraryModel()
-    /// The local automation API (Workbench+Automation.swift).
     let automation = AutomationController()
     @Published private(set) var launches: Set<UUID> = []
     private var runningConfigurations: [UUID: BrowserProfile] = [:]
@@ -62,6 +61,8 @@ final class Workbench: ObservableObject {
         draft = openedStore?.profiles.first.map(ProfileDraft.init)
         if let storageError {
             notice = Notice(text: storageError, isError: true)
+        } else if let count = openedStore?.unreadableProfiles, count > 0 {
+            notice = Notice(text: "有 \(count) 份 Profile 配置无法读取，已跳过。", isError: true)
         }
 
         openedStore?.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
@@ -73,6 +74,8 @@ final class Workbench: ObservableObject {
         }
         automation.attach(to: self)
     }
+
+    static let storeUnavailable = "本机 Profile 数据库不可用。"
 
     var profiles: [BrowserProfile] { store?.profiles ?? [] }
     var selectedID: UUID? { draft?.profile.id }
@@ -183,13 +186,15 @@ final class Workbench: ObservableObject {
     }
 
     /// Starts a saved Profile; also used by batch actions and the automation API.
-    func start(_ profile: BrowserProfile, restart: Bool = false) async throws {
+    /// Returns the proxy warning it showed, if any; the browser starts regardless.
+    @discardableResult
+    func start(_ profile: BrowserProfile, restart: Bool = false) async throws -> String? {
         guard let runtime else { throw ProfileError.invalid("内置浏览器不可用。") }
         let id = profile.id
         guard !isBusy(id) else { throw ProfileError.invalid("「\(profile.name)」正在执行另一个操作。") }
         launches.insert(id)
         defer { launches.remove(id) }
-        let warning = await proxyPreflight(profile)
+        let warning = await ProxyProbe.preflight(profile.proxy)
         if restart {
             try await runtime.stop(id)
             runningConfigurations[id] = nil
@@ -198,6 +203,7 @@ final class Workbench: ObservableObject {
         runningConfigurations[id] = profile
         store?.recordLaunch(id)
         if let warning { notice = Notice(text: warning, isError: true) }
+        return warning
     }
 
     func stop(_ id: UUID) async {
@@ -224,7 +230,7 @@ final class Workbench: ObservableObject {
 
     /// Verifies the account with the server, then saves it. Returns an error message on failure.
     func savePasskeyBox(_ account: PasskeyBoxAccount) async -> String? {
-        guard let store else { return "本机 Profile 数据库不可用。" }
+        guard let store else { return Self.storeUnavailable }
         do {
             let value = try account.validated()
             try await value.verify()
@@ -263,6 +269,8 @@ final class Workbench: ObservableObject {
                 draft = try store.map { try ProfileDraft($0.makeDraft()) }
             case .profile(let id):
                 draft = profiles.first { $0.id == id }.map(ProfileDraft.init)
+            case .clone:
+                cloneSaved()
             }
         } catch {
             show(error)

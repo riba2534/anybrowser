@@ -25,8 +25,7 @@ struct GroupField: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .frame(width: 34, height: 34)
-            .background(WorkbenchPalette.field, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(WorkbenchPalette.rule, lineWidth: 1) }
+            .fieldSurface()
             .disabled(groups.isEmpty && text.isEmpty)
             .help("选择已有分组")
             .accessibilityLabel("选择已有分组")
@@ -65,11 +64,7 @@ struct LibrarySearchField: View {
         }
         .padding(.horizontal, 9)
         .frame(height: 30)
-        .background(WorkbenchPalette.field, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(focused ? Color.accentColor : WorkbenchPalette.rule, lineWidth: 1)
-        }
+        .fieldSurface(focused: focused)
     }
 }
 
@@ -164,10 +159,7 @@ private struct GroupAssignment: View {
                 .font(.system(size: 11))
                 .foregroundColor(WorkbenchPalette.muted)
             if let error {
-                Label(error, systemImage: "exclamationmark.circle")
-                    .font(.system(size: 12))
-                    .foregroundColor(WorkbenchPalette.danger)
-                    .fixedSize(horizontal: false, vertical: true)
+                ErrorLabel(error)
             }
             HStack {
                 Spacer()
@@ -199,21 +191,14 @@ struct BatchCreateSheet: View {
     @State private var proxy = BrowserProfile.defaultProxy
     @State private var error: String?
     @State private var created: [BrowserProfile] = []
-    private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("批量新建 Profile")
-                    .font(.system(size: 18, weight: .semibold))
-                    .accessibilityAddTraits(.isHeader)
-                Text("名称按前缀自动编号，每个 Profile 使用新的指纹种子和调试端口。")
-                    .font(.system(size: 12))
-                    .foregroundColor(WorkbenchPalette.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                EditorInput("数量", placeholder: "1–50", value: $countText, identifier: "batch-count", numeric: true)
+        WorkbenchSheet(title: "批量新建 Profile",
+                       caption: "名称按前缀自动编号，每个 Profile 使用新的指纹种子和调试端口。",
+                       width: 460) {
+            LazyVGrid(columns: EditorInput.columns, alignment: .leading, spacing: 12) {
+                EditorInput("数量", placeholder: "1–\(ProfileLibrary.maxBatch)", value: $countText,
+                            identifier: "batch-count", numeric: true)
                 EditorInput("名称前缀", placeholder: "Profile", value: $prefix, identifier: "batch-prefix")
                 GroupField(text: $group, groups: workbench.profileGroups, identifier: "batch-group-field")
                 EditorPicker(title: "身份模板", identifier: "batch-identity", selection: $presetID,
@@ -221,11 +206,7 @@ struct BatchCreateSheet: View {
             }
             EditorInput("代理地址", placeholder: "留空使用系统网络设置", value: $proxy, identifier: "batch-proxy")
             if let error {
-                Label(error, systemImage: "exclamationmark.circle")
-                    .font(.system(size: 12))
-                    .foregroundColor(WorkbenchPalette.danger)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                ErrorLabel(error)
             }
             HStack(spacing: 10) {
                 Spacer()
@@ -238,17 +219,13 @@ struct BatchCreateSheet: View {
                     .accessibilityIdentifier("batch-create")
             }
         }
-        .padding(24)
-        .frame(width: 460)
-        .background(WorkbenchPalette.workspace)
-        .foregroundColor(WorkbenchPalette.ink)
         // Selecting a new Profile may ask about unsaved edits, which needs the sheet gone first.
         .onDisappear { workbench.showCreated(created) }
     }
 
     private func create() {
-        guard let count = Int(countText.trimmingCharacters(in: .whitespaces)), (1...50).contains(count) else {
-            error = "数量须为 1–50 的整数。"
+        guard let count = Int(countText.trimmingCharacters(in: .whitespaces)) else {
+            error = "数量须为 1–\(ProfileLibrary.maxBatch) 的整数。"
             return
         }
         let preset = IdentityPreset.all.first { $0.id == presetID }

@@ -1,18 +1,12 @@
 import AnyBrowserCore
-import AppKit
-import UniformTypeIdentifiers
+import Foundation
 
 extension Workbench {
     /// Saves the running Profile's cookies to a JSON file.
     func exportCookies(_ id: UUID) {
         guard let profile = profiles.first(where: { $0.id == id }), cookiesAvailable(id) else { return }
-        let panel = NSSavePanel()
-        panel.title = "导出 Cookie"
-        panel.prompt = "导出"
-        panel.allowedContentTypes = [.json]
-        panel.canCreateDirectories = true
-        panel.nameFieldStringValue = Self.cookieFileName(profile.name)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let url = FilePanels.saveLocation(title: "导出 Cookie", prompt: "导出",
+                                                name: Self.cookieFileName(profile.name)) else { return }
         Task {
             do {
                 let export = try await CookieTransfer.exportCookies(from: cookieEndpoint(id))
@@ -27,14 +21,8 @@ extension Workbench {
     /// Loads cookies from a JSON file into the running Profile.
     func importCookies(_ id: UUID) {
         guard cookiesAvailable(id) else { return }
-        let panel = NSOpenPanel()
-        panel.title = "导入 Cookie"
-        panel.prompt = "导入"
         // Cookie-Editor and EditThisCookie copy their exports to the clipboard, so pasted .txt files are common.
-        panel.allowedContentTypes = [.json, .plainText]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let url = FilePanels.file(title: "导入 Cookie", prompt: "导入", types: [.json, .plainText]) else { return }
         Task {
             do {
                 let data = try CookieTransfer.readFile(url)

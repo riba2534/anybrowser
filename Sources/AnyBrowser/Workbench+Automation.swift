@@ -36,7 +36,7 @@ final class AutomationController: ObservableObject, AutomationBackend {
     /// Saves the settings and restarts or stops the server to match. Returns an error message
     /// when the settings cannot be saved; a server that fails to listen shows up in `status`.
     func save(_ draft: AutomationConfiguration) async -> String? {
-        guard let store = workbench?.store else { return "本机 Profile 数据库不可用。" }
+        guard let store = workbench?.store else { return Workbench.storeUnavailable }
         let value: AutomationConfiguration
         do {
             value = try draft.validated()
@@ -51,7 +51,7 @@ final class AutomationController: ObservableObject, AutomationBackend {
 
     /// Replaces the token right away; the old token stops working immediately.
     func regenerateToken() async -> String? {
-        guard var value = configuration else { return "本机 Profile 数据库不可用。" }
+        guard var value = configuration else { return Workbench.storeUnavailable }
         do {
             value.token = try AutomationConfiguration.newToken()
         } catch {
@@ -139,16 +139,9 @@ struct AutomationSettings: View {
     private var automation: AutomationController { workbench.automation }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("自动化接口")
-                    .font(.system(size: 18, weight: .semibold))
-                    .accessibilityAddTraits(.isHeader)
-                Text("本机脚本可以通过 HTTP 接口列出、启动和停止 Profile，并拿到 CDP 调试地址。接口只监听 127.0.0.1，请求必须带访问令牌，网页发起的请求一律拒绝。")
-                    .font(.system(size: 12))
-                    .foregroundColor(WorkbenchPalette.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        WorkbenchSheet(title: "自动化接口",
+                       caption: "本机脚本可以通过 HTTP 接口列出、启动和停止 Profile，并拿到 CDP 调试地址。接口只监听 127.0.0.1，请求必须带访问令牌，网页发起的请求一律拒绝。",
+                       width: 500) {
             Toggle("启用自动化接口", isOn: $enabled)
                 .toggleStyle(.switch)
                 .font(.system(size: 13, weight: .medium))
@@ -163,11 +156,7 @@ struct AutomationSettings: View {
                 example(configuration)
             }
             if let error {
-                Label(error, systemImage: "exclamationmark.circle")
-                    .font(.system(size: 12))
-                    .foregroundColor(WorkbenchPalette.danger)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                ErrorLabel(error)
             }
             HStack(spacing: 10) {
                 Spacer()
@@ -181,10 +170,6 @@ struct AutomationSettings: View {
                     .accessibilityIdentifier("automation-save")
             }
         }
-        .padding(24)
-        .frame(width: 500)
-        .background(WorkbenchPalette.workspace)
-        .foregroundColor(WorkbenchPalette.ink)
         .alert("重新生成访问令牌？", isPresented: $confirmingRegeneration) {
             Button("重新生成", role: .destructive) { regenerate() }
             Button("取消", role: .cancel) {}
@@ -206,10 +191,7 @@ struct AutomationSettings: View {
                     .textSelection(.enabled)
                     .padding(.horizontal, 10)
                     .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
-                    .background(WorkbenchPalette.field, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(WorkbenchPalette.rule, lineWidth: 1)
-                    }
+                    .fieldSurface()
                     .accessibilityLabel("访问令牌")
                     .accessibilityIdentifier("automation-token")
                 Button {
@@ -305,8 +287,7 @@ struct AutomationSettings: View {
 
     private func save() {
         guard let saved = automation.configuration else { return }
-        let text = portText.trimmingCharacters(in: .whitespaces)
-        guard let port = Int(text), text.allSatisfy(\.isASCII) else {
+        guard let port = Int(portText.trimmingCharacters(in: .whitespaces)) else {
             error = "自动化接口端口须为 1024–65535。"
             return
         }

@@ -5,7 +5,7 @@ public enum ProfileLibrary {
     public static let format = "anybrowser-profiles"
     public static let version = 1
     static let maxNameLength = 80
-    static let maxBatch = 50
+    public static let maxBatch = 50
     static let maxImportBytes = 16 << 20
 
     public enum Sort: String, CaseIterable, Sendable {

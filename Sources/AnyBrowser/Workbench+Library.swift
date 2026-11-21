@@ -1,8 +1,6 @@
 import AnyBrowserCore
-import AppKit
 import Combine
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// Sidebar search, grouping, sorting and multi-selection.
 @MainActor
@@ -12,8 +10,6 @@ final class LibraryModel: ObservableObject {
     /// Profiles picked with ⌘-click for batch actions; separate from the Profile being edited.
     @Published var selection: Set<UUID> = []
     @Published var batchRunning = false
-    @Published var pendingClone = false
-    var announcedUnreadable = false
 
     func toggle(_ id: UUID) {
         if selection.remove(id) == nil { selection.insert(id) }
@@ -31,30 +27,10 @@ extension Workbench {
     /// Saved Profiles picked for batch actions, in creation order.
     var batchSelection: [BrowserProfile] { profiles.filter { library.selection.contains($0.id) } }
 
-    func announceUnreadableProfiles() {
-        guard !library.announcedUnreadable, let count = store?.unreadableProfiles, count > 0 else { return }
-        library.announcedUnreadable = true
-        notice = Notice(text: "有 \(count) 份 Profile 配置无法读取，已跳过。", isError: true)
-    }
-
     // MARK: Clone
 
-    func cloneSelected() {
-        guard saved != nil else { return }
-        if hasChanges {
-            library.pendingClone = true
-        } else {
-            cloneSaved()
-        }
-    }
-
-    func resolveClone(saveChanges: Bool) {
-        library.pendingClone = false
-        if saveChanges, !save() { return }
-        cloneSaved()
-    }
-
-    private func cloneSaved() {
+    /// Reached through `request(.clone)`, which asks about unsaved edits first.
+    func cloneSaved() {
         guard let store, let id = selectedID else { return }
         do {
             let copy = try store.saveClone(of: id)
@@ -69,13 +45,8 @@ extension Workbench {
 
     func importProfiles() {
         guard let store else { return }
-        let panel = NSOpenPanel()
-        panel.title = "导入 Profile"
-        panel.message = "选择 AnyBrowser 导出的 Profile 文件。浏览器资料不会导入。"
-        panel.allowedContentTypes = [.json]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let url = FilePanels.file(title: "导入 Profile",
+                                        message: "选择 AnyBrowser 导出的 Profile 文件。浏览器资料不会导入。") else { return }
         do {
             let result = try store.importProfiles(from: ProfileLibrary.contents(of: url))
             var text = "已导入 \(result.profiles.count) 个 Profile"
@@ -90,15 +61,12 @@ extension Workbench {
     func exportProfiles(includeSecrets: Bool) {
         let exported = profiles
         guard !exported.isEmpty else { return }
-        let panel = NSSavePanel()
-        panel.title = includeSecrets ? "导出 Profile（含密码）" : "导出 Profile"
-        panel.message = includeSecrets
-            ? "文件包含代理和 Passkey Box 的账号密码，请妥善保管。浏览器资料不会导出。"
-            : "代理账号密码和 Profile 自己的 Passkey Box 账号不会导出。浏览器资料不会导出。"
-        panel.nameFieldStringValue = "AnyBrowser Profiles.json"
-        panel.allowedContentTypes = [.json]
-        panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let url = FilePanels.saveLocation(
+            title: includeSecrets ? "导出 Profile（含密码）" : "导出 Profile",
+            message: includeSecrets
+                ? "文件包含代理和 Passkey Box 的账号密码，请妥善保管。浏览器资料不会导出。"
+                : "代理账号密码和 Profile 自己的 Passkey Box 账号不会导出。浏览器资料不会导出。",
+            name: "AnyBrowser Profiles.json") else { return }
         do {
             try ProfileLibrary.writePrivately(ProfileLibrary.export(exported, includeSecrets: includeSecrets), to: url)
             notice = Notice(text: "已导出 \(exported.count) 个 Profile\(includeSecrets ? "，文件包含密码" : "")。")
@@ -110,7 +78,7 @@ extension Workbench {
     // MARK: Batch actions
 
     func createBatch(_ batch: ProfileLibrary.BatchRequest) throws -> [BrowserProfile] {
-        guard let store else { throw ProfileError.invalid("本机 Profile 数据库不可用。") }
+        guard let store else { throw ProfileError.invalid(Self.storeUnavailable) }
         return try store.saveBatch(batch)
     }
 
@@ -134,12 +102,13 @@ extension Workbench {
         let targets = picked.filter { state(for: $0.id).isRunning && !isBusy($0.id) }
         await runBatch(targets, skipped: picked.count - targets.count, verb: "停止", skippedReason: "未在运行") {
             try await self.stopProfile($0.id)
+            return nil
         }
     }
 
-    /// Runs one Profile at a time and sums up the outcome in a single notice.
+    /// Runs one Profile at a time and sums up the outcome, with any warnings `action` returns, in a single notice.
     private func runBatch(_ targets: [BrowserProfile], skipped: Int, verb: String, skippedReason: String,
-                          action: (BrowserProfile) async throws -> Void) async {
+                          action: (BrowserProfile) async throws -> String?) async {
         guard !targets.isEmpty else {
             notice = Notice(text: "所选 Profile 都\(skippedReason)。")
             return
@@ -149,13 +118,11 @@ extension Workbench {
         var succeeded = 0
         var failures: [String] = []
         var warnings: [String] = []
+        notice = nil
         for profile in targets {
-            // start() reports proxy warnings through the notice; collect them for the summary.
-            notice = nil
             do {
-                try await action(profile)
+                if let warning = try await action(profile) { warnings.append("\(profile.name)：\(warning)") }
                 succeeded += 1
-                if let warning = notice, warning.isError { warnings.append("\(profile.name)：\(warning.text)") }
             } catch {
                 failures.append("\(profile.name)：\(error.localizedDescription)")
             }
@@ -171,7 +138,7 @@ extension Workbench {
     /// Moves the picked Profiles into `group`; an empty group removes them from their group.
     /// Returns an error message on failure.
     func assignGroup(_ group: String, to ids: Set<UUID>) -> String? {
-        guard let store else { return "本机 Profile 数据库不可用。" }
+        guard let store else { return Self.storeUnavailable }
         let value = group.trimmingCharacters(in: .whitespacesAndNewlines)
         var moved = 0
         for var profile in profiles where ids.contains(profile.id) && profile.group != value {

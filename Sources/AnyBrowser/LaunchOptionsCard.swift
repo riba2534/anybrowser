@@ -7,7 +7,6 @@ struct LaunchOptionsCard: View {
     @Binding var draft: ProfileDraft
     @ObservedObject var workbench: Workbench
     @State private var window: WindowText
-    private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
 
     init(draft: Binding<ProfileDraft>, workbench: Workbench) {
         _draft = draft
@@ -19,7 +18,7 @@ struct LaunchOptionsCard: View {
         WorkbenchCard {
             CardHeading(title: "启动选项", icon: "play.rectangle")
             startPages
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+            LazyVGrid(columns: EditorInput.columns, alignment: .leading, spacing: 12) {
                 EditorInput("窗口宽度", placeholder: "默认", value: $window.width,
                             identifier: "launch-window-width", numeric: true)
                 EditorInput("窗口高度", placeholder: "默认", value: $window.height,
@@ -64,7 +63,7 @@ struct LaunchOptionsCard: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 6)
                 .frame(height: 84)
-                .background(WorkbenchPalette.field, in: fieldShape)
+                .fieldSurface()
                 .overlay(alignment: .topLeading) {
                     if draft.profile.launch.startURLs.isEmpty {
                         Text("每行一个，例如 https://example.com")
@@ -75,7 +74,6 @@ struct LaunchOptionsCard: View {
                             .allowsHitTesting(false)
                     }
                 }
-                .overlay { fieldShape.strokeBorder(WorkbenchPalette.rule, lineWidth: 1) }
                 .accessibilityLabel("启动网址")
                 .accessibilityIdentifier("launch-start-urls")
             Text("只支持 http 和 https，最多 \(LaunchOptions.maximumStartURLs) 个。留空打开浏览器默认页面。")
@@ -148,10 +146,6 @@ struct LaunchOptionsCard: View {
         for url in panel.urls where !draft.profile.launch.extensionDirectories.contains(url.path) {
             draft.profile.launch.extensionDirectories.append(url.path)
         }
-    }
-
-    private var fieldShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
     }
 }
 

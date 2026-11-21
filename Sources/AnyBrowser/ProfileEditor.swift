@@ -6,13 +6,11 @@ struct ProfileEditor: View {
     @Binding var draft: ProfileDraft
     @ObservedObject var workbench: Workbench
 
-    private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
-
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             WorkbenchCard {
                 CardHeading(title: "基本设置", icon: "macwindow")
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                LazyVGrid(columns: EditorInput.columns, alignment: .leading, spacing: 12) {
                     EditorInput("Profile 名称", placeholder: "例如 工作环境",
                                 value: $draft.profile.name, identifier: "profile-name")
                     EditorInput("调试端口", placeholder: "9222",
@@ -30,8 +28,6 @@ struct ProfileEditor: View {
     }
 
     private var state: BrowserRunState { workbench.state(for: draft.profile.id) }
-    private var pendingRestart: Bool { workbench.hasPendingRestart(draft.profile.id) }
-    private func copyAddress(_ port: Int) { workbench.copyAddress(port) }
 
     private var debugRow: some View {
         let session: (port: Int, ready: Bool)?
@@ -52,7 +48,7 @@ struct ProfileEditor: View {
                 .padding(.vertical, 4)
                 .background(WorkbenchPalette.iconSurface, in: Capsule())
                 .accessibilityIdentifier("browser-status")
-                if pendingRestart {
+                if workbench.hasPendingRestart(draft.profile.id) {
                     Text("等待重启")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(WorkbenchPalette.amber)
@@ -66,7 +62,7 @@ struct ProfileEditor: View {
                         .textSelection(.enabled)
                         .accessibilityIdentifier("debug-address")
                     Button {
-                        copyAddress(session.port)
+                        workbench.copyAddress(session.port)
                     } label: {
                         Image(systemName: "doc.on.doc")
                     }
@@ -88,7 +84,6 @@ struct ProfileEditor: View {
             }
         }
     }
-
 }
 
 struct CardHeading: View {
@@ -103,6 +98,9 @@ struct CardHeading: View {
 }
 
 struct EditorInput: View {
+    /// Two equal columns, as the editor lays out its fields.
+    static let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
+
     let label: String
     let placeholder: String
     @Binding var value: String
@@ -132,8 +130,7 @@ struct EditorInput: View {
                 .focused($focused)
                 .padding(.horizontal, 10)
                 .frame(height: 34)
-                .background(WorkbenchPalette.field, in: fieldShape)
-                .overlay { fieldShape.strokeBorder(focused ? Color.accentColor : WorkbenchPalette.rule, lineWidth: 1) }
+                .fieldSurface(focused: focused)
                 .accessibilityIdentifier(identifier)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -146,10 +143,6 @@ struct EditorInput: View {
         } else {
             TextField(label, text: $value, prompt: prompt)
         }
-    }
-
-    private var fieldShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
     }
 }
 
@@ -178,14 +171,9 @@ struct EditorPicker<Value: Hashable>: View {
             .menuStyle(.borderlessButton)
             .padding(.horizontal, 8)
             .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
-            .background(WorkbenchPalette.field, in: fieldShape)
-            .overlay { fieldShape.strokeBorder(WorkbenchPalette.rule, lineWidth: 1) }
+            .fieldSurface()
             .accessibilityLabel(title)
             .accessibilityIdentifier(identifier)
         }
-    }
-
-    private var fieldShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
     }
 }

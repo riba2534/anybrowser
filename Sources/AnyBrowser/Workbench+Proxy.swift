@@ -56,10 +56,3 @@ final class ProxyCenter: ObservableObject {
         proxy.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
-
-extension Workbench {
-    /// Checked before a Profile starts; returns a warning to show (the launch still goes ahead).
-    func proxyPreflight(_ profile: BrowserProfile) async -> String? {
-        await ProxyProbe.preflight(profile.proxy)
-    }
-}

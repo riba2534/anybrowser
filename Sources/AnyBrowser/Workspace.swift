@@ -33,8 +33,12 @@ struct Workspace: View {
             Button("保存并继续") { workbench.resolveNavigation(destination, saveChanges: true) }
             Button("放弃修改", role: .destructive) { workbench.resolveNavigation(destination, saveChanges: false) }
             Button("取消", role: .cancel) { workbench.pendingDestination = nil }
-        } message: { _ in
-            Text("当前 Profile 有尚未保存的修改。")
+        } message: { destination in
+            if case .clone = destination {
+                Text("当前 Profile 有尚未保存的修改。复制的是保存后的配置。")
+            } else {
+                Text("当前 Profile 有尚未保存的修改。")
+            }
         }
         .sheet(isPresented: $workbench.showingPasskeyBox) {
             PasskeyBoxSettings(workbench: workbench)
@@ -54,14 +58,6 @@ struct Workspace: View {
         } message: { candidate in
             Text("「\(candidate.name)」将从列表移除。仅移除记录会把浏览器资料留在本机；删除浏览器资料会同时清除它的 Cookie、登录状态、历史记录和扩展数据，删除后无法恢复。")
         }
-        .alert("保存当前编辑？", isPresented: showCloneAlert) {
-            Button("保存并继续") { workbench.resolveClone(saveChanges: true) }
-            Button("放弃修改", role: .destructive) { workbench.resolveClone(saveChanges: false) }
-            Button("取消", role: .cancel) { workbench.library.pendingClone = false }
-        } message: {
-            Text("当前 Profile 有尚未保存的修改。复制的是保存后的配置。")
-        }
-        .onAppear { workbench.announceUnreadableProfiles() }
     }
 
     private var sidebar: some View {
@@ -312,7 +308,7 @@ struct Workspace: View {
             Spacer(minLength: 0)
             if workbench.saved != nil {
                 Menu {
-                    Button("复制为新 Profile") { workbench.cloneSelected() }
+                    Button("复制为新 Profile") { workbench.request(.clone) }
                     Divider()
                     Button("导出 Cookie…") { workbench.exportCookies(value.id) }
                         .disabled(!state.isRunning)
@@ -476,13 +472,6 @@ struct Workspace: View {
         Binding(
             get: { workbench.pendingDestination != nil },
             set: { showing in if !showing { workbench.pendingDestination = nil } }
-        )
-    }
-
-    private var showCloneAlert: Binding<Bool> {
-        Binding(
-            get: { workbench.library.pendingClone },
-            set: { showing in if !showing { workbench.library.pendingClone = false } }
         )
     }
 

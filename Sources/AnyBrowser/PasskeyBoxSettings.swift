@@ -15,16 +15,9 @@ struct PasskeyBoxSettings: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Passkey Box 账号")
-                    .font(.system(size: 18, weight: .semibold))
-                    .accessibilityAddTraits(.isHeader)
-                Text("每个 Profile 启动时，内置的 Passkey Box 扩展会用这个账号自动登录。网站请求通行密钥时直接完成注册或登录，不需要点击确认。")
-                    .font(.system(size: 12))
-                    .foregroundColor(WorkbenchPalette.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        WorkbenchSheet(title: "Passkey Box 账号",
+                       caption: "每个 Profile 启动时，内置的 Passkey Box 扩展会用这个账号自动登录。网站请求通行密钥时直接完成注册或登录，不需要点击确认。",
+                       width: 420) {
             EditorInput("服务器地址", placeholder: PasskeyBoxAccount.defaultServerURL,
                         value: $account.serverURL, identifier: "passkey-box-server")
             EditorInput("用户名", placeholder: "Passkey Box 用户名",
@@ -32,11 +25,7 @@ struct PasskeyBoxSettings: View {
             EditorInput("密码", placeholder: "Passkey Box 密码",
                         value: $account.password, identifier: "passkey-box-password", secure: true)
             if let error {
-                Label(error, systemImage: "exclamationmark.circle")
-                    .font(.system(size: 12))
-                    .foregroundColor(WorkbenchPalette.danger)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                ErrorLabel(error)
             }
             HStack(spacing: 10) {
                 if workbench.passkeyBoxAccount != nil {
@@ -67,9 +56,5 @@ struct PasskeyBoxSettings: View {
                 .accessibilityIdentifier("passkey-box-save")
             }
         }
-        .padding(24)
-        .frame(width: 420)
-        .background(WorkbenchPalette.workspace)
-        .foregroundColor(WorkbenchPalette.ink)
     }
 }
