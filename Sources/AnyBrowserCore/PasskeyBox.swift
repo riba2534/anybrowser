@@ -94,30 +94,23 @@ private final class RedirectRefusal: NSObject, URLSessionTaskDelegate {
     }
 }
 
-/// The unpacked Passkey Box that Profiles load: a copy of the bundled extension in the AnyBrowser
-/// data directory, plus managed-config.json when an account is set. The app bundle stays untouched.
+/// The unpacked Passkey Box a Profile loads: a copy of the bundled extension under the Profile's
+/// extension root, plus managed-config.json when it has an account. The app bundle stays untouched.
 enum PasskeyBoxInstall {
     static let managedConfigFile = "managed-config.json"
 
-    static func directory(in storage: URL) -> URL {
-        storage.appendingPathComponent("Extensions", isDirectory: true)
-            .appendingPathComponent("PasskeyBox", isDirectory: true)
+    static func directory(in storage: URL, for id: UUID) -> URL {
+        ProfileExtensions.root(in: storage, for: id).appendingPathComponent("PasskeyBox", isDirectory: true)
     }
 
-    static func prepare(bundled source: URL, in storage: URL, account: PasskeyBoxAccount?) throws {
-        let target = directory(in: storage)
-        let parent = target.deletingLastPathComponent()
+    static func prepare(bundled source: URL, in storage: URL, for id: UUID, account: PasskeyBoxAccount?) throws {
+        let target = directory(in: storage, for: id)
         // Chromium parses --load-extension as a comma-separated list.
         guard !target.path.contains(",") else {
             throw ProfileError.invalid("AnyBrowser 资料目录的路径不能包含逗号。")
         }
-        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
+        let parent = try ProfileExtensions.prepareRoot(in: storage, for: id)
         var details = stat()
-        guard lstat(parent.path, &details) == 0, details.st_uid == getuid(), details.st_mode & S_IFMT == S_IFDIR else {
-            throw ProfileError.invalid("Passkey Box 扩展目录不可用，请检查本机目录权限。")
-        }
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path)
 
         guard let bundled = files(in: source) else {
             throw ProfileError.invalid("内置 Passkey Box 不可用，请重新安装 AnyBrowser。")

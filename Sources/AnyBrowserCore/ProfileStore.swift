@@ -66,9 +66,7 @@ public final class ProfileStore: ObservableObject {
                 status = sqlite3_step(read)
             }
             guard status == SQLITE_DONE else { throw databaseError() }
-            passkeyBoxAccount = try setting(Self.passkeyBoxKey)
-                .flatMap { try? JSONDecoder().decode(PasskeyBoxAccount.self, from: $0) }
-                .flatMap { try? $0.validated() }
+            passkeyBoxAccount = try? setting(PasskeyBoxAccount.self, forKey: Self.passkeyBoxKey)?.validated()
         } catch {
             sqlite3_close(database)
             database = nil
@@ -148,37 +146,18 @@ public final class ProfileStore: ObservableObject {
 
     /// Saves the Passkey Box account, or removes it when `account` is nil.
     public func savePasskeyBoxAccount(_ account: PasskeyBoxAccount?) throws {
-        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard let account else {
-            let delete = try statement("DELETE FROM settings WHERE key=?")
-            defer { sqlite3_finalize(delete) }
-            guard sqlite3_bind_text(delete, 1, Self.passkeyBoxKey, -1, transient) == SQLITE_OK,
-                  sqlite3_step(delete) == SQLITE_DONE else {
-                throw databaseError()
-            }
-            passkeyBoxAccount = nil
-            return
-        }
-        let value = try account.validated()
-        let payload = try JSONEncoder().encode(value)
-        let write = try statement("""
-            INSERT INTO settings(key, value) VALUES(?, ?)
-            ON CONFLICT(key) DO UPDATE SET value=excluded.value
-            """)
-        defer { sqlite3_finalize(write) }
-        guard sqlite3_bind_text(write, 1, Self.passkeyBoxKey, -1, transient) == SQLITE_OK,
-              payload.withUnsafeBytes({
-                sqlite3_bind_blob(write, 2, $0.baseAddress, Int32($0.count), transient)
-              }) == SQLITE_OK,
-              sqlite3_step(write) == SQLITE_DONE else {
-            throw databaseError()
-        }
+        let value = try account?.validated()
+        try saveSetting(value, forKey: Self.passkeyBoxKey)
         passkeyBoxAccount = value
     }
 
+    /// Records that a Profile was just started.
+    public func recordLaunch(_ id: UUID) {}
+
     private static let passkeyBoxKey = "passkeyBox"
 
-    private func setting(_ key: String) throws -> Data? {
+    /// An app-wide setting stored as JSON, or nil when it is missing or unreadable.
+    public func setting<Value: Decodable>(_ type: Value.Type, forKey key: String) throws -> Value? {
         let read = try statement("SELECT value FROM settings WHERE key=?")
         defer { sqlite3_finalize(read) }
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -186,11 +165,38 @@ public final class ProfileStore: ObservableObject {
         switch sqlite3_step(read) {
         case SQLITE_ROW:
             let count = Int(sqlite3_column_bytes(read, 0))
-            guard let bytes = sqlite3_column_blob(read, 0) else { return Data() }
-            return Data(bytes: bytes, count: count)
+            guard let bytes = sqlite3_column_blob(read, 0) else { return nil }
+            return try? JSONDecoder().decode(Value.self, from: Data(bytes: bytes, count: count))
         case SQLITE_DONE:
             return nil
         default:
+            throw databaseError()
+        }
+    }
+
+    /// Stores an app-wide setting as JSON, or deletes it when `value` is nil.
+    public func saveSetting<Value: Encodable>(_ value: Value?, forKey key: String) throws {
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        guard let value else {
+            let delete = try statement("DELETE FROM settings WHERE key=?")
+            defer { sqlite3_finalize(delete) }
+            guard sqlite3_bind_text(delete, 1, key, -1, transient) == SQLITE_OK,
+                  sqlite3_step(delete) == SQLITE_DONE else {
+                throw databaseError()
+            }
+            return
+        }
+        let payload = try JSONEncoder().encode(value)
+        let write = try statement("""
+            INSERT INTO settings(key, value) VALUES(?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+            """)
+        defer { sqlite3_finalize(write) }
+        guard sqlite3_bind_text(write, 1, key, -1, transient) == SQLITE_OK,
+              payload.withUnsafeBytes({
+                sqlite3_bind_blob(write, 2, $0.baseAddress, Int32($0.count), transient)
+              }) == SQLITE_OK,
+              sqlite3_step(write) == SQLITE_DONE else {
             throw databaseError()
         }
     }

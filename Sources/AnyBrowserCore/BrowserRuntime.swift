@@ -37,7 +37,7 @@ public struct BrowserEngine: Sendable {
     }
 }
 
-private enum BrowserRuntimeError: LocalizedError {
+enum BrowserRuntimeError: LocalizedError {
     case message(String)
 
     var errorDescription: String? {
@@ -58,7 +58,7 @@ private final class LocalOnlySession: NSObject, URLSessionTaskDelegate {
 public final class BrowserRuntime: ObservableObject {
     @Published public private(set) var states: [UUID: BrowserRunState] = [:]
 
-    private struct Receipt: Codable, Equatable {
+    struct Receipt: Codable, Equatable {
         let pid: Int32
         let stamp: ProcessStamp
         let port: Int
@@ -66,9 +66,9 @@ public final class BrowserRuntime: ObservableObject {
         let inode: UInt64
     }
 
-    private let engine: BrowserEngine
-    private let storage: URL
-    private let localSession: URLSession
+    let engine: BrowserEngine
+    let storage: URL
+    let localSession: URLSession
     private var children: [UUID: Process] = [:]
 
     public init(engine: BrowserEngine, storage: URL) {
@@ -135,7 +135,8 @@ public final class BrowserRuntime: ObservableObject {
             guard ProcessInspection.portAvailable(profile.port) else {
                 throw BrowserRuntimeError.message("调试端口 \(profile.port) 已占用，请修改此 Profile 的端口。")
             }
-            try PasskeyBoxInstall.prepare(bundled: engine.passkeyBoxDirectory, in: storage, account: passkeyBox)
+            try PasskeyBoxInstall.prepare(bundled: engine.passkeyBoxDirectory, in: storage, for: id, account: passkeyBox)
+            try ProxyAuthExtension.prepare(for: profile, in: storage)
             let child = Process()
             child.executableURL = engine.executable
             child.arguments = launchArguments(profile, directory: directory)
@@ -264,8 +265,16 @@ public final class BrowserRuntime: ObservableObject {
     }
 
     private func launchArguments(_ profile: BrowserProfile, directory: URL) -> [String] {
-        profile.launchArguments(userDataDirectory: directory)
-            + ["--load-extension=\(PasskeyBoxInstall.directory(in: storage).path)"]
+        profile.launchArguments(userDataDirectory: directory,
+                                extensions: ProfileExtensions.paths(for: profile, in: storage))
+    }
+
+    /// The browser-level DevTools WebSocket of a running Profile, verified to belong to it.
+    public func devToolsEndpoint(for id: UUID) async -> URL? {
+        guard case let .running(pid, port, _) = status(for: id) else { return nil }
+        let directory = dataDirectory(for: id)
+        guard let receipt = readReceipt(directory), receipt.pid == pid, receipt.port == port else { return nil }
+        return await verifiedEndpoint(receipt, directory: directory)
     }
 
     private func runningState(_ receipt: Receipt, directory: URL) async -> BrowserRunState {
@@ -276,6 +285,10 @@ public final class BrowserRuntime: ObservableObject {
     }
 
     private func verifyEndpoint(_ receipt: Receipt, directory: URL) async -> Bool {
+        await verifiedEndpoint(receipt, directory: directory) != nil
+    }
+
+    private func verifiedEndpoint(_ receipt: Receipt, directory: URL) async -> URL? {
         guard owns(receipt, directory: directory),
               ProcessInspection.hasLoopbackDebugListener(pid: receipt.pid, port: receipt.port),
               let url = URL(string: "http://127.0.0.1:\(receipt.port)/json/version"),
@@ -285,12 +298,13 @@ public final class BrowserRuntime: ObservableObject {
               let address = info["webSocketDebuggerUrl"],
               let endpoint = URLComponents(string: address), endpoint.scheme == "ws",
               endpoint.host == "127.0.0.1", endpoint.port == receipt.port,
-              endpoint.path.hasPrefix("/devtools/browser/") else { return false }
-        return owns(receipt, directory: directory)
-            && ProcessInspection.hasLoopbackDebugListener(pid: receipt.pid, port: receipt.port)
+              endpoint.path.hasPrefix("/devtools/browser/"), let url = endpoint.url else { return nil }
+        guard owns(receipt, directory: directory),
+              ProcessInspection.hasLoopbackDebugListener(pid: receipt.pid, port: receipt.port) else { return nil }
+        return url
     }
 
-    private func owns(_ receipt: Receipt, directory: URL) -> Bool {
+    func owns(_ receipt: Receipt, directory: URL) -> Bool {
         guard ProcessStamp.read(receipt.pid) == receipt.stamp,
               let details = try? directoryDetails(directory),
               details.st_dev == receipt.device, details.st_ino == receipt.inode,
@@ -308,7 +322,7 @@ public final class BrowserRuntime: ObservableObject {
         return executableConfirmed && ProcessStamp.read(receipt.pid) == receipt.stamp
     }
 
-    private func profileInUse(_ directory: URL) -> Bool {
+    func profileInUse(_ directory: URL) -> Bool {
         let lock = directory.appendingPathComponent("SingletonLock").path
         guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: lock),
               let suffix = target.split(separator: "-").last, let pid = Int32(suffix), pid > 1,
@@ -317,11 +331,11 @@ public final class BrowserRuntime: ObservableObject {
         return ProcessInspection.hasFlag("--user-data-dir", value: directory.path, arguments: arguments)
     }
 
-    private func receiptURL(_ directory: URL) -> URL {
+    func receiptURL(_ directory: URL) -> URL {
         directory.appendingPathComponent(".anybrowser-runtime.json")
     }
 
-    private func readReceipt(_ directory: URL) -> Receipt? {
+    func readReceipt(_ directory: URL) -> Receipt? {
         guard (try? directoryDetails(directory)) != nil else { return nil }
         let fd = open(receiptURL(directory).path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { return nil }
@@ -333,13 +347,13 @@ public final class BrowserRuntime: ObservableObject {
         return try? JSONDecoder().decode(Receipt.self, from: data)
     }
 
-    private func ensureDirectory(_ url: URL) throws {
+    func ensureDirectory(_ url: URL) throws {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         _ = try directoryDetails(url)
     }
 
-    private func directoryDetails(_ url: URL) throws -> stat {
+    func directoryDetails(_ url: URL) throws -> stat {
         var metadata = stat()
         guard lstat(url.path, &metadata) == 0, metadata.st_uid == getuid(),
               metadata.st_mode & S_IFMT == S_IFDIR, metadata.st_mode & 0o022 == 0,
@@ -349,7 +363,7 @@ public final class BrowserRuntime: ObservableObject {
         return metadata
     }
 
-    private func lockDirectory(_ directory: URL) throws -> Int32 {
+    func lockDirectory(_ directory: URL) throws -> Int32 {
         _ = try directoryDetails(directory)
         let url = directory.appendingPathComponent(".anybrowser-runtime.lock")
         let fd = open(url.path, O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)

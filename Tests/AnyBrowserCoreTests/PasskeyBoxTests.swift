@@ -56,17 +56,18 @@ struct PasskeyBoxTests {
         try Data("png".utf8).write(to: source.appendingPathComponent("icons/icon-16.png"))
         let storage = root.appendingPathComponent("Storage", isDirectory: true)
         try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
-        let target = PasskeyBoxInstall.directory(in: storage)
+        let id = UUID()
+        let target = PasskeyBoxInstall.directory(in: storage, for: id)
         let config = target.appendingPathComponent("managed-config.json")
-        #expect(target.path == storage.path + "/Extensions/PasskeyBox")
+        #expect(target.path == storage.path + "/Extensions/\(id.uuidString.lowercased())/PasskeyBox")
 
-        try PasskeyBoxInstall.prepare(bundled: source, in: storage, account: nil)
+        try PasskeyBoxInstall.prepare(bundled: source, in: storage, for: id, account: nil)
         #expect(try String(contentsOf: target.appendingPathComponent("icons/icon-16.png"), encoding: .utf8) == "png")
         #expect(!FileManager.default.fileExists(atPath: config.path))
         #expect(try permissions(target.deletingLastPathComponent()) == 0o700)
 
         let account = PasskeyBoxAccount(serverURL: "https://pk.example.com/", username: "alice", password: #"p"w"#)
-        try PasskeyBoxInstall.prepare(bundled: source, in: storage, account: account)
+        try PasskeyBoxInstall.prepare(bundled: source, in: storage, for: id, account: account)
         let written = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: config)) as? [String: String])
         #expect(written == ["serverUrl": "https://pk.example.com", "username": "alice", "password": #"p"w"#])
         #expect(try String(contentsOf: config, encoding: .utf8).contains(#""serverUrl":"https://pk.example.com""#))
@@ -74,18 +75,18 @@ struct PasskeyBoxTests {
 
         // An unchanged bundle keeps the installed copy in place.
         let installed = try inode(target)
-        try PasskeyBoxInstall.prepare(bundled: source, in: storage, account: account)
+        try PasskeyBoxInstall.prepare(bundled: source, in: storage, for: id, account: account)
         #expect(try inode(target) == installed)
 
         // A new bundle, or a tampered copy, is replaced; the account file is rewritten.
         try Data("two".utf8).write(to: source.appendingPathComponent("background.js"))
-        try PasskeyBoxInstall.prepare(bundled: source, in: storage, account: account)
+        try PasskeyBoxInstall.prepare(bundled: source, in: storage, for: id, account: account)
         #expect(try String(contentsOf: target.appendingPathComponent("background.js"), encoding: .utf8) == "two")
         #expect(FileManager.default.fileExists(atPath: config.path))
         let script = target.appendingPathComponent("background.js")
         try FileManager.default.removeItem(at: script)
         try FileManager.default.createSymbolicLink(at: script, withDestinationURL: URL(fileURLWithPath: "/etc/hosts"))
-        try PasskeyBoxInstall.prepare(bundled: source, in: storage, account: account)
+        try PasskeyBoxInstall.prepare(bundled: source, in: storage, for: id, account: account)
         #expect(try String(contentsOf: script, encoding: .utf8) == "two")
         #expect(try FileManager.default.attributesOfItem(atPath: script.path)[.type] as? FileAttributeType == .typeRegular)
 
@@ -93,10 +94,10 @@ struct PasskeyBoxTests {
         let elsewhere = root.appendingPathComponent("Elsewhere", isDirectory: true)
         try FileManager.default.moveItem(at: target, to: elsewhere)
         try FileManager.default.createSymbolicLink(at: target, withDestinationURL: elsewhere)
-        try PasskeyBoxInstall.prepare(bundled: source, in: storage, account: account)
+        try PasskeyBoxInstall.prepare(bundled: source, in: storage, for: id, account: account)
         #expect(try FileManager.default.attributesOfItem(atPath: target.path)[.type] as? FileAttributeType == .typeDirectory)
 
-        try PasskeyBoxInstall.prepare(bundled: source, in: storage, account: nil)
+        try PasskeyBoxInstall.prepare(bundled: source, in: storage, for: id, account: nil)
         #expect(!FileManager.default.fileExists(atPath: config.path))
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: target.deletingLastPathComponent().path)
         #expect(leftovers == ["PasskeyBox"])

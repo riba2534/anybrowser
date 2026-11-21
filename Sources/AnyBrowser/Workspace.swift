@@ -39,6 +39,12 @@ struct Workspace: View {
         .sheet(isPresented: $workbench.showingPasskeyBox) {
             PasskeyBoxSettings(workbench: workbench)
         }
+        .sheet(isPresented: $workbench.showingAutomation) {
+            AutomationSettings(workbench: workbench)
+        }
+        .sheet(isPresented: $workbench.showingBatchCreate) {
+            BatchCreateSheet(workbench: workbench)
+        }
         .alert("移除 Profile？", isPresented: showRemovalAlert, presenting: removeCandidate) { candidate in
             Button("移除", role: .destructive) { workbench.remove(candidate.id) }
             Button("取消", role: .cancel) {}
@@ -239,6 +245,24 @@ struct Workspace: View {
                     .accessibilityAddTraits(.isHeader)
             }
             Spacer(minLength: 0)
+            if workbench.saved != nil {
+                Menu {
+                    Button("复制为新 Profile") { workbench.cloneSelected() }
+                    Divider()
+                    Button("导出 Cookie…") { workbench.exportCookies(value.id) }
+                        .disabled(!state.isRunning)
+                    Button("导入 Cookie…") { workbench.importCookies(value.id) }
+                        .disabled(!state.isRunning)
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .disabled(busy)
+                .help("更多操作")
+                .accessibilityIdentifier("profile-actions")
+            }
             if state.isRunning {
                 Button {
                     Task { await workbench.stop(value.id) }
@@ -285,13 +309,7 @@ struct Workspace: View {
                     if let engineError = workbench.engineError {
                         message(engineError, error: true, dismissible: false)
                     }
-                    ProfileEditor(
-                        draft: draft,
-                        state: state,
-                        pendingRestart: workbench.hasPendingRestart(id),
-                        copyAddress: workbench.copyAddress,
-                        randomize: workbench.randomize
-                    )
+                    ProfileEditor(draft: draft, workbench: workbench)
                     .id(id)
                     .disabled(workbench.isBusy(id))
                 }
