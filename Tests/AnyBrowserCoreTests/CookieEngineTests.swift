@@ -8,15 +8,14 @@ struct CookieEngineTests {
     @Test(
         "Cookies move in and out of a running Profile",
         .enabled(
-            if: ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"] != nil,
+            if: testAppPath != nil,
             "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test."
         )
     )
     @MainActor
     func importsAndExportsCookies() async throws {
-        let path = try #require(ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"])
-        let engine = try BrowserEngine.bundled(in: URL(fileURLWithPath: path))
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("anybrowser-cookies-\(UUID())")
+        let engine = try testEngine()
+        let directory = try scratchDirectory("cookies")
         defer { try? FileManager.default.removeItem(at: directory) }
         let page = try await LoopbackPage.start(title: "AnyBrowser cookie fixture")
         defer { page.listener.cancel() }

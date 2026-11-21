@@ -27,7 +27,7 @@ struct PasskeyBoxTests {
     @Test("The store keeps one account across launches")
     @MainActor
     func storeKeepsTheAccount() throws {
-        let directory = try temporaryDirectory()
+        let directory = try scratchDirectory("passkey")
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try ProfileStore(directory: directory)
         #expect(store.passkeyBoxAccount == nil)
@@ -47,7 +47,7 @@ struct PasskeyBoxTests {
 
     @Test("Profiles load a private copy of Passkey Box with managed-config.json")
     func installsACopyWithManagedConfig() throws {
-        let root = try temporaryDirectory()
+        let root = try scratchDirectory("passkey")
         defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("Bundle/PasskeyBox", isDirectory: true)
         try FileManager.default.createDirectory(at: source.appendingPathComponent("icons"), withIntermediateDirectories: true)
@@ -123,21 +123,6 @@ struct PasskeyBoxTests {
         await #expect(throws: ProfileError.self) { try await account.verify(configuration: configuration) }
     }
 
-    private func temporaryDirectory() throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("anybrowser-passkey-\(UUID())", isDirectory: true)
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return URL(fileURLWithPath: try #require(realpath(url.path, nil).map { defer { free($0) }; return String(cString: $0) }))
-    }
-
-    private func permissions(_ url: URL) throws -> Int {
-        try #require(FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int)
-    }
-
-    private func inode(_ url: URL) throws -> UInt64 {
-        var details = stat()
-        try #require(lstat(url.path, &details) == 0)
-        return details.st_ino
-    }
 }
 
 private final class StubServer: URLProtocol {

@@ -10,7 +10,7 @@ struct LaunchEngineTests {
     @Test(
         "A Profile opens its start page in the configured window with an extra extension",
         .enabled(
-            if: ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"] != nil,
+            if: testAppPath != nil,
             "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test."
         )
     )
@@ -47,10 +47,10 @@ struct LaunchEngineTests {
             #expect(!(extensionWorker["url"] as? String ?? "").contains(Self.passkeyBoxID))
 
             let endpoint = try #require(await runtime.devToolsEndpoint(for: profile.id))
-            let browser = BrowserSession(endpoint)
+            let browser = try DevToolsClient(endpoint: endpoint)
             defer { browser.close() }
             let targetID = try #require(opened["id"] as? String)
-            let window = try await browser.command("Browser.getWindowForTarget", ["targetId": targetID])
+            let window = try await browser.send("Browser.getWindowForTarget", ["targetId": targetID])
             let bounds = try #require(window["bounds"] as? [String: Any])
             #expect(bounds["width"] as? Int == 1000)
             #expect(bounds["height"] as? Int == 700)
@@ -66,7 +66,7 @@ struct LaunchEngineTests {
     @Test(
         "Each Profile's Passkey Box signs in with the account it was started with",
         .enabled(
-            if: ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"] != nil,
+            if: testAppPath != nil,
             "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test."
         )
     )
@@ -108,12 +108,7 @@ struct LaunchEngineTests {
     }
 
     private func prepare() throws -> (BrowserEngine, URL) {
-        let path = try #require(ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"])
-        let engine = try BrowserEngine.bundled(in: URL(fileURLWithPath: path))
-        let root = URL(fileURLWithPath: "/tmp/identity-launch", isDirectory: true)
-            .appendingPathComponent("engine-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        return (engine, root)
+        (try testEngine(), try scratchDirectory("launch"))
     }
 
     /// The account Passkey Box copied from managed-config.json into its storage.
@@ -130,55 +125,9 @@ struct LaunchEngineTests {
     }
 
     private func waitForTarget(port: Int, matching: ([String: Any]) -> Bool) async throws -> [String: Any] {
-        let list = try #require(URL(string: "http://127.0.0.1:\(port)/json/list"))
-        for _ in 0..<100 {
-            let (data, _) = try await URLSession.shared.data(from: list)
-            let targets = try #require(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
-            if let target = targets.first(where: matching) { return target }
-            try await Task.sleep(nanoseconds: 100_000_000)
-        }
-        throw VerificationFailure.message("DevTools target did not appear on port \(port)")
+        let target = try await DevToolsPage.waitForTargets(port: port) { $0.contains(where: matching) }
+            .first(where: matching)
+        return try #require(target)
     }
 }
 
-/// A browser-level DevTools connection, for domains a page session cannot reach.
-private final class BrowserSession {
-    private let socket: URLSessionWebSocketTask
-    private var nextID = 0
-
-    init(_ endpoint: URL) {
-        socket = URLSession.shared.webSocketTask(with: endpoint)
-        socket.resume()
-    }
-
-    func close() {
-        socket.cancel(with: .normalClosure, reason: nil)
-    }
-
-    func command(_ name: String, _ parameters: [String: Any] = [:]) async throws -> [String: Any] {
-        nextID += 1
-        let commandID = nextID
-        let request = try JSONSerialization.data(withJSONObject: ["id": commandID, "method": name, "params": parameters])
-        try await socket.send(.string(String(decoding: request, as: UTF8.self)))
-        let timeout = Task { [socket] in
-            try await Task.sleep(nanoseconds: 5_000_000_000)
-            socket.cancel(with: .goingAway, reason: nil)
-        }
-        defer { timeout.cancel() }
-
-        while true {
-            let bytes: Data
-            switch try await socket.receive() {
-            case .string(let string): bytes = Data(string.utf8)
-            case .data(let data): bytes = data
-            @unknown default: throw VerificationFailure.message("Unknown DevTools message")
-            }
-            let value = try #require(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
-            guard value["id"] as? Int == commandID else { continue }
-            if let error = value["error"] {
-                throw VerificationFailure.message("DevTools \(name) failed: \(error)")
-            }
-            return try #require(value["result"] as? [String: Any])
-        }
-    }
-}

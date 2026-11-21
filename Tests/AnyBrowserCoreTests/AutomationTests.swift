@@ -15,7 +15,7 @@ struct AutomationTests {
         #expect(first.count == 64 && first.allSatisfy { "0123456789abcdef".contains($0) })
         #expect(first != second)
 
-        let directory = try temporaryDirectory()
+        let directory = try scratchDirectory("automation")
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try ProfileStore(directory: directory)
         let defaults = try store.automationConfiguration()
@@ -378,14 +378,13 @@ struct AutomationTests {
     @Test(
         "Scripts start and stop a real browser through the API",
         .enabled(
-            if: ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"] != nil,
+            if: testAppPath != nil,
             "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test."
         )
     )
     func startsARealBrowser() async throws {
-        let path = try #require(ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"])
-        let engine = try BrowserEngine.bundled(in: URL(fileURLWithPath: path))
-        let directory = try temporaryDirectory()
+        let engine = try testEngine()
+        let directory = try scratchDirectory("automation")
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try ProfileStore(directory: directory)
         var profile = try store.makeDraft()
@@ -455,11 +454,6 @@ struct AutomationTests {
         await Task.detached { RawClient.exchange(port: port, chunks: chunks) }.value
     }
 
-    private func temporaryDirectory() throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("anybrowser-automation-\(UUID())", isDirectory: true)
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
-    }
 }
 
 @MainActor

@@ -1,9 +1,65 @@
-import AnyBrowserCore
+@testable import AnyBrowserCore
+import Darwin
 import Foundation
 import Network
 import Testing
 
-// Shared by the installed-engine suites. Ports 9222/9223 belong to InstalledEngineTests.
+// Shared by the test suites. Debug ports 9222/9223 belong to InstalledEngineTests.
+
+/// The packaged AnyBrowser.app the engine suites run against; they are skipped without it.
+let testAppPath = ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"]
+
+func testEngine() throws -> BrowserEngine {
+    try BrowserEngine.bundled(in: URL(fileURLWithPath: try #require(testAppPath)))
+}
+
+/// A new empty directory for one test, at its canonical path, which the runtime and the
+/// extension directory checks compare against.
+func scratchDirectory(_ label: String) throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("anybrowser-\(label)-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return try #require(ProcessInspection.canonicalURL(url, isDirectory: true))
+}
+
+func permissions(_ url: URL) throws -> Int {
+    try #require(FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int)
+}
+
+/// The inode of `url` itself rather than of what a link points to.
+func inode(_ url: URL) throws -> UInt64 {
+    var details = stat()
+    try #require(lstat(url.path, &details) == 0)
+    return details.st_ino
+}
+
+extension NWListener {
+    /// Starts listening on `queue` and returns the port once ready. A listener that fails is cancelled.
+    func startAndWait(on queue: DispatchQueue) async throws -> UInt16 {
+        if newConnectionHandler == nil { newConnectionHandler = { $0.cancel() } }
+        return try await withCheckedThrowingContinuation { continuation in
+            stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    self.stateUpdateHandler = nil
+                    if let port = self.port?.rawValue {
+                        continuation.resume(returning: port)
+                    } else {
+                        self.cancel()
+                        continuation.resume(throwing: VerificationFailure.message("The test listener has no port"))
+                    }
+                case .failed(let error):
+                    self.stateUpdateHandler = nil
+                    self.cancel()
+                    continuation.resume(throwing: error)
+                default:
+                    break
+                }
+            }
+            start(queue: queue)
+        }
+    }
+}
 
 /// A local Passkey Box server, a strict WebAuthn test site (passkey-box/e2e/rp) and an account.
 struct PasskeyFlow {
@@ -49,27 +105,8 @@ struct LoopbackPage {
                 connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
             }
         }
-        return try await withCheckedThrowingContinuation { continuation in
-            listener.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    listener.stateUpdateHandler = nil
-                    if let port = listener.port?.rawValue, let url = URL(string: "http://127.0.0.1:\(port)/") {
-                        continuation.resume(returning: LoopbackPage(listener: listener, url: url))
-                    } else {
-                        listener.cancel()
-                        continuation.resume(throwing: VerificationFailure.message("Loopback page has no port"))
-                    }
-                case .failed(let error):
-                    listener.stateUpdateHandler = nil
-                    listener.cancel()
-                    continuation.resume(throwing: error)
-                default:
-                    break
-                }
-            }
-            listener.start(queue: queue)
-        }
+        let port = try await listener.startAndWait(on: queue)
+        return LoopbackPage(listener: listener, url: try #require(URL(string: "http://127.0.0.1:\(port)/")))
     }
 }
 
@@ -100,6 +137,25 @@ final class DevToolsPage {
             task.cancel(with: .normalClosure, reason: nil)
             throw error
         }
+    }
+
+    /// Polls the port's target list until `condition` holds for it, and returns that list.
+    @discardableResult
+    static func waitForTargets(port: Int, timeout: TimeInterval = 10,
+                               until condition: ([[String: Any]]) -> Bool) async throws -> [[String: Any]] {
+        let list = try #require(URL(string: "http://127.0.0.1:\(port)/json/list"))
+        let deadline = Date().addingTimeInterval(timeout)
+        var targets: [[String: Any]] = []
+        while Date() < deadline {
+            if let (data, _) = try? await URLSession.shared.data(from: list),
+               let value = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                targets = value
+                if condition(targets) { return targets }
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        let seen = targets.map { "\($0["type"] ?? "") \($0["url"] ?? "")" }
+        throw VerificationFailure.message("DevTools targets did not settle: \(seen)")
     }
 
     static func pageCount(port: Int) async throws -> Int {

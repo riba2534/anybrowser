@@ -61,7 +61,7 @@ struct ProxyTests {
 
     @Test("The sign-in extension is written privately, kept when unchanged and removed without credentials")
     func writesTheSignInExtension() throws {
-        let storage = try temporaryDirectory()
+        let storage = try scratchDirectory("proxy")
         defer { try? FileManager.default.removeItem(at: storage) }
         var profile = BrowserProfile(name: "Proxy", port: 9222, fingerprint: FingerprintSettings(seed: 1),
                                      proxy: #"http://alice:p%22w%5C@[::1]:3128"#)
@@ -317,21 +317,6 @@ struct ProxyTests {
         }
     }
 
-    private func temporaryDirectory() throws -> URL {
-        let url = URL(fileURLWithPath: "/tmp/proxy/unit-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return URL(fileURLWithPath: try #require(realpath(url.path, nil).map { defer { free($0) }; return String(cString: $0) }))
-    }
-
-    private func permissions(_ url: URL) throws -> Int {
-        try #require(FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int)
-    }
-
-    private func inode(_ url: URL) throws -> UInt64 {
-        var details = stat()
-        try #require(lstat(url.path, &details) == 0)
-        return details.st_ino
-    }
 }
 
 /// Runs the generated background.js against a stand-in `chrome` API.
@@ -416,11 +401,12 @@ final class ProxyStub: @unchecked Sendable {
     private var credentials: String?
     private var challengeOnce: Set<String> = []
 
-    private init(listener: NWListener, credentials: String?, respond: @escaping @Sendable (Request) -> Response?) throws {
+    private init(listener: NWListener, port: Int, credentials: String?,
+                 respond: @escaping @Sendable (Request) -> Response?) {
         self.listener = listener
+        self.port = port
         self.credentials = credentials
         self.respond = respond
-        port = Int(try #require(listener.port?.rawValue))
     }
 
     static func start(credentials: String?, host: NWEndpoint.Host = "127.0.0.1",
@@ -429,23 +415,8 @@ final class ProxyStub: @unchecked Sendable {
         parameters.requiredLocalEndpoint = .hostPort(host: host, port: .any)
         let listener = try NWListener(using: parameters)
         let queue = DispatchQueue(label: "anybrowser.proxy.stub")
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            listener.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    listener.stateUpdateHandler = nil
-                    continuation.resume()
-                case .failed(let error):
-                    listener.stateUpdateHandler = nil
-                    continuation.resume(throwing: error)
-                default:
-                    break
-                }
-            }
-            listener.newConnectionHandler = { _ in }
-            listener.start(queue: queue)
-        }
-        let stub = try ProxyStub(listener: listener, credentials: credentials, respond: respond)
+        let port = try await listener.startAndWait(on: queue)
+        let stub = ProxyStub(listener: listener, port: Int(port), credentials: credentials, respond: respond)
         listener.newConnectionHandler = { [weak stub] connection in
             guard let stub else { return connection.cancel() }
             stub.locked { stub.connections.append(connection) }

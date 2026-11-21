@@ -72,7 +72,7 @@ struct LaunchOptionsTests {
 
     @Test("Extension directories are checked on disk for a manifest, following links")
     func extensionDirectoriesOnDisk() throws {
-        let root = try temporaryDirectory()
+        let root = try scratchDirectory("launch-options")
         defer { try? FileManager.default.removeItem(at: root) }
         let manager = FileManager.default
         let good = root.appendingPathComponent("Good", isDirectory: true)
@@ -136,12 +136,5 @@ struct LaunchOptionsTests {
         #expect(Array(arguments[(load + 1)...]) == [
             "--window-size=1000,700", "--window-position=10,20", "https://example.com/",
         ])
-    }
-
-    private func temporaryDirectory() throws -> URL {
-        let url = URL(fileURLWithPath: "/tmp/identity-launch", isDirectory: true)
-            .appendingPathComponent("options-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
     }
 }

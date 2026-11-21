@@ -172,8 +172,7 @@ struct CookieTests {
 
     @Test("Exports are readable only by the owner, even when replacing a file")
     func writesPrivateFiles() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("anybrowser-cookie-file-\(UUID())")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let directory = try scratchDirectory("cookie-file")
         defer { try? FileManager.default.removeItem(at: directory) }
         let target = directory.appendingPathComponent("cookies.json")
         try Data("old".utf8).write(to: target)
@@ -181,8 +180,7 @@ struct CookieTests {
 
         try CookieTransfer.writeFile(Data("[]\n".utf8), to: target)
         #expect(try String(contentsOf: target, encoding: .utf8) == "[]\n")
-        let mode = try #require(FileManager.default.attributesOfItem(atPath: target.path)[.posixPermissions] as? Int)
-        #expect(mode == 0o600)
+        #expect(try permissions(target) == 0o600)
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["cookies.json"])
         #expect(try CookieTransfer.readFile(target) == Data("[]\n".utf8))
 
@@ -378,22 +376,7 @@ final class FakeDevTools: @unchecked Sendable {
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         let listener = try NWListener(using: parameters)
         let queue = DispatchQueue(label: "anybrowser.tests.devtools")
-        let port: UInt16 = try await withCheckedThrowingContinuation { continuation in
-            listener.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    listener.stateUpdateHandler = nil
-                    continuation.resume(returning: listener.port?.rawValue ?? 0)
-                case .failed(let error):
-                    listener.stateUpdateHandler = nil
-                    continuation.resume(throwing: error)
-                default:
-                    break
-                }
-            }
-            listener.newConnectionHandler = { _ in }
-            listener.start(queue: queue)
-        }
+        let port = try await listener.startAndWait(on: queue)
         let endpoint = try #require(URL(string: "ws://127.0.0.1:\(port)/devtools/browser/\(UUID().uuidString)"))
         let server = FakeDevTools(listener: listener, queue: queue, endpoint: endpoint, reply: reply)
         listener.newConnectionHandler = { [weak server] connection in

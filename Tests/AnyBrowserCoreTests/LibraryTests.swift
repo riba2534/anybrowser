@@ -4,14 +4,6 @@ import Foundation
 import SQLite3
 import Testing
 
-/// Every test works in its own directory under /tmp/library.
-private func scratchDirectory() throws -> URL {
-    let url = URL(fileURLWithPath: "/tmp/library", isDirectory: true)
-        .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-    return ProcessInspection.canonicalURL(url, isDirectory: true)!
-}
-
 private func execute(_ sql: String, in directory: URL, binding values: [Any] = []) throws {
     var database: OpaquePointer?
     guard sqlite3_open(directory.appendingPathComponent("profiles.sqlite3").path, &database) == SQLITE_OK else {
@@ -55,7 +47,7 @@ struct LibraryTests {
 
     @Test("Unreadable rows are skipped, kept, and still hold their port and seed")
     func unreadableRowsAreSkipped() throws {
-        let directory = try scratchDirectory()
+        let directory = try scratchDirectory("library")
         defer { try? FileManager.default.removeItem(at: directory) }
         let good = try ProfileStore(directory: directory).makeDraft()
         try ProfileStore(directory: directory).save(good)
@@ -87,7 +79,7 @@ struct LibraryTests {
 
     @Test("Launch times are recorded, survive reopening and go with the Profile")
     func launchTimes() throws {
-        let directory = try scratchDirectory()
+        let directory = try scratchDirectory("library")
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try ProfileStore(directory: directory)
         let first = try store.makeDraft()
@@ -142,7 +134,7 @@ struct LibraryTests {
 
     @Test("Imports get new ids, move off taken ports and seeds, and skip invalid entries")
     func importReassignsAndSkips() throws {
-        let directory = try scratchDirectory()
+        let directory = try scratchDirectory("library")
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try ProfileStore(directory: directory)
         let existing = try store.makeDraft()
@@ -227,7 +219,7 @@ struct LibraryTests {
 
     @Test("Import files larger than any export are rejected without reading them whole")
     func importSizeLimit() throws {
-        let directory = try scratchDirectory()
+        let directory = try scratchDirectory("library")
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = directory.appendingPathComponent("large.json")
         try Data(count: ProfileLibrary.maxImportBytes + 4096).write(to: file)
@@ -242,7 +234,7 @@ struct LibraryTests {
 
     @Test("Export files are readable only by the current user")
     func exportFilePermissions() throws {
-        let directory = try scratchDirectory()
+        let directory = try scratchDirectory("library")
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = directory.appendingPathComponent("Profiles.json")
         #expect(FileManager.default.createFile(atPath: file.path, contents: Data("old".utf8),
@@ -258,7 +250,7 @@ struct LibraryTests {
 
     @Test("Clones keep every setting but get a new id, name, port and seed")
     func cloneFields() throws {
-        let directory = try scratchDirectory()
+        let directory = try scratchDirectory("library")
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try ProfileStore(directory: directory)
         var original = try store.makeDraft()
@@ -293,7 +285,7 @@ struct LibraryTests {
 
     @Test("Batch creation numbers names around existing ones and validates before saving")
     func batchCreation() throws {
-        let directory = try scratchDirectory()
+        let directory = try scratchDirectory("library")
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try ProfileStore(directory: directory)
         for name in ["Profile 1", "Profile 3"] {
@@ -362,7 +354,7 @@ private struct DataFixture {
     let runtime: BrowserRuntime
 
     init() throws {
-        root = try scratchDirectory()
+        root = try scratchDirectory("library")
         let storage = root.appendingPathComponent("Storage", isDirectory: true)
         try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: false)
         let engine = BrowserEngine(version: "test", executable: URL(fileURLWithPath: "/bin/bash"),

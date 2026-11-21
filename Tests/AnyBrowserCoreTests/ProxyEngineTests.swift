@@ -6,16 +6,14 @@ import Testing
 // Debug port 9303 belongs to this suite.
 @Suite(.serialized)
 struct ProxyEngineTests {
-    private static let app = ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"]
-
     @Test(
         "Chromium signs in to an HTTP proxy with the Profile's credentials",
-        .enabled(if: app != nil, "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the proxy sign-in test.")
+        .enabled(if: testAppPath != nil, "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the proxy sign-in test.")
     )
     @MainActor
     func signsInToTheProxy() async throws {
-        let engine = try BrowserEngine.bundled(in: URL(fileURLWithPath: try #require(Self.app)))
-        let directory = URL(fileURLWithPath: "/tmp/proxy/engine-\(UUID().uuidString)", isDirectory: true)
+        let engine = try testEngine()
+        let directory = try scratchDirectory("proxy-engine")
         defer { try? FileManager.default.removeItem(at: directory) }
         let title = "AnyBrowser signed-in proxy"
         let stub = try await ProxyStub.start(credentials: "user:pass") { _ in
@@ -40,7 +38,7 @@ struct ProxyEngineTests {
             #expect(arguments.contains { $0.hasPrefix("--load-extension=") && $0.contains(helper.path) })
             #expect(!arguments.contains { $0.contains("user:pass") })
             let worker = "chrome-extension://\(Self.extensionID(helper))/background.js"
-            try await waitForTargets(port: profile.port) { $0.contains { $0["url"] as? String == worker } }
+            try await DevToolsPage.waitForTargets(port: profile.port) { $0.contains { $0["url"] as? String == worker } }
 
             let signedIn = "Basic " + Data("user:pass".utf8).base64EncodedString()
             let first = try #require(URL(string: "http://anybrowser-proxy.invalid/"))
@@ -62,7 +60,7 @@ struct ProxyEngineTests {
 
             // Chromium reuses the credentials preemptively; once the worker has gone idle, a fresh
             // challenge has to wake it.
-            try await waitForTargets(port: profile.port, timeout: 90) { !$0.contains { $0["url"] as? String == worker } }
+            try await DevToolsPage.waitForTargets(port: profile.port, timeout: 90) { !$0.contains { $0["url"] as? String == worker } }
             let second = try #require(URL(string: "http://anybrowser-proxy-second.invalid/"))
             stub.challengeNext(second.absoluteString)
             try await page.navigate(to: second)
@@ -107,22 +105,5 @@ struct ProxyEngineTests {
             guard Date() < deadline else { throw VerificationFailure.message("Timed out waiting for the proxy stub") }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
-    }
-
-    private func waitForTargets(port: Int, timeout: TimeInterval = 10,
-                                until condition: ([[String: Any]]) -> Bool) async throws {
-        let list = try #require(URL(string: "http://127.0.0.1:\(port)/json/list"))
-        let deadline = Date().addingTimeInterval(timeout)
-        var targets: [[String: Any]] = []
-        while Date() < deadline {
-            if let (data, _) = try? await URLSession.shared.data(from: list),
-               let value = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-                targets = value
-                if condition(targets) { return }
-            }
-            try await Task.sleep(nanoseconds: 250_000_000)
-        }
-        let seen = targets.map { "\($0["type"] ?? "") \($0["url"] ?? "")" }
-        throw VerificationFailure.message("DevTools targets did not settle: \(seen)")
     }
 }

@@ -8,13 +8,12 @@ struct InstalledEngineTests {
     @Test(
         "Separate profiles run on the installed Apple silicon engine",
         .enabled(
-            if: ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"] != nil,
+            if: testAppPath != nil,
             "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test."
         )
     )
     func separateProfilesOnInstalledAppleSiliconEngine() async throws {
-        let path = try #require(ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"])
-        let engine = try BrowserEngine.bundled(in: URL(fileURLWithPath: path))
+        let engine = try testEngine()
         try await verify(engine: engine)
     }
 
