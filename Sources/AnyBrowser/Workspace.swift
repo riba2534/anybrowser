@@ -46,11 +46,22 @@ struct Workspace: View {
             BatchCreateSheet(workbench: workbench)
         }
         .alert("移除 Profile？", isPresented: showRemovalAlert, presenting: removeCandidate) { candidate in
-            Button("移除", role: .destructive) { workbench.remove(candidate.id) }
+            Button("仅移除记录") { workbench.remove(candidate.id) }
+            Button("移除并删除浏览器资料", role: .destructive) {
+                Task { await workbench.removeDeletingData(candidate.id) }
+            }
             Button("取消", role: .cancel) {}
         } message: { candidate in
-            Text("「\(candidate.name)」将从列表移除。浏览器资料保留在本机。")
+            Text("「\(candidate.name)」将从列表移除。仅移除记录会把浏览器资料留在本机；删除浏览器资料会同时清除它的 Cookie、登录状态、历史记录和扩展数据，删除后无法恢复。")
         }
+        .alert("保存当前编辑？", isPresented: showCloneAlert) {
+            Button("保存并继续") { workbench.resolveClone(saveChanges: true) }
+            Button("放弃修改", role: .destructive) { workbench.resolveClone(saveChanges: false) }
+            Button("取消", role: .cancel) { workbench.library.pendingClone = false }
+        } message: {
+            Text("当前 Profile 有尚未保存的修改。复制的是保存后的配置。")
+        }
+        .onAppear { workbench.announceUnreadableProfiles() }
     }
 
     private var sidebar: some View {
@@ -58,8 +69,11 @@ struct Workspace: View {
             brand
                 .padding(.horizontal, 20)
                 .padding(.top, 48)
-                .padding(.bottom, 26)
-            HStack {
+                .padding(.bottom, 20)
+            LibrarySearchField(library: workbench.library)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 14)
+            HStack(spacing: 8) {
                 Text("Profiles")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(WorkbenchPalette.muted)
@@ -68,14 +82,30 @@ struct Workspace: View {
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundColor(WorkbenchPalette.muted)
                     .accessibilityLabel("Profile 数量 \(workbench.profiles.count)")
+                LibrarySortMenu(library: workbench.library)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 8)
 
             ScrollView {
-                LazyVStack(spacing: 4) {
-                    ForEach(workbench.profiles) { profile in
-                        profileRow(profile)
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    let sections = workbench.librarySections
+                    // Headers only help once at least one Profile has a group.
+                    let showsHeaders = sections.contains { !$0.group.isEmpty }
+                    ForEach(sections, id: \.group) { section in
+                        if showsHeaders {
+                            sectionHeader(section)
+                        }
+                        ForEach(section.profiles) { profile in
+                            profileRow(profile)
+                        }
+                    }
+                    if sections.isEmpty && !workbench.profiles.isEmpty {
+                        Text("没有匹配的 Profile")
+                            .font(.system(size: 12))
+                            .foregroundColor(WorkbenchPalette.muted)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
                     }
                     if let draft = workbench.draft, workbench.saved == nil {
                         profileRow(draft.profile, isDraft: true)
@@ -83,15 +113,21 @@ struct Workspace: View {
                 }
                 .padding(.horizontal, 12)
             }
-            Button {
-                workbench.request(.new)
-            } label: {
-                Label("新建 Profile", systemImage: "plus")
-                    .frame(maxWidth: .infinity)
+            Group {
+                if workbench.batchSelection.isEmpty {
+                    Button {
+                        workbench.request(.new)
+                    } label: {
+                        Label("新建 Profile", systemImage: "plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(WorkbenchButtonStyle(.quiet))
+                    .disabled(workbench.store == nil)
+                    .accessibilityIdentifier("new-profile")
+                } else {
+                    LibraryBatchBar(workbench: workbench)
+                }
             }
-            .buttonStyle(WorkbenchButtonStyle(.quiet))
-            .disabled(workbench.store == nil)
-            .accessibilityIdentifier("new-profile")
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
 
@@ -137,18 +173,41 @@ struct Workspace: View {
         .accessibilityHidden(true)
     }
 
+    private func sectionHeader(_ section: ProfileLibrary.Section) -> some View {
+        HStack(spacing: 6) {
+            Text(section.group.isEmpty ? "未分组" : section.group)
+                .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text(section.profiles.count.formatted())
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+        }
+        .foregroundColor(WorkbenchPalette.muted)
+        .padding(.horizontal, 8)
+        .padding(.top, 10)
+        .padding(.bottom, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+
     private func profileRow(_ profile: BrowserProfile, isDraft: Bool = false) -> some View {
         let isSelected = profile.id == workbench.selectedID
+        let isPicked = !isDraft && workbench.library.selection.contains(profile.id)
         let state = workbench.state(for: profile.id)
         return Button {
-            workbench.request(.profile(profile.id))
+            if !isDraft, NSEvent.modifierFlags.contains(.command) {
+                workbench.library.toggle(profile.id)
+            } else {
+                workbench.request(.profile(profile.id))
+            }
         } label: {
             HStack(spacing: 9) {
-                Image(systemName: platformIcon(profile.fingerprint.platform))
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(WorkbenchPalette.ink)
+                Image(systemName: isPicked ? "checkmark" : platformIcon(profile.fingerprint.platform))
+                    .font(.system(size: 13, weight: isPicked ? .bold : .medium))
+                    .foregroundColor(isPicked ? .white : WorkbenchPalette.ink)
                     .frame(width: 30, height: 30)
-                    .background(WorkbenchPalette.iconSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(isPicked ? Color.accentColor : WorkbenchPalette.iconSurface,
+                                in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(profile.name.isEmpty ? "未命名 Profile" : profile.name)
@@ -180,9 +239,15 @@ struct Workspace: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if !isDraft {
+                Button(isPicked ? "取消选择" : "加入批量选择") { workbench.library.toggle(profile.id) }
+            }
+        }
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityValue(isPicked ? "已加入批量选择" : "")
         .accessibilityIdentifier("profile-row-\(profile.id.uuidString)")
-        .help(profile.name)
+        .help(isDraft ? profile.name : "\(profile.name)（按住 Command 点击可多选）")
     }
 
     private var passkeyBoxFootnote: some View {
@@ -411,6 +476,13 @@ struct Workspace: View {
         Binding(
             get: { workbench.pendingDestination != nil },
             set: { showing in if !showing { workbench.pendingDestination = nil } }
+        )
+    }
+
+    private var showCloneAlert: Binding<Bool> {
+        Binding(
+            get: { workbench.library.pendingClone },
+            set: { showing in if !showing { workbench.library.pendingClone = false } }
         )
     }
 
