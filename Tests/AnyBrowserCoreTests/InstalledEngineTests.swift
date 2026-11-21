@@ -61,6 +61,58 @@ struct InstalledEngineTests {
         }
     }
 
+    @Test(
+        "Profiles sharing a Passkey Box account each sign in to their own site account without a picker",
+        .enabled(
+            if: PasskeyFlow.current != nil,
+            "Set ANYBROWSER_TEST_APP and ANYBROWSER_TEST_PASSKEY_SERVER, _USERNAME, _PASSWORD and _RP to run the passkey test."
+        )
+    )
+    @MainActor
+    func identitiesShareAnAccount() async throws {
+        let flow = try #require(PasskeyFlow.current)
+        let engine = try BrowserEngine.bundled(in: URL(fileURLWithPath: flow.app))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("anybrowser-identities-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        var profiles: [BrowserProfile] = []
+        for _ in 0..<2 {
+            var profile = try store.makeDraft()
+            profile.proxy = ""
+            try store.save(profile)
+            profiles.append(profile)
+        }
+        try await flow.account.verify()
+        try store.savePasskeyBoxAccount(flow.account)
+
+        let runtime = BrowserRuntime(engine: engine, storage: store.directory)
+        do {
+            let site = try #require(URL(string: flow.rp + "/?uv=required"))
+            var pages: [DevToolsPage] = []
+            defer { pages.forEach { $0.socket.cancel(with: .normalClosure, reason: nil) } }
+            let names = profiles.map { _ in "identity-" + UUID().uuidString.prefix(8).lowercased() }
+            for (profile, name) in zip(profiles, names) {
+                try await runtime.start(profile, passkeyBox: store.passkeyBoxAccount)
+                let page = try await DevToolsPage.open(port: profile.port, url: site)
+                pages.append(page)
+                _ = try await page.evaluate(
+                    "document.querySelector('#username').value = '\(name)'; document.querySelector('#register').click(); true",
+                    userGesture: true
+                )
+                #expect(try await page.siteResult() == "registered:\(name)")
+            }
+            // The account now holds both site accounts; each Profile signs in to its own, with no picker.
+            for (page, name) in zip(pages, names) {
+                _ = try await page.evaluate("document.querySelector('#login').click(); true", userGesture: true)
+                #expect(try await page.siteResult() == "authenticated:\(name)")
+            }
+            for profile in profiles { try await runtime.stop(profile.id) }
+        } catch {
+            for profile in profiles { try? await runtime.stop(profile.id) }
+            throw error
+        }
+    }
+
     @MainActor
     private func verify(engine: BrowserEngine) async throws {
         #expect(engine.version == "148.0.7778.215")
