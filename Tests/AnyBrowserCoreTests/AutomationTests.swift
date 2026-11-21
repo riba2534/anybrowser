@@ -300,6 +300,13 @@ struct AutomationTests {
             #expect(pending.status == 503)
             #expect(pending.errorCode == "unavailable")
             #expect(backend.started.isEmpty)
+
+            // The browser has gone away since the window last refreshed: the API starts it.
+            backend.refreshedStates[profile.id] = .stopped
+            backend.endpointAvailable = true
+            let restarted = await request(port, "POST", "/api/v1/profiles/\(profile.id)/start")
+            #expect(restarted.status == 200)
+            #expect(backend.started == [profile.id])
         }
     }
 
@@ -478,6 +485,8 @@ private final class FakeBackend: AutomationBackend {
     var startError: Error?
     var stopError: Error?
     var endpointAvailable = true
+    /// What a refresh finds on the system, when it differs from `states`.
+    var refreshedStates: [UUID: BrowserRunState] = [:]
     private(set) var started: [UUID] = []
     private(set) var stopped: [UUID] = []
 
@@ -502,6 +511,10 @@ private final class FakeBackend: AutomationBackend {
         stopped.append(id)
         if let stopError { throw stopError }
         states[id] = .stopped
+    }
+
+    func refresh(_ id: UUID) async {
+        if let state = refreshedStates[id] { states[id] = state }
     }
 
     func devToolsEndpoint(for id: UUID) async -> URL? {
@@ -532,6 +545,8 @@ private final class RuntimeBackend: AutomationBackend {
     func stop(_ id: UUID) async throws { try await runtime.stop(id) }
 
     func devToolsEndpoint(for id: UUID) async -> URL? { await runtime.devToolsEndpoint(for: id) }
+
+    func refresh(_ id: UUID) async { await runtime.refresh(store.profiles.filter { $0.id == id }) }
 }
 
 /// A blocking HTTP client over BSD sockets, so tests control every byte of the request.

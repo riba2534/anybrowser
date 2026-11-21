@@ -66,6 +66,8 @@ public protocol AutomationBackend: AnyObject {
     func start(_ profile: BrowserProfile) async throws
     func stop(_ id: UUID) async throws
     func devToolsEndpoint(for id: UUID) async -> URL?
+    /// Re-reads one Profile's browser state from the system.
+    func refresh(_ id: UUID) async
 }
 
 /// Serves the automation API on 127.0.0.1 with one request per connection. Network callbacks run
@@ -488,10 +490,14 @@ enum AutomationHTTP {
         guard !backend.isBusy(id) else { return busy }
         var endpoint: URL?
         if case .running = backend.state(for: id) {
-            // Already running: report it, never start it again over its current configuration.
+            // Already running: report it, never start it again over its current configuration. The
+            // state may be stale (the window refreshes it), so re-read it before giving up.
             endpoint = await backend.devToolsEndpoint(for: id)
             if endpoint == nil {
-                return .error(503, "unavailable", "浏览器正在运行，但调试端口尚未就绪，请稍后重试。")
+                await backend.refresh(id)
+                if case .running = backend.state(for: id) {
+                    return .error(503, "unavailable", "浏览器正在运行，但调试端口尚未就绪，请稍后重试。")
+                }
             }
         }
         if endpoint == nil {

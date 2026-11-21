@@ -101,9 +101,15 @@ final class Workbench: ObservableObject {
         if let running = runningConfigurations[id] {
             return running.fingerprint != stored.fingerprint || running.proxy != stored.proxy
                 || running.launch != stored.launch
-                || running.passkeyBox != (stored.passkeyBox ?? store?.passkeyBoxAccount)
+                || accountChanged(running.passkeyBox, stored)
         }
         return runtime?.matchesRunningConfiguration(stored) != true
+    }
+
+    /// A different account takes effect on restart; clearing the account does not sign the extension out.
+    private func accountChanged(_ running: PasskeyBoxAccount?, _ stored: BrowserProfile) -> Bool {
+        guard let effective = stored.passkeyBox ?? store?.passkeyBoxAccount else { return false }
+        return running != effective
     }
 
     func refresh() async {

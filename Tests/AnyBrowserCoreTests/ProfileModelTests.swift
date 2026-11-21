@@ -58,5 +58,12 @@ struct ProfileModelTests {
         profile.name = "Org"
         profile.group = "g" + String(repeating: "\u{0301}", count: 1_000)
         #expect(throws: ProfileError.self) { try profile.validated() }
+
+        // Existing names full of emoji sequences stay valid: 80 keycaps of 3 scalars each.
+        profile.group = ""
+        profile.name = String(repeating: "1\u{FE0F}\u{20E3}", count: 80)
+        #expect(profile.name.unicodeScalars.count == 240)
+        #expect(profile.name.count == 80)
+        #expect(throws: Never.self) { try profile.validated() }
     }
 }

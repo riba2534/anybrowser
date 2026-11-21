@@ -115,6 +115,11 @@ final class AutomationController: ObservableObject, AutomationBackend {
     func devToolsEndpoint(for id: UUID) async -> URL? {
         await workbench?.runtime?.devToolsEndpoint(for: id)
     }
+
+    func refresh(_ id: UUID) async {
+        guard let workbench, let profile = workbench.profiles.first(where: { $0.id == id }) else { return }
+        await workbench.runtime?.refresh([profile])
+    }
 }
 
 /// Settings for the local automation API.

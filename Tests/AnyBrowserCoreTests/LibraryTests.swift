@@ -515,6 +515,23 @@ struct BrowserDataRemovalTests {
         #expect(fixture.exists(target.data.appendingPathComponent("Cookies")))
     }
 
+    @Test("Removing only the record ignores an unusual browser data directory")
+    func keepingBrowserDataIgnoresDataDirectory() async throws {
+        let fixture = try DataFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let id = UUID()
+        let target = try fixture.populate(id)
+        // The kept data directory is now a link elsewhere: it must not block removing the record.
+        let moved = fixture.root.appendingPathComponent("MovedData", isDirectory: true)
+        try FileManager.default.moveItem(at: target.data, to: moved)
+        try FileManager.default.createSymbolicLink(at: target.data, withDestinationURL: moved)
+        var recordRemoved = false
+        try await fixture.runtime.removeData(for: id, keepingBrowserData: true) { recordRemoved = true }
+        #expect(recordRemoved)
+        #expect(!fixture.exists(target.extensions))
+        #expect(fixture.exists(moved.appendingPathComponent("Cookies")))
+    }
+
     @Test("A directory that cannot be deleted does not stop the other, and its full path is reported")
     func deletionFailureTriesBoth() async throws {
         let fixture = try DataFixture()
@@ -635,7 +652,12 @@ struct BrowserDataRemovalTests {
         #expect(message(error).contains("路径异常"))
         #expect(!recordRemoved)
         #expect(fixture.exists(victim.appendingPathComponent("Keep")))
-        await #expect(throws: ProfileError.self) { try await fixture.runtime.removeData(for: id, keepingBrowserData: true) }
+        // Removing only the record still goes ahead and reports the extension path it left alone.
+        var keptRecordRemoved = false
+        await #expect(throws: ProfileError.self) {
+            try await fixture.runtime.removeData(for: id, keepingBrowserData: true) { keptRecordRemoved = true }
+        }
+        #expect(keptRecordRemoved)
         #expect(fixture.exists(victim.appendingPathComponent("Keep")))
     }
 

@@ -16,11 +16,20 @@ extension BrowserRuntime {
             break
         }
         let data = dataDirectory(for: id)
-        let existing = try [data, ProfileExtensions.root(in: storage, for: id)].filter(verifiedForRemoval)
-        let targets = keepingBrowserData ? existing.filter { $0 != data } : existing
+        // Only what will be deleted is checked. Removing just the record must keep working even when
+        // the browser data directory, or the generated extension directory, is not as expected.
+        var targets: [URL] = []
+        var skipped: [String] = []
+        for url in keepingBrowserData ? [ProfileExtensions.root(in: storage, for: id)] : [data, ProfileExtensions.root(in: storage, for: id)] {
+            do {
+                if try verifiedForRemoval(url) { targets.append(url) }
+            } catch where keepingBrowserData {
+                skipped.append("\(url.path)（路径异常，未删除）")
+            }
+        }
         var lock: Int32?
         defer { lock.map { _ = close($0) } }
-        if existing.contains(data) {
+        if targets.contains(data) {
             guard !profileInUse(data) else {
                 throw ProfileError.invalid("此 Profile 的浏览器资料正在使用，请先在浏览器中退出。")
             }
@@ -29,7 +38,7 @@ extension BrowserRuntime {
         }
         try beforeDeleting()
         // Chromium data can be large; delete off the main thread. One failure does not stop the rest.
-        let failures: [String] = await Task.detached {
+        let unremoved: [String] = await Task.detached {
             targets.compactMap { target in
                 do {
                     try FileManager.default.removeItem(at: target)
@@ -39,6 +48,7 @@ extension BrowserRuntime {
                 }
             }
         }.value
+        let failures = skipped + unremoved
         if !failures.isEmpty {
             throw ProfileError.invalid("以下目录未能删除，可以手动删除：\(failures.joined(separator: "；"))")
         }
