@@ -199,7 +199,7 @@ struct InstalledEngineTests {
                 """)
             if let fields = observed as? [String: Any] {
                 #expect((fields["id"] as? String) == id)
-                #expect((fields["version"] as? String) == "0.3.0")
+                #expect((fields["version"] as? String) == "0.4.0")
                 #expect((fields["server"] as? String) == "https://password.riba2534.cn/")
                 return
             }

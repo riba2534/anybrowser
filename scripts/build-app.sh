@@ -7,8 +7,8 @@ engine_sha256=b72f091e2e1a7583eed389c4b8e3534ed355e568af8c8bbf8fc30a25e23ca679
 engine_filename="ungoogled-chromium_${engine_version}-1.1_macos.dmg"
 engine_url="https://github.com/adryfish/fingerprint-chromium/releases/download/${engine_version}/${engine_filename}"
 
-passkey_version=0.3.0
-passkey_sha256=3cf5b58ff46c87b41b866ab0f4843b39c6c46c09eb98303d5e41594d7014d79e
+passkey_version=0.4.0
+passkey_sha256=86526d33f27f047af3ce8963b15994fbc03745a817c391c838df43f6df0da130
 passkey_id=gfejlnakeokbjdhoionfappnfepjoili
 passkey_filename="passkey-box-extension-anybrowser-v${passkey_version}.zip"
 passkey_url="https://github.com/riba2534/passkey-box/releases/download/v${passkey_version}/${passkey_filename}"
