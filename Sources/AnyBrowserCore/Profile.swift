@@ -202,7 +202,7 @@ extension FingerprintSettings {
         if !timeZone.isEmpty {
             arguments.append("--timezone=\(timeZone)")
         }
-        // The engine's WebGL values describe a Windows GPU, so a Linux identity never spoofs them.
+        // The engine has no Linux GPU values to spoof WebGL with; say so rather than rely on it.
         let disabled = FingerprintAdjustment.allCases.filter {
             !adjustments.contains($0) || ($0 == .gpu && platform == .linux)
         }

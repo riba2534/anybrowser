@@ -53,7 +53,7 @@ struct FingerprintCard: View {
                             .accessibilityIdentifier("adjustment-\(adjustment.rawValue)")
                     }
                 }
-                Text("设备内存由种子决定。WebGL 参数使用 Windows 档位，平台为 Linux 时不改写。")
+                Text("设备内存由种子决定。WebGL 参数按平台改写，未选平台时按 Windows；平台为 Linux 时不改写。")
                     .font(.system(size: 12))
                     .foregroundColor(WorkbenchPalette.muted)
             }
