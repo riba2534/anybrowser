@@ -157,14 +157,191 @@ struct FingerprintTests {
             var everything = FingerprintSettings(seed: 23)
             everything.randomize(Set(FingerprintField.allCases), excluding: [])
             #expect(matches(everything.brandVersion, everything.brand))
-            let webGL: [String] = switch everything.platform {
+            var expected: [String] = switch everything.platform {
             case .linux: ["linux-webgl"]
             case .windows where !everything.adjustments.contains(.gpu): ["webgl-real-gpu"]
             default: []
             }
-            #expect(issueIDs(everything) == webGL, "\(everything)")
+            if let platform = everything.platform, platform != .macOS,
+               everything.fontProfile != nil, !everything.adjustments.contains(.font) {
+                expected.append("font-spoof-missing")
+            }
+            #expect(issueIDs(everything) == expected, "\(everything)")
         }
         #expect(seen == Set(BrowserBrand.allCases))
+    }
+
+    @Test("Field randomization keeps language and time zone paired")
+    func languageAndTimeZoneStayPaired() {
+        let languages: Set<String> = ["en-US", "en-GB", "zh-CN", "ja-JP", "de-DE",
+                                      "fr-FR", "es-ES", "pt-BR", "ko-KR"]
+        let zones: Set<String> = ["America/New_York", "America/Chicago", "America/Denver",
+                                  "America/Los_Angeles", "Europe/London", "Asia/Shanghai",
+                                  "Asia/Tokyo", "Europe/Berlin", "Europe/Paris",
+                                  "Europe/Madrid", "America/Sao_Paulo", "Asia/Seoul"]
+        for field in [FingerprintField.language, .timeZone] {
+            for _ in 0..<50 {
+                var fingerprint = FingerprintSettings(seed: 101)
+                fingerprint.randomize([field], excluding: [])
+                #expect(languages.contains(fingerprint.language))
+                #expect(zones.contains(fingerprint.timeZone))
+                #expect(fingerprint.languages?.first == fingerprint.language)
+                #expect(fingerprint.languages?.count == 2)
+            }
+        }
+    }
+
+    @Test("CPU counts follow the platform")
+    func cpuCountsFollowPlatform() {
+        let cases: [(BrowserPlatform?, Set<Int>)] = [
+            (.macOS, [8, 10, 12]),
+            (.windows, [4, 6, 8, 12, 16]),
+            (.linux, [2, 4, 8]),
+            (nil, [4, 8, 12, 16]),
+        ]
+        for (platform, allowed) in cases {
+            for _ in 0..<100 {
+                var fingerprint = FingerprintSettings(seed: 102)
+                fingerprint.platform = platform
+                fingerprint.randomize([.cpuCount], excluding: [])
+                #expect(allowed.contains(fingerprint.cpuCount ?? 0),
+                        "\(String(describing: platform)) \(String(describing: fingerprint.cpuCount))")
+            }
+        }
+    }
+
+    @Test("Randomized adjustments follow the platform")
+    func adjustmentsFollowPlatform() {
+        for platform in [BrowserPlatform.macOS, .windows, .linux] {
+            for _ in 0..<50 {
+                var fingerprint = FingerprintSettings(seed: 103)
+                fingerprint.platform = platform
+                fingerprint.adjustments = [.canvas, .clientRects, .font]
+                fingerprint.randomize([.adjustments], excluding: [])
+                #expect(fingerprint.adjustments.contains(.canvas))
+                #expect(fingerprint.adjustments.contains(.clientRects))
+                #expect(fingerprint.adjustments.contains(.gpu) == (platform != .linux))
+                if platform == .macOS {
+                    #expect(fingerprint.adjustments.contains(.font))
+                } else {
+                    #expect(!fingerprint.adjustments.contains(.font))
+                }
+            }
+        }
+        var unset = FingerprintSettings(seed: 104)
+        unset.randomize([.adjustments], excluding: [])
+        #expect(!unset.adjustments.contains(.gpu))
+    }
+
+    @Test("Changing platform clears values that cannot follow it")
+    func platformChangeClearsStaleValues() {
+        for _ in 0..<50 {
+            var fingerprint = FingerprintSettings(seed: 105)
+            fingerprint.platform = .macOS
+            fingerprint.platformVersion = "26.2.0"
+            fingerprint.fontProfile = .macos26
+            fingerprint.screenWidth = 1728
+            fingerprint.screenHeight = 1117
+            fingerprint.availWidth = 1728
+            fingerprint.availHeight = 1080
+            fingerprint.colorDepth = 30
+            fingerprint.deviceScaleFactor = 2
+            fingerprint.deviceMemory = 8
+            fingerprint.touch = true
+            fingerprint.adjustments = [.canvas, .clientRects, .font, .gpu]
+
+            fingerprint.randomize([.platform], excluding: [])
+            let platform = fingerprint.platform ?? .macOS
+            #expect(fingerprint.screenWidth == nil)
+            #expect(fingerprint.screenHeight == nil)
+            #expect(fingerprint.availWidth == nil)
+            #expect(fingerprint.availHeight == nil)
+            #expect(fingerprint.colorDepth == nil)
+            #expect(fingerprint.deviceScaleFactor == nil)
+            #expect(fingerprint.deviceMemory == nil)
+            #expect(fingerprint.touch == false)
+            #expect(fingerprint.fontProfile?.platform == platform)
+            #expect(fingerprint.adjustments.contains(.gpu) == (platform != .linux))
+            if platform != .macOS {
+                #expect(!fingerprint.adjustments.contains(.font))
+            }
+            #expect(throws: Never.self) {
+                try BrowserProfile(name: "R", port: 9301, fingerprint: fingerprint).validated()
+            }
+        }
+    }
+
+    @Test("Randomizing every field never creates a cross-field contradiction")
+    func randomEverythingIsCoherent() {
+        // Only the known engine limitations may remain: Linux WebGL and non-macOS font spoofing.
+        let allowed: Set<String> = ["linux-webgl", "font-spoof-missing"]
+        for _ in 0..<200 {
+            var fingerprint = FingerprintSettings(seed: Int.random(in: 1...100_000))
+            fingerprint.randomize(Set(FingerprintField.allCases), excluding: [])
+            let ids = Set(issueIDs(fingerprint))
+            #expect(ids.isSubset(of: allowed), "\(fingerprint) -> \(ids)")
+            if let platform = fingerprint.platform {
+                #expect(fingerprint.fontProfile?.platform == platform)
+            }
+            #expect(fingerprint.languages?.first == fingerprint.language)
+        }
+    }
+
+    @Test("Saving normalizes the language list and font profile")
+    func savingNormalizesIdentityFields() throws {
+        var fingerprint = FingerprintSettings(seed: 111)
+        fingerprint.platform = .macOS
+        fingerprint.platformVersion = "15.7.1"
+        fingerprint.fontProfile = .macos26
+        fingerprint.language = "ja-JP"
+        fingerprint.languages = ["en-US", "en"]
+        let profile = try BrowserProfile(name: "N", port: 9301, fingerprint: fingerprint).validated()
+        #expect(profile.fingerprint.languages == ["ja-JP", "ja"])
+        #expect(profile.fingerprint.fontProfile == .macos15)
+
+        var cleared = profile.fingerprint
+        cleared.language = ""
+        cleared.languages = ["ja-JP", "ja"]
+        let reopened = try BrowserProfile(name: "N", port: 9301, fingerprint: cleared).validated()
+        #expect(reopened.fingerprint.languages == nil)
+    }
+
+    @Test("Engine-default platform clears platform-specific claims")
+    func engineDefaultClearsPlatformClaims() {
+        var fingerprint = FingerprintSettings(seed: 112)
+        fingerprint.platform = .windows
+        fingerprint.platformVersion = "19.0.0"
+        fingerprint.fontProfile = .windows11
+        fingerprint.screenWidth = 1920
+        fingerprint.screenHeight = 1080
+        fingerprint.availWidth = 1920
+        fingerprint.availHeight = 1040
+        fingerprint.colorDepth = 24
+        fingerprint.deviceScaleFactor = 1
+        fingerprint.deviceMemory = 8
+        fingerprint.adaptToPlatform()
+        #expect(fingerprint.fontProfile == .windows11)
+
+        fingerprint.platform = nil
+        fingerprint.adaptToPlatform()
+        #expect(fingerprint.platformVersion.isEmpty)
+        #expect(fingerprint.fontProfile == nil)
+        #expect(fingerprint.screenWidth == nil)
+        #expect(fingerprint.screenHeight == nil)
+        #expect(fingerprint.colorDepth == nil)
+        #expect(fingerprint.deviceScaleFactor == nil)
+        #expect(fingerprint.deviceMemory == nil)
+    }
+
+    @Test("A new macOS version updates the font profile")
+    func macOSVersionUpdatesFontProfile() {
+        for _ in 0..<50 {
+            var fingerprint = FingerprintSettings(seed: 106)
+            fingerprint.platform = .macOS
+            fingerprint.fontProfile = .macos26
+            fingerprint.randomize([.platformVersion], excluding: [])
+            #expect(fingerprint.fontProfile == (fingerprint.platformVersion.hasPrefix("15") ? .macos15 : .macos26))
+        }
     }
 
     @Test("Randomizing anything leaves a Linux identity without WebGL spoofing")
@@ -261,7 +438,10 @@ struct FingerprintTests {
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: directory) }
             let draft = try ProfileStore(directory: directory).makeDraft()
-            #expect(draft.fingerprint.platform == nil && !draft.fingerprint.adjustments.contains(.gpu))
+            #expect(draft.fingerprint.platform != nil)
+            #expect(draft.fingerprint.adjustments.contains(.gpu))
+            #expect(draft.fingerprint.adjustments.contains(.audio))
+            #expect(draft.fingerprint.languages?.isEmpty == false)
             #expect(draft.consistencyIssues(engineVersion: Self.engine, exit: nil).isEmpty)
         }
     }

@@ -37,14 +37,17 @@ public enum ProfileLibrary {
         public var group: String
         public var preset: IdentityPreset?
         public var proxy: String
+        /// Locale taken from the shared proxy exit; nil means each Profile samples its own.
+        public var locale: IdentitySampler.LocaleHint?
 
         public init(count: Int, prefix: String = "Profile", group: String = "", preset: IdentityPreset? = nil,
-                    proxy: String = BrowserProfile.defaultProxy) {
+                    proxy: String = BrowserProfile.defaultProxy, locale: IdentitySampler.LocaleHint? = nil) {
             self.count = count
             self.prefix = prefix
             self.group = group
             self.preset = preset
             self.proxy = proxy
+            self.locale = locale
         }
     }
 
@@ -146,8 +149,10 @@ public enum ProfileLibrary {
         var result: [BrowserProfile] = []
         for _ in 0..<request.count {
             repeat { index += 1 } while names.contains("\(prefix) \(index)")
-            var fingerprint = FingerprintSettings(seed: FingerprintSettings.newSeed(excluding: seeds))
-            request.preset?.apply(to: &fingerprint)
+            // Every Profile in a batch gets its own bundle, not one preset copied N times.
+            let fingerprint = IdentitySampler.sample(
+                seed: FingerprintSettings.newSeed(excluding: seeds),
+                constraints: .init(preset: request.preset, locale: request.locale))
             let profile = try BrowserProfile(name: "\(prefix) \(index)", port: freePort(excluding: ports),
                                              fingerprint: fingerprint, proxy: request.proxy,
                                              group: request.group).validated()

@@ -64,6 +64,36 @@ extension BrowserProfile {
                                            message: "未选平台时 WebGL 按 Windows 显卡改写，与本机 macOS 身份不符"))
         }
 
+        if let width = fingerprint.screenWidth, let height = fingerprint.screenHeight {
+            let availWidth = fingerprint.availWidth ?? width
+            let availHeight = fingerprint.availHeight ?? height
+            if availWidth > width || availHeight > height {
+                issues.append(ConsistencyIssue(id: "screen-avail",
+                                               message: "可用屏幕 \(availWidth)×\(availHeight) 大于屏幕 \(width)×\(height)。"))
+            }
+        }
+        if let colorDepth = fingerprint.colorDepth, let platform = fingerprint.platform {
+            let allowed: Set<Int> = platform == .macOS ? [24, 30] : [24]
+            if !allowed.contains(colorDepth) {
+                issues.append(ConsistencyIssue(id: "screen-color-depth",
+                                               message: "\(platform.title) 身份常见色深为 \(allowed.sorted().map(String.init).joined(separator: "/"))，当前为 \(colorDepth)。"))
+            }
+        }
+        if let deviceMemory = fingerprint.deviceMemory, deviceMemory > 8 {
+            issues.append(ConsistencyIssue(id: "device-memory",
+                                           message: "设备内存 \(deviceMemory) GB 超出 Chromium 规范上限 8 GB。"))
+        }
+        if let fontProfile = fingerprint.fontProfile, let platform = fingerprint.platform,
+           fontProfile.platform != platform {
+            issues.append(ConsistencyIssue(id: "font-profile-platform",
+                                           message: "字体表「\(fontProfile.title)」与 \(platform.title) 平台不匹配。"))
+        }
+        if let fontProfile = fingerprint.fontProfile, fontProfile.platform != .macOS,
+           !fingerprint.adjustments.contains(.font) {
+            issues.append(ConsistencyIssue(id: "font-spoof-missing",
+                                           message: "\(fontProfile.title) 尚未启用字体改写，Stripe 会读到本机 macOS 字体。"))
+        }
+
         guard let exit else { return issues }
         let location = [exit.city, exit.countryCode].filter { !$0.isEmpty }.joined(separator: ", ")
         let place = location.isEmpty ? "出口 IP " : "出口 IP 所在地（\(location)）"

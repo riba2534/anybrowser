@@ -81,8 +81,10 @@ extension Workbench {
 
     // MARK: Batch actions
 
-    func createBatch(_ batch: ProfileLibrary.BatchRequest) throws -> [BrowserProfile] {
+    func createBatch(_ batch: ProfileLibrary.BatchRequest) async throws -> [BrowserProfile] {
         guard let store else { throw ProfileError.invalid(Self.storeUnavailable) }
+        var batch = batch
+        batch.locale = await localeHint(for: batch.proxy)
         return try store.saveBatch(batch)
     }
 

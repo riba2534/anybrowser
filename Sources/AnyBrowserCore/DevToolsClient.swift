@@ -53,11 +53,14 @@ public actor DevToolsClient {
     }
 
     /// Sends a command and waits for its result. CDP errors throw `DevToolsCommandError`.
-    public func send(_ method: String, _ params: [String: Any] = [:]) async throws -> [String: Any] {
+    /// Pass a `sessionId` from `Target.attachToTarget` for page-scoped domains such as `Storage.clearDataForOrigin`.
+    public func send(_ method: String, _ params: [String: Any] = [:],
+                     sessionId: String? = nil) async throws -> [String: Any] {
         if let failure { throw failure }
         nextID += 1
         let id = nextID
-        let command: [String: Any] = ["id": id, "method": method, "params": params]
+        var command: [String: Any] = ["id": id, "method": method, "params": params]
+        if let sessionId { command["sessionId"] = sessionId }
         guard JSONSerialization.isValidJSONObject(command) else {
             throw ProfileError.invalid("调试命令 \(method) 的参数无效。")
         }

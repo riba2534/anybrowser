@@ -241,6 +241,46 @@ struct InstalledEngineTests {
         #expect((fields["zone"] as? String) == timezone)
     }
 
+    @Test(
+        "Clearing a running Profile's site data removes its cookies and localStorage",
+        .enabled(
+            if: testAppPath != nil,
+            "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test."
+        )
+    )
+    @MainActor
+    func clearSiteDataOnRunningProfile() async throws {
+        let engine = try testEngine()
+        let directory = try scratchDirectory("site-data-running")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        var profile = try store.makeDraft()
+        profile.port = 9313
+        profile.proxy = ""
+        try store.save(profile)
+
+        let page = try await LoopbackPage.start(title: "AnyBrowser site data")
+        defer { page.listener.cancel() }
+        let runtime = BrowserRuntime(engine: engine, storage: store.directory)
+        try await runtime.start(profile)
+        do {
+            let devtools = try await DevToolsPage.open(port: profile.port, url: page.url)
+            defer { devtools.socket.cancel(with: .normalClosure, reason: nil) }
+            _ = try await devtools.evaluate(
+                "document.cookie = 'siteData=1; path=/'; localStorage.setItem('siteData','1'); document.cookie")
+            let origin = "http://127.0.0.1:\(try #require(page.url.port))"
+            try await runtime.clearSiteData(for: profile.id, origins: [origin])
+            let cookies = try await devtools.evaluate("document.cookie") as? String
+            let stored = try await devtools.evaluate("localStorage.getItem('siteData')")
+            #expect(cookies == "")
+            #expect(stored is NSNull)
+            try await runtime.stop(profile.id)
+        } catch {
+            try? await runtime.stop(profile.id)
+            throw error
+        }
+    }
+
     private func assertPasskeyBox(_ page: DevToolsPage, id: String) async throws {
         for _ in 0..<50 {
             let observed = try await page.evaluate("""

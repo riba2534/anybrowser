@@ -146,6 +146,8 @@ ANYBROWSER_TEST_APP="$PWD/dist/AnyBrowser.app" swift test --arch arm64
 
 第二条命令需要提前构建应用、登录 macOS 图形会话，并预留本机端口 9222、9223 和 9301–9312。它用临时资料目录启动真实浏览器，验证调试端点、代理与代理账号密码、站点存储隔离、Passkey Box 预填地址与 Profile 级账号、启动网址与窗口、额外扩展、Cookie 导入导出，以及通过自动化接口启停，还有重启恢复。
 
+若只验证合成指纹的校验流程，可在第二条命令后加 `--filter VerificationFixtureTests`（使用端口 9307、9308）。该用例通过 `127.0.0.1` 上的测试页验证指纹不变、变化、重试和 Profile 隔离；只传入合成值，不读取或修改实际浏览器指纹，也不调用外部校验服务。
+
 再设置 `ANYBROWSER_TEST_PASSKEY_SERVER`、`ANYBROWSER_TEST_PASSKEY_USERNAME`、`ANYBROWSER_TEST_PASSKEY_PASSWORD` 和 `ANYBROWSER_TEST_PASSKEY_RP`（[passkey-box](https://github.com/riba2534/passkey-box) 的 `e2e/rp` 测试网站，例如 `http://localhost:18422`），会额外启动一个带账号的 Profile，在要求用户验证的网站上完成注册和登录，并确认全程没有打开其他窗口。
 
 `scripts/check-updates.sh` 对比 `build-app.sh` 固定的引擎、Passkey Box 版本与上游最新发布。CI 在每次推送和 PR 上编译、测试并打包；推送 `v*` tag 时自动发布 ZIP 和 `SHA256SUMS`。

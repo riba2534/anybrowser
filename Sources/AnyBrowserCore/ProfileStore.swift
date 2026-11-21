@@ -113,8 +113,21 @@ public final class ProfileStore: ObservableObject {
         let port = try ProfileLibrary.freePort(excluding: takenPorts)
         let names = Set(profiles.map(\.name))
         let index = (1...(names.count + 1)).first { !names.contains("Profile \($0)") }!
-        let fingerprint = FingerprintSettings(seed: FingerprintSettings.newSeed(excluding: takenSeeds))
+        let fingerprint = IdentitySampler.sample(seed: FingerprintSettings.newSeed(excluding: takenSeeds))
         return BrowserProfile(name: "Profile \(index)", port: port, fingerprint: fingerprint)
+    }
+
+    /// A new identity for an existing Profile, keeping its name, port, proxy, account and launch options.
+    /// The caller decides whether to save it; the UI uses this for "整套重新生成".
+    public func regenerateIdentity(_ profile: BrowserProfile, preset: IdentityPreset? = nil,
+                                   locale: IdentitySampler.LocaleHint? = nil) throws -> BrowserProfile {
+        var value = profile
+        let seeds = Set(profiles.map(\.fingerprint.seed)).union([profile.fingerprint.seed])
+        let platforms = profile.fingerprint.platform.map { [$0] }
+        value.fingerprint = IdentitySampler.sample(
+            seed: FingerprintSettings.newSeed(excluding: seeds),
+            constraints: .init(platforms: platforms, preset: preset, locale: locale))
+        return try value.validated()
     }
 
     public func save(_ profile: BrowserProfile) throws {
