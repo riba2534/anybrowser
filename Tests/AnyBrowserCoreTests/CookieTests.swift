@@ -323,7 +323,9 @@ struct CookieTests {
         #expect(result.imported == 204)
         #expect(result.skipped == 2)
         let batches = server.commands.compactMap { $0["cookies"] as? [[String: Any]] }
-        #expect(batches.map(\.count) == [100, 100] + Array(repeating: 1, count: 100) + [5])
+        // Typed separately: Swift 6.1 cannot type-check the whole expression inside #expect in time.
+        let sizes: [Int] = [100, 100] + Array(repeating: 1, count: 100) + [5]
+        #expect(batches.map(\.count) == sizes)
         let first = try #require(batches.first?.first)
         #expect(first as NSDictionary == [
             "name": "c0", "value": "0", "domain": "example.com", "path": "/", "httpOnly": false, "secure": false,
