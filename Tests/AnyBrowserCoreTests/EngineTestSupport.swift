@@ -92,7 +92,7 @@ struct LoopbackPage {
     var listener: NWListener
     var url: URL
 
-    static func start(title: String = "AnyBrowser local test") async throws -> LoopbackPage {
+    static func start(title: String = "AnyBrowser local test", content: String = "") async throws -> LoopbackPage {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         let listener = try NWListener(using: parameters)
@@ -100,7 +100,7 @@ struct LoopbackPage {
         listener.newConnectionHandler = { connection in
             connection.start(queue: queue)
             connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { _, _, _, _ in
-                let body = "<!doctype html><meta charset=utf-8><title>\(title)</title>"
+                let body = "<!doctype html><meta charset=utf-8><title>\(title)</title>\(content)"
                 let response = Data("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)".utf8)
                 connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
             }

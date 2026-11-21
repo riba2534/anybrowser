@@ -29,7 +29,7 @@ struct ProfileTests {
             #expect(reopened.profiles == [first, second])
             #expect(first.fingerprint.seed != second.fingerprint.seed)
             #expect(second.port == 9223)
-            #expect(second.fingerprint.platform == nil)
+            #expect(second.fingerprint.platform != nil)
 
             let dataDirectory = directory.appendingPathComponent(first.id.uuidString)
             try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: false)
@@ -48,7 +48,14 @@ struct ProfileTests {
         fingerprint.brandVersion = "148.0.3967.54"
         fingerprint.cpuCount = 12
         fingerprint.language = "zh-CN"
+        fingerprint.languages = ["zh-CN", "zh"]
         fingerprint.timeZone = "Asia/Shanghai"
+        fingerprint.screenWidth = 1920
+        fingerprint.screenHeight = 1080
+        fingerprint.availWidth = 1920
+        fingerprint.availHeight = 1040
+        fingerprint.colorDepth = 24
+        fingerprint.deviceScaleFactor = 1
         fingerprint.adjustments = [.canvas, .clientRects]
 
         let userDataDirectory = URL(fileURLWithPath: "/tmp/AnyBrowser Testing/Profile Space")
@@ -65,6 +72,9 @@ struct ProfileTests {
         #expect(arguments.contains("--fingerprint-hardware-concurrency=12"))
         #expect(arguments.contains("--accept-lang=zh-CN,zh"))
         #expect(arguments.contains("--timezone=Asia/Shanghai"))
+        #expect(arguments.contains("--fingerprint-screen-width=1920"))
+        #expect(arguments.contains("--fingerprint-screen-height=1080"))
+        #expect(arguments.contains("--fingerprint-device-scale-factor=1"))
         #expect(arguments.contains("--disable-spoofing=font,audio,gpu"))
     }
 
@@ -108,6 +118,7 @@ struct ProfileTests {
             draft.fingerprint.language = "en-US --remote-debugging-port=9444"
             #expect(throws: (any Error).self) { try store.save(draft) }
             draft.fingerprint.language = "en-US"
+            draft.fingerprint.platform = nil
             draft.fingerprint.platformVersion = "26.1"
             #expect(throws: (any Error).self) { try store.save(draft) }
             draft.fingerprint.platform = .macOS
@@ -124,8 +135,13 @@ struct ProfileTests {
             defer { try? FileManager.default.removeItem(at: directory) }
             let store = try ProfileStore(directory: directory)
             let draft = try store.makeDraft()
-            #expect(throws: (any Error).self) { try store.randomize(draft, fields: [.platformVersion]) }
-            #expect(throws: (any Error).self) { try store.randomize(draft, fields: [.brandVersion]) }
+            var unbased = draft
+            unbased.fingerprint.platform = nil
+            unbased.fingerprint.platformVersion = ""
+            unbased.fingerprint.brand = nil
+            unbased.fingerprint.brandVersion = ""
+            #expect(throws: (any Error).self) { try store.randomize(unbased, fields: [.platformVersion]) }
+            #expect(throws: (any Error).self) { try store.randomize(unbased, fields: [.brandVersion]) }
             let changed = try store.randomize(draft, fields: [.platform, .platformVersion, .brand, .brandVersion])
             #expect(changed.fingerprint.platform != nil)
             #expect(!changed.fingerprint.platformVersion.isEmpty)

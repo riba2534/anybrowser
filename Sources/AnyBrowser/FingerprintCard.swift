@@ -9,6 +9,7 @@ struct FingerprintCard: View {
     @State private var showRandomizer = false
     @State private var showPresets = false
     @State private var randomFields: Set<FingerprintField> = [.seed]
+    @State private var regenerating = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -36,8 +37,22 @@ struct FingerprintCard: View {
                     .popover(isPresented: $showRandomizer, arrowEdge: .bottom) {
                         randomizer
                     }
+                    Button {
+                        regenerating = true
+                        Task {
+                            _ = await workbench.regenerateIdentity()
+                            regenerating = false
+                        }
+                    } label: {
+                        Label(regenerating ? "生成中…" : "整套重新生成",
+                              systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .buttonStyle(WorkbenchButtonStyle(.neutral))
+                    .disabled(regenerating)
+                    .accessibilityIdentifier("regenerate-identity")
                 }
                 fingerprintFields
+                identitySummary
                 consistencyWarnings
             }
 
@@ -52,7 +67,7 @@ struct FingerprintCard: View {
                             .accessibilityIdentifier("adjustment-\(adjustment.rawValue)")
                     }
                 }
-                Text("设备内存由种子决定。WebGL 参数按平台改写，未选平台时按 Windows；平台为 Linux 时不改写。")
+                Text("新建 Profile 会自动生成一套身份；「整套重新生成」会换种子、语言/时区、CPU 与字体表。屏幕、色深、设备内存与字体表需要引擎补丁，当前跟随本机。")
                     .font(.system(size: 12))
                     .foregroundColor(WorkbenchPalette.muted)
             }
@@ -89,6 +104,40 @@ struct FingerprintCard: View {
             EditorInput("时区", placeholder: "如 Asia/Shanghai",
                         value: $draft.profile.fingerprint.timeZone, identifier: "fingerprint-time-zone")
         }
+    }
+
+    private var identitySummary: some View {
+        let fingerprint = draft.profile.fingerprint
+        let platform = fingerprint.platform.map {
+            $0.title + (fingerprint.platformVersion.isEmpty ? "" : " \(fingerprint.platformVersion)")
+        } ?? "引擎默认"
+        let brand = fingerprint.brand.map {
+            $0.rawValue + (fingerprint.brandVersion.isEmpty ? "" : " \(fingerprint.brandVersion)")
+        } ?? "引擎默认"
+        let screen = fingerprint.screenWidth.flatMap { width in
+            fingerprint.screenHeight.map { height in
+                let scale = fingerprint.deviceScaleFactor.map { String(format: "%g", $0) } ?? "?"
+                return "\(width)×\(height) @\(scale)x · \(fingerprint.colorDepth ?? 24)bit"
+            }
+        } ?? "跟随本机"
+        let languages = fingerprint.languages?.joined(separator: ", ")
+            ?? (fingerprint.language.isEmpty ? "跟随本机" : fingerprint.language)
+        let locale = "\(languages) · \(fingerprint.timeZone.isEmpty ? "本机时区" : fingerprint.timeZone)"
+        let fonts = fingerprint.fontProfile.map {
+            $0.platform == .macOS ? "macOS 字体（宿主）" : "\($0.title)（待引擎）"
+        } ?? "宿主字体"
+        let memory = fingerprint.deviceMemory.map { "\($0) GB" } ?? "不声明"
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("身份摘要")
+                .font(.system(size: 12, weight: .semibold))
+            Text("\(platform) · \(brand) · \(fingerprint.cpuCount.map(String.init) ?? "CPU 自动")")
+            Text("\(screen) · \(locale)")
+            Text("\(fonts) · 设备内存 \(memory) · 种子 \(fingerprint.seed)")
+        }
+        .font(.system(size: 12))
+        .foregroundColor(WorkbenchPalette.muted)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("identity-summary")
     }
 
     private var brandVersionPlaceholder: String {
@@ -161,6 +210,10 @@ struct FingerprintCard: View {
                         .accessibilityIdentifier("randomize-field-\(field.rawValue)")
                 }
             }
+            Text("语言与时区成对生成；Canvas 与元素坐标始终开启，GPU 按平台开启，非 macOS 不启用字体伪装。")
+                .font(.system(size: 11))
+                .foregroundColor(WorkbenchPalette.muted)
+                .fixedSize(horizontal: false, vertical: true)
             Divider()
             HStack {
                 Button(randomFields == Set(FingerprintField.allCases) ? "取消全选" : "全选") {

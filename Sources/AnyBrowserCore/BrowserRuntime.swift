@@ -149,6 +149,9 @@ public final class BrowserRuntime: ObservableObject {
             }
             try profile.launch.checkExtensionDirectories()
             try PasskeyBoxInstall.prepare(bundled: engine.passkeyBoxDirectory, in: storage, for: id, account: passkeyBox)
+            if IdentityShim.isNeeded(for: engine.version) {
+                try IdentityShim.prepare(for: profile, in: storage)
+            }
             try ProxyAuthExtension.prepare(for: profile, in: storage)
             let child = Process()
             child.executableURL = engine.executable
@@ -278,8 +281,11 @@ public final class BrowserRuntime: ObservableObject {
     }
 
     private func launchArguments(_ profile: BrowserProfile, directory: URL) -> [String] {
-        profile.launchArguments(userDataDirectory: directory,
-                                extensions: ProfileExtensions.paths(for: profile, in: storage))
+        var extensions = ProfileExtensions.paths(for: profile, in: storage)
+        if IdentityShim.isNeeded(for: engine.version) {
+            extensions.append(IdentityShim.directory(in: storage, for: profile.id))
+        }
+        return profile.launchArguments(userDataDirectory: directory, extensions: extensions)
     }
 
     /// The browser-level DevTools WebSocket of a running Profile, verified to belong to it.

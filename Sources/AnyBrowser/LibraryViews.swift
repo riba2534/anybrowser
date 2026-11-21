@@ -191,10 +191,11 @@ struct BatchCreateSheet: View {
     @State private var proxy = BrowserProfile.defaultProxy
     @State private var error: String?
     @State private var created: [BrowserProfile] = []
+    @State private var creating = false
 
     var body: some View {
         WorkbenchSheet(title: "批量新建 Profile",
-                       caption: "名称按前缀自动编号，每个 Profile 使用新的指纹种子和调试端口。",
+                       caption: "名称按前缀自动编号，每个 Profile 使用新的指纹种子和调试端口；语言/时区按代理出口对齐。",
                        width: 460) {
             LazyVGrid(columns: EditorInput.columns, alignment: .leading, spacing: 12) {
                 EditorInput("数量", placeholder: "1–\(ProfileLibrary.maxBatch)", value: $countText,
@@ -213,9 +214,11 @@ struct BatchCreateSheet: View {
                 Button("取消") { dismiss() }
                     .buttonStyle(WorkbenchButtonStyle(.neutral))
                     .keyboardShortcut(.cancelAction)
-                Button("新建") { create() }
+                    .disabled(creating)
+                Button(creating ? "新建中…" : "新建") { create() }
                     .buttonStyle(WorkbenchButtonStyle(.primary))
                     .keyboardShortcut(.defaultAction)
+                    .disabled(creating)
                     .accessibilityIdentifier("batch-create")
             }
         }
@@ -229,12 +232,18 @@ struct BatchCreateSheet: View {
             return
         }
         let preset = IdentityPreset.all.first { $0.id == presetID }
-        do {
-            created = try workbench.createBatch(.init(count: count, prefix: prefix, group: group,
-                                                      preset: preset, proxy: proxy))
-            dismiss()
-        } catch {
-            self.error = error.localizedDescription
+        creating = true
+        error = nil
+        Task { @MainActor in
+            do {
+                created = try await workbench.createBatch(.init(count: count, prefix: prefix, group: group,
+                                                                preset: preset, proxy: proxy))
+                creating = false
+                dismiss()
+            } catch {
+                creating = false
+                self.error = error.localizedDescription
+            }
         }
     }
 }

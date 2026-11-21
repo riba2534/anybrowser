@@ -261,8 +261,12 @@ struct LibraryTests {
         original.passkeyBox = PasskeyBoxAccount(serverURL: "https://pk.example.com", username: "u", password: "p")
         original.launch = LaunchOptions(startURLs: ["https://example.com/"], window: WindowLayout(width: 1200, height: 800))
         original.fingerprint.platform = .windows
+        original.fingerprint.platformVersion = "19.0.0"
         original.fingerprint.language = "en-US"
+        original.fingerprint.adaptToPlatform()
         try store.save(original)
+        // save() stores the validated form; compare against what was written, not the draft.
+        original = try #require(store.profiles.first(where: { $0.id == original.id }))
 
         let copy = try store.saveClone(of: original.id)
         #expect(copy.id != original.id)

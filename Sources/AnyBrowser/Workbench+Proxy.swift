@@ -31,6 +31,13 @@ final class ProxyCenter: ObservableObject {
         if let entry = checks[id], entry.proxy != Self.normalized(proxy) { checks[id] = nil }
     }
 
+    /// Looks up an exit without recording it against a Profile, for a Profile being created.
+    func lookup(_ proxy: String) async -> ProxyExit? {
+        let proxy = Self.normalized(proxy)
+        guard !proxy.isEmpty, let endpoint = try? ProxyEndpoint.parse(proxy) else { return nil }
+        return try? await ProxyProbe.lookupExit(through: endpoint)
+    }
+
     /// Looks up where the Profile's traffic leaves, through the proxy it is given (saved or not).
     @discardableResult
     func check(_ profile: BrowserProfile) async -> ProxyExit? {

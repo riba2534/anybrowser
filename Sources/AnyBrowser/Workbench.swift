@@ -158,6 +158,77 @@ final class Workbench: ObservableObject {
         }
     }
 
+    /// Replaces the whole device identity and clears the Profile's site data first, so the new
+    /// fingerprint never shares cookies/localStorage with the old device. Nothing is saved until
+    /// the user saves; a running browser applies the new identity after a restart.
+    func regenerateIdentity() async -> Bool {
+        guard var draft, let store else { return false }
+        let proxy = draft.profile.proxy
+        let id = draft.profile.id
+        notice = Notice(text: "正在检测代理出口并清理站点数据…")
+        do {
+            let locale = await localeHint(for: proxy)
+            let regenerated = try store.regenerateIdentity(draft.profile, locale: locale)
+            guard let runtime else {
+                throw ProfileError.invalid("浏览器运行时不可用，无法清理站点数据。")
+            }
+            try await runtime.clearSiteData(for: id)
+            draft.profile = regenerated
+            draft.seedText = String(regenerated.fingerprint.seed)
+            draft.cpuText = regenerated.fingerprint.cpuCount.map(String.init) ?? ""
+            self.draft = draft
+            let warning = (locale == nil && !proxy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                ? "；代理出口检测失败，语言/时区保持随机" : ""
+            notice = Notice(text: "已清理站点数据并生成新身份，保存后重启应用\(warning)。")
+            return true
+        } catch {
+            show(error)
+            return false
+        }
+    }
+
+    /// Language/time zone from the Profile's proxy exit; the Mac itself when no proxy is set.
+    func localeHint(for proxy: String) async -> IdentitySampler.LocaleHint? {
+        let proxy = proxy.trimmingCharacters(in: .whitespacesAndNewlines)
+        if proxy.isEmpty { return .host }
+        guard let exit = await proxyCenter.lookup(proxy) else { return nil }
+        return IdentitySampler.LocaleHint(exit: exit)
+    }
+
+    /// A new Profile starts with a random locale; align it with the proxy exit as soon as
+    /// the lookup returns, without overwriting edits the user made in the meantime.
+    private func alignNewProfileWithProxy() {
+        guard let draft else { return }
+        let id = draft.profile.id
+        let proxy = draft.profile.proxy
+        let trimmed = proxy.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            if let hint = IdentitySampler.LocaleHint.host { apply(hint, to: id, proxy: proxy) }
+            return
+        }
+        Task { @MainActor in
+            guard let exit = await self.proxyCenter.lookup(trimmed) else {
+                if self.draft?.profile.id == id {
+                    self.notice = Notice(text: "代理出口检测失败，语言/时区保持随机；可稍后点「检测」重新对齐。")
+                }
+                return
+            }
+            guard let hint = IdentitySampler.LocaleHint(exit: exit) else { return }
+            self.apply(hint, to: id, proxy: proxy, country: exit.countryCode)
+        }
+    }
+
+    private func apply(_ hint: IdentitySampler.LocaleHint, to id: UUID, proxy: String, country: String? = nil) {
+        guard var current = draft, current.profile.id == id,
+              current.profile.proxy.trimmingCharacters(in: .whitespacesAndNewlines)
+                == proxy.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+        current.profile.fingerprint.apply(hint)
+        self.draft = current
+        if let country, !country.isEmpty {
+            notice = Notice(text: "已按代理出口（\(country)）填写语言/时区。")
+        }
+    }
+
     func randomize(_ fields: Set<FingerprintField>) -> Bool {
         guard var draft, let store else { return false }
         do {
@@ -277,6 +348,7 @@ final class Workbench: ObservableObject {
             switch destination {
             case .new:
                 draft = try store.map { try ProfileDraft($0.makeDraft()) }
+                alignNewProfileWithProxy()
             case .profile(let id):
                 draft = profiles.first { $0.id == id }.map(ProfileDraft.init)
             case .clone:

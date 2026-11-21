@@ -17,6 +17,39 @@ public enum BrowserBrand: String, CaseIterable, Codable, Sendable {
     case chrome = "Chrome", edge = "Edge", opera = "Opera", vivaldi = "Vivaldi"
 }
 
+/// The font set a Profile presents to `measureText`. The engine still has to be able to
+/// produce the matching widths; until it does, non-macOS Profiles show a consistency hint.
+public enum FontProfile: String, CaseIterable, Codable, Sendable {
+    case macos26 = "macos26", macos15 = "macos15"
+    case windows11 = "windows11", windows10 = "windows10", linux68 = "linux68"
+
+    public var title: String {
+        switch self {
+        case .macos26: return "macOS 26 字体"
+        case .macos15: return "macOS 15 字体"
+        case .windows11: return "Windows 11 字体"
+        case .windows10: return "Windows 10 字体"
+        case .linux68: return "Linux 字体"
+        }
+    }
+
+    public var platform: BrowserPlatform {
+        switch self {
+        case .macos26, .macos15: return .macOS
+        case .windows11, .windows10: return .windows
+        case .linux68: return .linux
+        }
+    }
+
+    public static func `default`(for platform: BrowserPlatform, version: String = "") -> FontProfile {
+        switch platform {
+        case .macOS: return version.hasPrefix("15") ? .macos15 : .macos26
+        case .windows: return version.hasPrefix("10.0") ? .windows10 : .windows11
+        case .linux: return .linux68
+        }
+    }
+}
+
 public enum FingerprintAdjustment: String, CaseIterable, Codable, Sendable {
     case font, audio, canvas, clientRects = "clientrects", gpu
 
@@ -59,6 +92,19 @@ public struct FingerprintSettings: Codable, Equatable, Sendable {
     public var language = ""
     public var timeZone = ""
     public var adjustments: Set<FingerprintAdjustment> = [.canvas, .clientRects]
+
+    /// Ordered `navigator.languages`; `language` is the first entry when generated.
+    public var languages: [String]? = nil
+    public var screenWidth: Int? = nil
+    public var screenHeight: Int? = nil
+    public var availWidth: Int? = nil
+    public var availHeight: Int? = nil
+    public var colorDepth: Int? = nil
+    public var deviceScaleFactor: Double? = nil
+    /// `navigator.deviceMemory`; Chromium caps this at 8.
+    public var deviceMemory: Int? = nil
+    public var touch: Bool? = nil
+    public var fontProfile: FontProfile? = nil
 
     public init(seed: Int) {
         self.seed = seed
@@ -137,7 +183,23 @@ extension BrowserProfile {
         guard (1024...65535).contains(port) else {
             throw ProfileError.invalid("调试端口须为 1024–65535。")
         }
-        try fingerprint.validate()
+        // A platform or version change made outside the editor (imports, automation, tests)
+        // must not keep a font set from the old identity. A Profile without a platform keeps
+        // no font claim and is rejected by validation instead.
+        if let platform = result.fingerprint.platform, result.fingerprint.fontProfile != nil {
+            result.fingerprint.fontProfile = FontProfile.default(for: platform,
+                                                                 version: result.fingerprint.platformVersion)
+        }
+        // The ordered language list must agree with the primary language field.
+        if result.fingerprint.language.isEmpty {
+            result.fingerprint.languages = nil
+        } else if result.fingerprint.languages?.first != result.fingerprint.language {
+            let primary = result.fingerprint.language
+            let base = primary.split(separator: "-").first.map(String.init)
+            result.fingerprint.languages = base == primary ? [primary]
+                : [primary, base].compactMap { $0 }
+        }
+        try result.fingerprint.validate()
         result.proxy = proxy.trimmingCharacters(in: .whitespacesAndNewlines)
         _ = try ProxyEndpoint.parse(result.proxy)
         result.group = group.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -165,6 +227,8 @@ extension BrowserProfile {
         ]
         if let endpoint = try? ProxyEndpoint.parse(proxy) {
             arguments.append("--proxy-server=\(endpoint.server)")
+            // A proxied Profile must not leak its real address through non-proxied UDP.
+            arguments.append("--webrtc-ip-handling-policy=disable_non_proxied_udp")
         }
         arguments += fingerprint.arguments()
         if !extensions.isEmpty {
@@ -195,14 +259,28 @@ extension FingerprintSettings {
         if let cpuCount {
             arguments.append("--fingerprint-hardware-concurrency=\(cpuCount)")
         }
-        if !language.isEmpty {
-            arguments.append("--lang=\(language)")
-            let base = language.split(separator: "-").first.map(String.init)
-            let accepted = base == language ? language : [language, base].compactMap { $0 }.joined(separator: ",")
+        let primaryLanguage = language.isEmpty ? (languages?.first ?? "") : language
+        if !primaryLanguage.isEmpty {
+            arguments.append("--lang=\(primaryLanguage)")
+            let base = primaryLanguage.split(separator: "-").first.map(String.init)
+            let fallback = base == primaryLanguage ? primaryLanguage
+                : [primaryLanguage, base].compactMap { $0 }.joined(separator: ",")
+            // A hand-edited primary language wins over a stale generated list.
+            let accepted = (languages?.first == primaryLanguage)
+                ? languages!.joined(separator: ",") : fallback
             arguments.append("--accept-lang=\(accepted)")
         }
         if !timeZone.isEmpty {
             arguments.append("--timezone=\(timeZone)")
+        }
+        if let screenWidth {
+            arguments.append("--fingerprint-screen-width=\(screenWidth)")
+        }
+        if let screenHeight {
+            arguments.append("--fingerprint-screen-height=\(screenHeight)")
+        }
+        if let deviceScaleFactor {
+            arguments.append("--fingerprint-device-scale-factor=\(String(format: "%g", deviceScaleFactor))")
         }
         // The engine has no Linux GPU values to spoof WebGL with; say so rather than rely on it.
         let disabled = FingerprintAdjustment.allCases.filter {
@@ -243,6 +321,45 @@ extension FingerprintSettings {
         if !timeZone.isEmpty, !Self.isTimeZone(timeZone) {
             throw ProfileError.invalid("输入 IANA 时区，例如 Asia/Shanghai 或 UTC。")
         }
+        if let languages {
+            guard !languages.isEmpty else { throw ProfileError.invalid("语言列表不能为空。") }
+            for value in languages where !Self.isLanguageTag(value) {
+                throw ProfileError.invalid("输入有效的语言标签，例如 zh-CN 或 en-US。")
+            }
+        }
+        for value in [screenWidth, screenHeight] {
+            if let value, !(480...7680).contains(value) {
+                throw ProfileError.invalid("屏幕尺寸须在 480–7680 之间。")
+            }
+        }
+        for value in [availWidth, availHeight] {
+            if let value, !(320...7680).contains(value) {
+                throw ProfileError.invalid("可用屏幕尺寸须在 320–7680 之间。")
+            }
+        }
+        if let screenWidth, let availWidth, availWidth > screenWidth {
+            throw ProfileError.invalid("可用屏幕宽度不能大于屏幕宽度。")
+        }
+        if let screenHeight, let availHeight, availHeight > screenHeight {
+            throw ProfileError.invalid("可用屏幕高度不能大于屏幕高度。")
+        }
+        if let colorDepth, colorDepth != 24, colorDepth != 30 {
+            throw ProfileError.invalid("色深须为 24 或 30。")
+        }
+        if let deviceScaleFactor, !(1.0...3.0).contains(deviceScaleFactor) {
+            throw ProfileError.invalid("设备像素比须在 1–3 之间。")
+        }
+        if let deviceMemory, !(1...8).contains(deviceMemory) {
+            throw ProfileError.invalid("设备内存须在 1–8 GB 之间。")
+        }
+        if let fontProfile {
+            guard let platform else {
+                throw ProfileError.invalid("先选择平台，再指定字体表。")
+            }
+            if fontProfile.platform != platform {
+                throw ProfileError.invalid("字体表与平台不匹配。")
+            }
+        }
     }
 
     /// A language tag such as zh-CN or en-US, as a whole.
@@ -261,10 +378,24 @@ extension FingerprintSettings {
         }
         if fields.contains(.platform) {
             platform = BrowserPlatform.allCases.randomElement()
+            // These values belonged to the old platform and cannot follow it.
+            screenWidth = nil
+            screenHeight = nil
+            availWidth = nil
+            availHeight = nil
+            colorDepth = nil
+            deviceScaleFactor = nil
+            deviceMemory = nil
+            touch = false
         }
         // A version kept from the previous platform or brand would contradict the new one.
         if fields.contains(.platformVersion) || fields.contains(.platform) && !platformVersion.isEmpty {
             platformVersion = Self.randomPlatformVersion(for: platform)
+        }
+        if fields.contains(.platform), let platform {
+            fontProfile = FontProfile.default(for: platform, version: platformVersion)
+        } else if fields.contains(.platformVersion), let platform, fontProfile != nil {
+            fontProfile = FontProfile.default(for: platform, version: platformVersion)
         }
         if fields.contains(.brand) {
             brand = BrowserBrand.allCases.randomElement()
@@ -277,27 +408,61 @@ extension FingerprintSettings {
                 ? Self.randomBrandVersion(for: brand) : ""
         }
         if fields.contains(.cpuCount) {
-            cpuCount = [4, 6, 8, 10, 12, 16, 24, 32].randomElement()
+            cpuCount = IdentitySampler.randomCPUCount(for: platform)
         }
-        if fields.contains(.language) {
-            language = ["zh-CN", "zh-TW", "en-US", "en-GB", "fr-FR", "de-DE", "ja-JP", "ko-KR"].randomElement()!
-        }
-        if fields.contains(.timeZone) {
-            timeZone = ["UTC", "Asia/Shanghai", "Asia/Tokyo", "America/New_York", "Europe/London", "Europe/Paris"].randomElement()!
+        // Language and time zone are one identity: randomizing either moves both.
+        if fields.contains(.language) || fields.contains(.timeZone) {
+            let locale = IdentitySampler.sampleLocale()
+            language = locale.language
+            timeZone = locale.timeZone
+            languages = locale.languages
         }
         if fields.contains(.adjustments) {
-            adjustments = Set(FingerprintAdjustment.allCases.filter { _ in Bool.random() })
+            var next: Set<FingerprintAdjustment> = [.canvas, .clientRects]
+            if let platform, platform != .linux { next.insert(.gpu) }
+            if platform == .macOS, adjustments.contains(.font) { next.insert(.font) }
+            if Bool.random() { next.insert(.audio) }
+            adjustments = next
+        } else if fields.contains(.platform) {
+            // A platform switch must also switch the GPU/font policies.
+            if let platform {
+                if platform == .linux { adjustments.remove(.gpu) } else { adjustments.insert(.gpu) }
+                if platform != .macOS { adjustments.remove(.font) }
+            } else {
+                adjustments.remove(.gpu)
+                adjustments.remove(.font)
+            }
         }
         adaptToPlatform()
+    }
+
+    /// Applies a validated locale from the proxy exit or the Mac itself.
+    public mutating func apply(_ locale: IdentitySampler.LocaleHint) {
+        language = locale.language
+        timeZone = locale.timeZone
+        languages = locale.languages
     }
 
     /// Drops what the platform cannot use: a version without a platform, and WebGL spoofing on Linux.
     public mutating func adaptToPlatform() {
         if platform == nil {
             platformVersion = ""
+            // Engine-default identity is the host Mac; platform-specific claims cannot stand.
+            fontProfile = nil
+            screenWidth = nil
+            screenHeight = nil
+            availWidth = nil
+            availHeight = nil
+            colorDepth = nil
+            deviceScaleFactor = nil
+            deviceMemory = nil
         }
         if platform == .linux {
             adjustments.remove(.gpu)
+        }
+        // A manually changed platform must not keep a font set from the old one.
+        if let platform, let fontProfile, fontProfile.platform != platform {
+            self.fontProfile = FontProfile.default(for: platform, version: platformVersion)
         }
     }
 
