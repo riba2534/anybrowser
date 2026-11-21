@@ -118,6 +118,33 @@ public final class ProfileStore: ObservableObject {
     }
 
     public func save(_ profile: BrowserProfile) throws {
+        keep(try insert(profile))
+    }
+
+    /// Saves several Profiles in one transaction: either all of them are saved or none is.
+    public func saveAll(_ values: [BrowserProfile]) throws {
+        guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw databaseError() }
+        let written: [BrowserProfile]
+        do {
+            written = try values.map(insert)
+            guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw databaseError() }
+        } catch {
+            sqlite3_exec(database, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+        written.forEach(keep)
+    }
+
+    private func keep(_ profile: BrowserProfile) {
+        if let index = profiles.firstIndex(where: { $0.id == profile.id }) {
+            profiles[index] = profile
+        } else {
+            profiles.append(profile)
+        }
+    }
+
+    /// Validates and writes one row; `profiles` is updated by the caller once the write is final.
+    private func insert(_ profile: BrowserProfile) throws -> BrowserProfile {
         let profile = try profile.validated()
         try checkForConflicts(profile)
         let payload = try JSONEncoder().encode(profile)
@@ -140,11 +167,7 @@ public final class ProfileStore: ObservableObject {
             }
             throw databaseError()
         }
-        if let index = profiles.firstIndex(where: { $0.id == profile.id }) {
-            profiles[index] = profile
-        } else {
-            profiles.append(profile)
-        }
+        return profile
     }
 
     public func remove(_ id: UUID) throws {

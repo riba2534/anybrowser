@@ -178,6 +178,84 @@ public enum ProfileLibrary {
         }
     }
 
+    /// What an import brings in beyond fingerprints and names, worth a look when the file comes
+    /// from someone else; nil when there is nothing of the kind.
+    public static func importReview(_ profiles: [BrowserProfile]) -> String? {
+        let accounts = profiles.compactMap(\.passkeyBox)
+        let hosts = Set(accounts.compactMap { URLComponents(string: $0.serverURL)?.host }).sorted()
+        let defaultProxy = try? ProxyEndpoint.parse(BrowserProfile.defaultProxy)
+        let extensions = profiles.filter { !$0.launch.extensionDirectories.isEmpty }.count
+        let startPages = profiles.filter { !$0.launch.startURLs.isEmpty }.count
+        // No proxy at all is not counted: only an address someone else chose routes the traffic.
+        let proxies = profiles.filter { profile in
+            guard let endpoint = try? ProxyEndpoint.parse(profile.proxy) else { return false }
+            return endpoint != defaultProxy
+        }.count
+        let counts: [(count: Int, text: String)] = [
+            (accounts.count, "使用单独的 Passkey Box 账号（\(hosts.joined(separator: "、"))）"),
+            (extensions, "加载额外扩展"),
+            (startPages, "设置了启动网址"),
+            (proxies, "使用其他代理"),
+        ]
+        let present = counts.filter { $0.count > 0 }.map { "\($0.count) 个\($0.text)" }
+        guard !present.isEmpty else { return nil }
+        return "其中 \(present.joined(separator: "，"))。请确认文件来源可信，必要时在编辑器里检查。"
+    }
+
+    // MARK: Batch actions
+
+    /// Why a Profile cannot be removed right now, or nil when it can.
+    public static func removalBlocker(state: BrowserRunState, busy: Bool, batchRunning: Bool) -> String? {
+        if batchRunning { return "批量操作进行中，完成后再移除 Profile。" }
+        if busy { return "该 Profile 正在执行另一个操作，请稍后再移除。" }
+        switch state {
+        case .running, .starting, .stopping: return "请先停止此 Profile 的浏览器，再移除。"
+        case .stopped, .failed: return nil
+        }
+    }
+
+    public struct BatchOutcome: Equatable, Sendable {
+        public var succeeded = 0
+        public var skipped = 0
+        /// "<name>：<reason>" per Profile.
+        public var failures: [String] = []
+        public var warnings: [String] = []
+
+        public init() {}
+
+        /// One notice for the whole batch, e.g. "已启动 2 个 Profile，跳过 1 个。"
+        public func summary(verb: String) -> String {
+            var text = "已\(verb) \(succeeded) 个 Profile"
+            if skipped > 0 { text += "，跳过 \(skipped) 个" }
+            text += "。"
+            if !failures.isEmpty { text += "\(failures.count) 个未能\(verb)：\(failures.joined(separator: "；"))。" }
+            if !warnings.isEmpty { text += "提醒：\(warnings.joined(separator: "；"))" }
+            return text
+        }
+    }
+
+    /// Runs `action` on one Profile at a time. Each Profile is looked up again right before its turn,
+    /// so one removed or changed while earlier ones ran is skipped or used as it is now.
+    /// `action` may return a warning to report.
+    @MainActor
+    public static func runBatch(_ ids: [UUID], lookup: (UUID) -> BrowserProfile?, applies: (BrowserProfile) -> Bool,
+                                action: (BrowserProfile) async throws -> String?) async -> BatchOutcome {
+        var outcome = BatchOutcome()
+        for id in ids {
+            guard let profile = lookup(id), applies(profile) else {
+                outcome.skipped += 1
+                continue
+            }
+            do {
+                if let warning = try await action(profile) { outcome.warnings.append("\(profile.name)：\(warning)") }
+                outcome.succeeded += 1
+            } catch {
+                outcome.failures.append("\(profile.name)：\(error.localizedDescription)")
+            }
+        }
+        return outcome
+    }
+
     // MARK: Sidebar
 
     /// Whether the name, group, notes or debug port contains `query`.
@@ -283,11 +361,11 @@ extension ProfileStore {
         return copy
     }
 
-    /// Validates every new Profile first, then saves them in order.
+    /// Validates every new Profile first, then saves them all in one transaction.
     public func saveBatch(_ request: ProfileLibrary.BatchRequest) throws -> [BrowserProfile] {
         let batch = try ProfileLibrary.batch(request, existingNames: Set(profiles.map(\.name)),
                                              takenPorts: takenPorts, takenSeeds: takenSeeds)
-        for profile in batch { try save(profile) }
+        try saveAll(batch)
         return batch
     }
 }
