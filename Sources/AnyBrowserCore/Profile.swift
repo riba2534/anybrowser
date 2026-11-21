@@ -235,13 +235,22 @@ extension FingerprintSettings {
         if brand == .opera || brand == .vivaldi, brandVersion.isEmpty {
             throw ProfileError.invalid("Opera 和 Vivaldi 需要显式填写品牌版本。")
         }
-        if !language.isEmpty,
-           language.range(of: #"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$"#, options: .regularExpression) != language.startIndex..<language.endIndex {
+        if !language.isEmpty, !Self.isLanguageTag(language) {
             throw ProfileError.invalid("输入有效的语言标签，例如 zh-CN 或 en-US。")
         }
-        if !timeZone.isEmpty, !TimeZone.knownTimeZoneIdentifiers.contains(timeZone) && timeZone != "UTC" {
+        if !timeZone.isEmpty, !Self.isTimeZone(timeZone) {
             throw ProfileError.invalid("输入 IANA 时区，例如 Asia/Shanghai 或 UTC。")
         }
+    }
+
+    /// A language tag such as zh-CN or en-US, as a whole.
+    static func isLanguageTag(_ text: String) -> Bool {
+        text.range(of: #"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$"#, options: .regularExpression) == text.startIndex..<text.endIndex
+    }
+
+    /// An IANA time zone this Mac knows, or UTC.
+    static func isTimeZone(_ text: String) -> Bool {
+        TimeZone.knownTimeZoneIdentifiers.contains(text) || text == "UTC"
     }
 
     mutating func randomize(_ fields: Set<FingerprintField>, excluding seeds: Set<Int>) {

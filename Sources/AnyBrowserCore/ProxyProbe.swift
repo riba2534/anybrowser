@@ -172,12 +172,10 @@ public enum ProxyProbe {
             country = ""
         }
         var timeZone = text("timezone")
-        if !TimeZone.knownTimeZoneIdentifiers.contains(timeZone) && timeZone != "UTC" { timeZone = "" }
+        if !FingerprintSettings.isTimeZone(timeZone) { timeZone = "" }
         var languages = text("languages").split(separator: ",").map {
             $0.trimmingCharacters(in: .whitespaces)
-        }.filter {
-            $0.range(of: #"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$"#, options: .regularExpression) != nil
-        }
+        }.filter(FingerprintSettings.isLanguageTag)
         if languages.isEmpty { languages = commonLanguages[country] ?? [] }
         return ProxyExit(ip: ip, countryCode: country, region: text("region"), city: text("city"),
                          timeZone: timeZone, languages: languages)
