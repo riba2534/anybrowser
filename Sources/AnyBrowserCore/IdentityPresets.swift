@@ -18,6 +18,10 @@ public struct IdentityPreset: Identifiable, Equatable, Sendable {
         fingerprint.brand = brand
         fingerprint.brandVersion = brandVersion
         fingerprint.cpuCount = cpuCounts.randomElement()
+        // Without WebGL spoofing pages read this Mac's GPU, e.g. after switching from a Linux identity.
+        if platform != .linux {
+            fingerprint.adjustments.insert(.gpu)
+        }
         fingerprint.adaptToPlatform()
     }
 
