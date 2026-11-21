@@ -99,7 +99,8 @@ struct FingerprintTests {
                 #expect(fingerprint.adjustments == (item.platform == .linux ? [.font, .clientRects] : [.font, .gpu, .clientRects]),
                         "\(item.id)")
                 let profile = try BrowserProfile(name: item.title, port: 9301, fingerprint: fingerprint).validated()
-                #expect(profile.consistencyIssues(engineVersion: Self.engine, exit: nil).isEmpty, "\(item.id)")
+                #expect(profile.consistencyIssues(engineVersion: Self.engine, exit: nil).map(\.id)
+                        == (item.platform == .linux ? ["linux-webgl"] : []), "\(item.id)")
             }
         }
     }
@@ -153,7 +154,7 @@ struct FingerprintTests {
             var everything = FingerprintSettings(seed: 23)
             everything.randomize(Set(FingerprintField.allCases), excluding: [])
             #expect(matches(everything.brandVersion, everything.brand))
-            #expect(issueIDs(everything).isEmpty, "\(everything)")
+            #expect(issueIDs(everything) == (everything.platform == .linux ? ["linux-webgl"] : []), "\(everything)")
         }
         #expect(seen == Set(BrowserBrand.allCases))
     }
@@ -212,7 +213,8 @@ struct FingerprintTests {
             fingerprint.platform = platform
             fingerprint.platformVersion = version
             fingerprint.adjustments = []
-            #expect(issueIDs(fingerprint) == (fits ? [] : ["platform-version"]), "\(platform) \(version)")
+            let expected = (fits ? [] : ["platform-version"]) + (platform == .linux ? ["linux-webgl"] : [])
+            #expect(issueIDs(fingerprint) == expected, "\(platform) \(version)")
         }
         var windows = FingerprintSettings(seed: 52)
         windows.platform = .windows
@@ -223,7 +225,7 @@ struct FingerprintTests {
         #expect(issueIDs(windows).isEmpty)
     }
 
-    @Test("Linux with WebGL spoofing on is flagged")
+    @Test("Linux identities are flagged: the engine shows this Mac's GPU for them")
     func linuxWithWebGL() {
         var fingerprint = FingerprintSettings(seed: 61)
         fingerprint.adjustments = [.gpu]
@@ -233,7 +235,7 @@ struct FingerprintTests {
         fingerprint.platform = .linux
         #expect(issueIDs(fingerprint) == ["linux-webgl"])
         fingerprint.adjustments = [.canvas]
-        #expect(issueIDs(fingerprint).isEmpty)
+        #expect(issueIDs(fingerprint) == ["linux-webgl"])
     }
 
     @Test("Time zone must match the proxy exit")

@@ -48,8 +48,10 @@ extension BrowserProfile {
             }
         }
 
-        if fingerprint.platform == .linux, fingerprint.adjustments.contains(.gpu) {
-            issues.append(ConsistencyIssue(id: "linux-webgl", message: "Linux 平台不支持 WebGL 参数改写，启动时会忽略该项"))
+        // The macOS engine never rewrites WebGL for Linux: pages read this Mac's own GPU.
+        if fingerprint.platform == .linux {
+            issues.append(ConsistencyIssue(id: "linux-webgl",
+                                           message: "Linux 平台下内核不改写 WebGL，网页会读到本机真实显卡，与 Linux 身份不符"))
         }
 
         guard let exit else { return issues }
