@@ -6,6 +6,8 @@ import SQLite3
 @MainActor
 public final class ProfileStore: ObservableObject {
     @Published public private(set) var profiles: [BrowserProfile] = []
+    /// The Passkey Box account every Profile's extension signs in with.
+    @Published public private(set) var passkeyBoxAccount: PasskeyBoxAccount?
     public let directory: URL
     private var database: OpaquePointer?
 
@@ -40,6 +42,10 @@ public final class ProfileStore: ObservableObject {
                     port INTEGER NOT NULL UNIQUE,
                     seed INTEGER NOT NULL UNIQUE,
                     payload BLOB NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY NOT NULL,
+                    value BLOB NOT NULL
                 )
                 """, nil, nil, nil) == SQLITE_OK else {
                 throw databaseError()
@@ -60,6 +66,9 @@ public final class ProfileStore: ObservableObject {
                 status = sqlite3_step(read)
             }
             guard status == SQLITE_DONE else { throw databaseError() }
+            passkeyBoxAccount = try setting(Self.passkeyBoxKey)
+                .flatMap { try? JSONDecoder().decode(PasskeyBoxAccount.self, from: $0) }
+                .flatMap { try? $0.validated() }
         } catch {
             sqlite3_close(database)
             database = nil
@@ -135,6 +144,55 @@ public final class ProfileStore: ObservableObject {
         var draft = profile
         draft.fingerprint.randomize(fields, excluding: Set(profiles.map(\.fingerprint.seed)))
         return draft
+    }
+
+    /// Saves the Passkey Box account, or removes it when `account` is nil.
+    public func savePasskeyBoxAccount(_ account: PasskeyBoxAccount?) throws {
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        guard let account else {
+            let delete = try statement("DELETE FROM settings WHERE key=?")
+            defer { sqlite3_finalize(delete) }
+            guard sqlite3_bind_text(delete, 1, Self.passkeyBoxKey, -1, transient) == SQLITE_OK,
+                  sqlite3_step(delete) == SQLITE_DONE else {
+                throw databaseError()
+            }
+            passkeyBoxAccount = nil
+            return
+        }
+        let value = try account.validated()
+        let payload = try JSONEncoder().encode(value)
+        let write = try statement("""
+            INSERT INTO settings(key, value) VALUES(?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+            """)
+        defer { sqlite3_finalize(write) }
+        guard sqlite3_bind_text(write, 1, Self.passkeyBoxKey, -1, transient) == SQLITE_OK,
+              payload.withUnsafeBytes({
+                sqlite3_bind_blob(write, 2, $0.baseAddress, Int32($0.count), transient)
+              }) == SQLITE_OK,
+              sqlite3_step(write) == SQLITE_DONE else {
+            throw databaseError()
+        }
+        passkeyBoxAccount = value
+    }
+
+    private static let passkeyBoxKey = "passkeyBox"
+
+    private func setting(_ key: String) throws -> Data? {
+        let read = try statement("SELECT value FROM settings WHERE key=?")
+        defer { sqlite3_finalize(read) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        guard sqlite3_bind_text(read, 1, key, -1, transient) == SQLITE_OK else { throw databaseError() }
+        switch sqlite3_step(read) {
+        case SQLITE_ROW:
+            let count = Int(sqlite3_column_bytes(read, 0))
+            guard let bytes = sqlite3_column_blob(read, 0) else { return Data() }
+            return Data(bytes: bytes, count: count)
+        case SQLITE_DONE:
+            return nil
+        default:
+            throw databaseError()
+        }
     }
 
     private func checkForConflicts(_ profile: BrowserProfile) throws {

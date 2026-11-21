@@ -104,7 +104,8 @@ public final class BrowserRuntime: ObservableObject {
         return arguments.dropFirst().elementsEqual(launchArguments(profile, directory: directory))
     }
 
-    public func start(_ profile: BrowserProfile) async throws {
+    /// Starts the Profile's browser. Passkey Box signs in with `passkeyBox` when it is set.
+    public func start(_ profile: BrowserProfile, passkeyBox: PasskeyBoxAccount? = nil) async throws {
         let profile = try profile.validated()
         let id = profile.id
         guard status(for: id) != .starting && status(for: id) != .stopping else { return }
@@ -134,6 +135,7 @@ public final class BrowserRuntime: ObservableObject {
             guard ProcessInspection.portAvailable(profile.port) else {
                 throw BrowserRuntimeError.message("调试端口 \(profile.port) 已占用，请修改此 Profile 的端口。")
             }
+            try PasskeyBoxInstall.prepare(bundled: engine.passkeyBoxDirectory, in: storage, account: passkeyBox)
             let child = Process()
             child.executableURL = engine.executable
             child.arguments = launchArguments(profile, directory: directory)
@@ -262,7 +264,8 @@ public final class BrowserRuntime: ObservableObject {
     }
 
     private func launchArguments(_ profile: BrowserProfile, directory: URL) -> [String] {
-        profile.launchArguments(userDataDirectory: directory) + ["--load-extension=\(engine.passkeyBoxDirectory.path)"]
+        profile.launchArguments(userDataDirectory: directory)
+            + ["--load-extension=\(PasskeyBoxInstall.directory(in: storage).path)"]
     }
 
     private func runningState(_ receipt: Receipt, directory: URL) async -> BrowserRunState {

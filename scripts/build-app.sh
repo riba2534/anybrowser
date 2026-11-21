@@ -7,8 +7,8 @@ engine_sha256=b72f091e2e1a7583eed389c4b8e3534ed355e568af8c8bbf8fc30a25e23ca679
 engine_filename="ungoogled-chromium_${engine_version}-1.1_macos.dmg"
 engine_url="https://github.com/adryfish/fingerprint-chromium/releases/download/${engine_version}/${engine_filename}"
 
-passkey_version=0.2.0
-passkey_sha256=a3db26b75283fbe93a26c2c7c3cecfd1bce8d82c6b8e90c8a234e187d36a1c52
+passkey_version=0.3.0
+passkey_sha256=3cf5b58ff46c87b41b866ab0f4843b39c6c46c09eb98303d5e41594d7014d79e
 passkey_id=gfejlnakeokbjdhoionfappnfepjoili
 passkey_filename="passkey-box-extension-anybrowser-v${passkey_version}.zip"
 passkey_url="https://github.com/riba2534/passkey-box/releases/download/v${passkey_version}/${passkey_filename}"
@@ -111,7 +111,7 @@ digest_matches "$staged_zip" "$passkey_sha256" || fail "staged Passkey Box ZIP d
 mkdir -p "$extension"
 /usr/bin/unzip -q "$staged_zip" -d "$extension"
 for entry in manifest.json LICENSE THIRD-PARTY-NOTICES.txt background.js content.js inject.js \
-    options.html options.js popup.html popup.js device.html device.js ui.css; do
+    options.html options.js popup.html popup.js ui.css; do
     [[ -f "$extension/$entry" && ! -L "$extension/$entry" ]] || fail "missing Passkey Box file: $entry"
 done
 manifest="$extension/manifest.json"

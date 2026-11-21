@@ -36,6 +36,9 @@ struct Workspace: View {
         } message: { _ in
             Text("当前 Profile 有尚未保存的修改。")
         }
+        .sheet(isPresented: $workbench.showingPasskeyBox) {
+            PasskeyBoxSettings(workbench: workbench)
+        }
         .alert("移除 Profile？", isPresented: showRemovalAlert, presenting: removeCandidate) { candidate in
             Button("移除", role: .destructive) { workbench.remove(candidate.id) }
             Button("取消", role: .cancel) {}
@@ -87,9 +90,12 @@ struct Workspace: View {
             .padding(.vertical, 12)
 
             Rectangle().fill(WorkbenchPalette.rule).frame(height: 1)
-            engineFootnote
-                .padding(.horizontal, 20)
-                .padding(.vertical, 16)
+            VStack(spacing: 12) {
+                passkeyBoxFootnote
+                engineFootnote
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
         }
         .frame(maxHeight: .infinity)
         .background(WorkbenchPalette.sidebar)
@@ -171,6 +177,33 @@ struct Workspace: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("profile-row-\(profile.id.uuidString)")
         .help(profile.name)
+    }
+
+    private var passkeyBoxFootnote: some View {
+        Button {
+            workbench.showingPasskeyBox = true
+        } label: {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(workbench.passkeyBoxAccount == nil ? WorkbenchPalette.amber : WorkbenchPalette.green)
+                    .frame(width: 6, height: 6)
+                    .accessibilityHidden(true)
+                Text("Passkey Box")
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 2)
+                Text(workbench.passkeyBoxAccount?.username ?? "未设置账号")
+                    .font(.system(size: 10))
+                    .foregroundColor(WorkbenchPalette.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(workbench.store == nil)
+        .help("设置各 Profile 内置 Passkey Box 使用的账号")
+        .accessibilityIdentifier("passkey-box-account")
     }
 
     private var engineFootnote: some View {

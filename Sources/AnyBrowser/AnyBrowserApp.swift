@@ -30,6 +30,11 @@ struct AnyBrowserApp: App {
                     .keyboardShortcut("n")
                     .disabled(workbench.store == nil)
             }
+            CommandGroup(replacing: .appSettings) {
+                Button("Passkey Box 账号…") { workbench.showingPasskeyBox = true }
+                    .keyboardShortcut(",")
+                    .disabled(workbench.store == nil)
+            }
             CommandGroup(after: .newItem) {
                 Button("保存 Profile") { workbench.save() }
                     .keyboardShortcut("s")
@@ -108,6 +113,7 @@ final class Workbench: ObservableObject {
     @Published var draft: ProfileDraft?
     @Published var notice: Notice?
     @Published var pendingDestination: Destination?
+    @Published var showingPasskeyBox = false
     @Published private(set) var launches: Set<UUID> = []
     private var runningConfigurations: [UUID: BrowserProfile] = [:]
     private var subscriptions: Set<AnyCancellable> = []
@@ -255,7 +261,7 @@ final class Workbench: ObservableObject {
                 try await runtime.stop(id)
                 runningConfigurations[id] = nil
             }
-            try await runtime.start(profile)
+            try await runtime.start(profile, passkeyBox: store?.passkeyBoxAccount)
             runningConfigurations[id] = profile
         } catch {
             show(error)
@@ -272,6 +278,34 @@ final class Workbench: ObservableObject {
             runningConfigurations[id] = nil
         } catch {
             show(error)
+        }
+    }
+
+    var passkeyBoxAccount: PasskeyBoxAccount? { store?.passkeyBoxAccount }
+
+    /// Verifies the account with the server, then saves it. Returns an error message on failure.
+    func savePasskeyBox(_ account: PasskeyBoxAccount) async -> String? {
+        guard let store else { return "本机 Profile 数据库不可用。" }
+        do {
+            let value = try account.validated()
+            try await value.verify()
+            try store.savePasskeyBoxAccount(value)
+            notice = Notice(text: profiles.contains { state(for: $0.id).isRunning }
+                ? "Passkey Box 账号已保存，正在运行的 Profile 重启后生效。"
+                : "Passkey Box 账号已保存，启动 Profile 后自动登录。")
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func clearPasskeyBox() -> String? {
+        do {
+            try store?.savePasskeyBoxAccount(nil)
+            notice = Notice(text: "已移除 Passkey Box 账号，之后启动的 Profile 需要在扩展里自行登录。")
+            return nil
+        } catch {
+            return error.localizedDescription
         }
     }
 

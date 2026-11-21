@@ -36,12 +36,12 @@ AnyBrowser 是一个原生 macOS 应用。每个 Profile 对应一份 Chromium �
 | **指纹配置** | 可编辑平台、浏览器品牌及其版本、逻辑 CPU 数、语言、时区和种子。字体、音频、Canvas、元素坐标和 WebGL 参数可按项控制。 |
 | **按字段随机生成** | 勾选需要变化的字段并预览结果。保存后，每次启动使用同一份配置。 |
 | **独立代理** | 每个 Profile 可设置 HTTP、HTTPS 或 SOCKS5 代理，默认使用本机的 `127.0.0.1:7890`。 |
-| **通行密钥** | 每个 Profile 默认加载 Passkey Box。匹配网站凭据后，通过设备验证即可继续注册或登录。 |
+| **通行密钥** | 每个 Profile 默认加载 Passkey Box，并用 AnyBrowser 里设置的账号自动登录。网站请求通行密钥时直接完成注册或登录，不需要点击确认。 |
 | **本机调试** | 每个 Profile 分配一个独立的回环端口，建议从 9222 开始，也可自行修改。端口就绪后可以复制连接地址。 |
 
 ## 快速开始
 
-需要 **Apple Silicon Mac 和 macOS 12+**。可以下载 [GitHub Release](https://github.com/riba2534/anybrowser/releases/latest) 的 ARM64 安装包。自行构建需要 Swift 5.9+。
+需要 **Apple Silicon Mac 和 macOS 12+**。可以下载 [GitHub Release](https://github.com/riba2534/anybrowser/releases/latest) 的 ARM64 安装包。自行构建需要 Swift 5.9+；只装了 Command Line Tools 时，在命令前加 `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`。
 
 ```bash
 git clone https://github.com/riba2534/anybrowser.git
@@ -50,7 +50,7 @@ cd anybrowser
 open dist/AnyBrowser.app
 ```
 
-首次构建会下载并校验固定版本的引擎和扩展，随后复用本地缓存。构建产物 `dist/AnyBrowser.app` 内置 [Fingerprint Chromium 148.0.7778.215](https://github.com/adryfish/fingerprint-chromium/releases/tag/148.0.7778.215) 和 [Passkey Box v0.2.0](https://github.com/riba2534/passkey-box/releases/tag/v0.2.0)，采用本机 ad-hoc 签名。
+首次构建会下载并校验固定版本的引擎和扩展，随后复用本地缓存。构建产物 `dist/AnyBrowser.app` 内置 [Fingerprint Chromium 148.0.7778.215](https://github.com/adryfish/fingerprint-chromium/releases/tag/148.0.7778.215) 和 [Passkey Box v0.3.0](https://github.com/riba2534/passkey-box/releases/tag/v0.3.0)，采用本机 ad-hoc 签名。
 
 ## 日常使用
 
@@ -65,15 +65,18 @@ open dist/AnyBrowser.app
 
 ### 使用 Passkey Box
 
-启动 Profile 后，在 Chromium 扩展菜单里打开 Passkey Box。服务器地址已预填为 `https://password.riba2534.cn/`。在每个 Profile 登录一次，再到「设置 → 设备验证」添加受信设备。网站发起通行密钥请求时，插件会匹配凭据。在验证窗口确认网站并通过本机生物识别或 FIDO2 安全密钥验证后，插件会自动提交签名。
+点击左下角的「Passkey Box」或菜单「Passkey Box 账号…」（⌘,），填写服务器地址（默认 `https://password.riba2534.cn`）、用户名和密码。保存前会向服务器验证账号。之后启动的每个 Profile 都会用这个账号自动登录内置扩展。网站发起通行密钥注册或登录时，扩展直接用服务器上的密钥完成，不弹出设备验证或确认窗口。同一网站在这个账号下有多个通行密钥时，页面右上角会出现账号选择框。
 
-Profile 重启后会加载内置扩展并保留该 Profile 的扩展设置。Chromium 的本机调试端口可以控制该 Profile，请仅交给受信的本机程序使用。
+修改账号后，正在运行的 Profile 重启后生效。移除账号后，之后启动的 Profile 不再自动登录，扩展保留它上次登录的账号。扩展经该 Profile 的代理访问服务器，连不上时会在页面上提示。
+
+AnyBrowser 把内置扩展复制到 `~/Library/Application Support/AnyBrowser/Extensions/PasskeyBox/`，账号写在其中的 `managed-config.json`（仅当前用户可读）。Passkey Box 的账号密码是使用这些通行密钥的唯一凭据，请妥善保管。Chromium 的本机调试端口可以控制该 Profile，请仅交给受信的本机程序使用。
 
 ## 本机数据
 
 | 路径 | 内容 |
 | --- | --- |
-| `~/Library/Application Support/AnyBrowser/profiles.sqlite3` | Profile 配置、指纹参数和端口 |
+| `~/Library/Application Support/AnyBrowser/profiles.sqlite3` | Profile 配置、指纹参数、端口和 Passkey Box 账号 |
+| `~/Library/Application Support/AnyBrowser/Extensions/PasskeyBox/` | 各 Profile 加载的 Passkey Box 及其账号配置 |
 | `~/Library/Application Support/AnyBrowser/Profiles/<UUID>/` | 对应 Profile 的 Chromium 用户资料 |
 
 从界面移除一条 Profile 记录后，原有浏览器资料仍可在上述目录找到。
@@ -87,12 +90,16 @@ Profile 重启后会加载内置扩展并保留该 Profile 的扩展设置。Chr
 | [Resources/](Resources/) | Logo、应用元数据和引擎许可 |
 | [Tests/](Tests/) | 单元测试和真实浏览器集成测试 |
 
+测试使用 swift-testing，只装了 Command Line Tools 也能运行（同样需要上面的 `SDKROOT`）。Command Line Tools 在测试文件改动后的首次编译偶尔报 `plugin for module 'TestingMacros' not found`，再运行一次即可。
+
 ```bash
 swift test --arch arm64
 ANYBROWSER_TEST_APP="$PWD/dist/AnyBrowser.app" swift test --arch arm64
 ```
 
 第二条命令需要提前构建应用、登录 macOS 图形会话，并预留本机端口 9222 和 9223。它启动两个临时 Profile，验证调试端点、代理、站点存储隔离、Passkey Box 预填地址与扩展存储隔离，以及重启恢复。
+
+再设置 `ANYBROWSER_TEST_PASSKEY_SERVER`、`ANYBROWSER_TEST_PASSKEY_USERNAME`、`ANYBROWSER_TEST_PASSKEY_PASSWORD` 和 `ANYBROWSER_TEST_PASSKEY_RP`（[passkey-box](https://github.com/riba2534/passkey-box) 的 `e2e/rp` 测试网站，例如 `http://localhost:18422`），会额外启动一个带账号的 Profile，在要求用户验证的网站上完成注册和登录，并确认全程没有打开其他窗口。
 
 ## 贡献
 

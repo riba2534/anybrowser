@@ -1,20 +1,70 @@
 import AnyBrowserCore
 import Foundation
 import Network
-import XCTest
+import Testing
 
-final class InstalledEngineTests: XCTestCase {
-    func testSeparateProfilesOnInstalledAppleSiliconEngine() async throws {
-        guard let path = ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"] else {
-            throw XCTSkip("Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test.")
-        }
+@Suite(.serialized)
+struct InstalledEngineTests {
+    @Test(
+        "Separate profiles run on the installed Apple silicon engine",
+        .enabled(
+            if: ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"] != nil,
+            "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test."
+        )
+    )
+    func separateProfilesOnInstalledAppleSiliconEngine() async throws {
+        let path = try #require(ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"])
         let engine = try BrowserEngine.bundled(in: URL(fileURLWithPath: path))
         try await verify(engine: engine)
     }
 
+    @Test(
+        "Passkey Box signs in from AnyBrowser and completes passkeys without clicks",
+        .enabled(
+            if: PasskeyFlow.current != nil,
+            "Set ANYBROWSER_TEST_APP and ANYBROWSER_TEST_PASSKEY_SERVER, _USERNAME, _PASSWORD and _RP to run the passkey test."
+        )
+    )
+    @MainActor
+    func passkeysWithoutClicks() async throws {
+        let flow = try #require(PasskeyFlow.current)
+        let engine = try BrowserEngine.bundled(in: URL(fileURLWithPath: flow.app))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("anybrowser-passkey-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        var profile = try store.makeDraft()
+        profile.proxy = ""
+        try store.save(profile)
+        try await flow.account.verify()
+        try store.savePasskeyBoxAccount(flow.account)
+
+        let runtime = BrowserRuntime(engine: engine, storage: store.directory)
+        try await runtime.start(profile, passkeyBox: store.passkeyBoxAccount)
+        do {
+            // A site that requires user verification: the extension answers it directly.
+            let site = try #require(URL(string: flow.rp + "/?uv=required"))
+            let page = try await DevToolsPage.open(port: profile.port, url: site)
+            defer { page.socket.cancel(with: .normalClosure, reason: nil) }
+            let name = "anybrowser-" + UUID().uuidString.prefix(8).lowercased()
+            _ = try await page.evaluate(
+                "document.querySelector('#username').value = '\(name)'; document.querySelector('#register').click(); true",
+                userGesture: true
+            )
+            #expect(try await page.siteResult() == "registered:\(name)")
+            _ = try await page.evaluate("document.querySelector('#login').click(); true", userGesture: true)
+            #expect(try await page.siteResult() == "authenticated:\(name)")
+            // No verification window or dialog was opened along the way.
+            #expect(try await DevToolsPage.pageCount(port: profile.port) == 1)
+            try await runtime.stop(profile.id)
+        } catch {
+            try? await runtime.stop(profile.id)
+            throw error
+        }
+    }
+
     @MainActor
     private func verify(engine: BrowserEngine) async throws {
-        XCTAssertEqual(engine.version, "148.0.7778.215")
+        #expect(engine.version == "148.0.7778.215")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("anybrowser-test-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -24,7 +74,8 @@ final class InstalledEngineTests: XCTestCase {
         defer { proxy.listener.cancel() }
         let store = try ProfileStore(directory: directory)
         var first = try store.makeDraft()
-        first.proxy = "127.0.0.1:\(try XCTUnwrap(proxy.url.port))"
+        let proxyPort = try #require(proxy.url.port)
+        first.proxy = "127.0.0.1:\(proxyPort)"
         first.fingerprint.platform = .macOS
         first.fingerprint.cpuCount = 8
         first.fingerprint.timeZone = "UTC"
@@ -34,7 +85,7 @@ final class InstalledEngineTests: XCTestCase {
         second.fingerprint.cpuCount = 12
         second.fingerprint.timeZone = "Asia/Tokyo"
         try store.save(second)
-        XCTAssertEqual([first.port, second.port], [9222, 9223])
+        #expect([first.port, second.port] == [9222, 9223] as [Int])
 
         let runtime = BrowserRuntime(engine: engine, storage: store.directory)
         do {
@@ -46,19 +97,19 @@ final class InstalledEngineTests: XCTestCase {
                 }
                 return pid
             }
-            XCTAssertNotEqual(pids[0], pids[1])
+            #expect(pids[0] != pids[1])
 
             let restored = BrowserRuntime(engine: engine, storage: store.directory)
             await restored.refresh([first, second])
-            XCTAssertEqual(restored.status(for: first.id), runtime.status(for: first.id))
-            XCTAssertEqual(restored.status(for: second.id), runtime.status(for: second.id))
-            XCTAssertEqual(restored.matchesRunningConfiguration(first), true)
+            #expect(restored.status(for: first.id) == runtime.status(for: first.id))
+            #expect(restored.status(for: second.id) == runtime.status(for: second.id))
+            #expect(restored.matchesRunningConfiguration(first) == true)
             var changed = first
             changed.fingerprint.cpuCount = 16
-            XCTAssertEqual(restored.matchesRunningConfiguration(changed), false)
+            #expect(restored.matchesRunningConfiguration(changed) == false)
             changed = first
             changed.proxy = ""
-            XCTAssertEqual(restored.matchesRunningConfiguration(changed), false)
+            #expect(restored.matchesRunningConfiguration(changed) == false)
 
             let firstPage = try await DevToolsPage.open(port: first.port, url: page.url)
             let secondPage = try await DevToolsPage.open(port: second.port, url: page.url)
@@ -71,18 +122,18 @@ final class InstalledEngineTests: XCTestCase {
             try await assertPage(secondPage, platform: "Windows", cores: 12, timezone: "Asia/Tokyo")
             _ = try await firstPage.evaluate("localStorage.setItem('anybrowser-fixture', 'profile-one')")
             let secondInitial = try await secondPage.evaluate("localStorage.getItem('anybrowser-fixture')")
-            XCTAssertTrue(secondInitial is NSNull)
+            #expect(secondInitial is NSNull)
             _ = try await secondPage.evaluate("localStorage.setItem('anybrowser-fixture', 'profile-two')")
             let firstStored = try await firstPage.evaluate("localStorage.getItem('anybrowser-fixture')")
-            XCTAssertEqual(firstStored as? String, "profile-one")
+            #expect((firstStored as? String) == "profile-one")
 
-            let proxyTarget = try XCTUnwrap(URL(string: "http://anybrowser-proxy.invalid/"))
+            let proxyTarget = try #require(URL(string: "http://anybrowser-proxy.invalid/"))
             try await firstPage.navigate(to: proxyTarget)
             let proxyTitle = try await firstPage.evaluate("document.title")
-            XCTAssertEqual(proxyTitle as? String, "AnyBrowser proxy fixture")
+            #expect((proxyTitle as? String) == "AnyBrowser proxy fixture")
 
             let extensionID = "gfejlnakeokbjdhoionfappnfepjoili"
-            let optionsURL = try XCTUnwrap(URL(string: "chrome-extension://\(extensionID)/options.html"))
+            let optionsURL = try #require(URL(string: "chrome-extension://\(extensionID)/options.html"))
             for tab in [firstPage, secondPage] {
                 try await tab.navigate(to: optionsURL)
                 try await assertPasskeyBox(tab, id: extensionID)
@@ -92,31 +143,31 @@ final class InstalledEngineTests: XCTestCase {
                 awaitPromise: true
             )
             let initialSecondExtensionValue = try await passkeyBoxFixture(secondPage)
-            XCTAssertTrue(initialSecondExtensionValue is NSNull)
+            #expect(initialSecondExtensionValue is NSNull)
 
             var conflict = try store.makeDraft()
             conflict.port = first.port
             do {
                 try await runtime.start(conflict)
-                XCTFail("A second instance unexpectedly started on an occupied port")
+                Issue.record("A second instance unexpectedly started on an occupied port")
                 try await runtime.stop(conflict.id)
             } catch {
-                XCTAssertEqual(runtime.status(for: first.id), .running(pid: pids[0], port: first.port, debugReady: true))
+                #expect(runtime.status(for: first.id) == .running(pid: pids[0], port: first.port, debugReady: true))
             }
 
             try await runtime.stop(first.id)
-            XCTAssertEqual(runtime.status(for: first.id), .stopped)
-            XCTAssertEqual(runtime.status(for: second.id), .running(pid: pids[1], port: second.port, debugReady: true))
+            #expect(runtime.status(for: first.id) == .stopped)
+            #expect(runtime.status(for: second.id) == .running(pid: pids[1], port: second.port, debugReady: true))
             try await runtime.start(first)
             let reopened = try await DevToolsPage.open(port: first.port, url: page.url)
             defer { reopened.socket.cancel(with: .normalClosure, reason: nil) }
             try await assertPage(reopened, platform: "macOS", cores: 8, timezone: "UTC")
             let reopenedValue = try await reopened.evaluate("localStorage.getItem('anybrowser-fixture')")
-            XCTAssertEqual(reopenedValue as? String, "profile-one")
+            #expect((reopenedValue as? String) == "profile-one")
             try await reopened.navigate(to: optionsURL)
             try await assertPasskeyBox(reopened, id: extensionID)
             let reopenedExtensionValue = try await passkeyBoxFixture(reopened)
-            XCTAssertEqual(reopenedExtensionValue as? String, "profile-one")
+            #expect((reopenedExtensionValue as? String) == "profile-one")
 
             try await runtime.stop(first.id)
             try await runtime.stop(second.id)
@@ -131,10 +182,10 @@ final class InstalledEngineTests: XCTestCase {
         let observed = try await page.evaluate(
             "({platform:navigator.userAgentData.platform, cores:navigator.hardwareConcurrency, zone:Intl.DateTimeFormat().resolvedOptions().timeZone})"
         )
-        let fields = try XCTUnwrap(observed as? [String: Any])
-        XCTAssertEqual(fields["platform"] as? String, platform)
-        XCTAssertEqual(fields["cores"] as? Int, cores)
-        XCTAssertEqual(fields["zone"] as? String, timezone)
+        let fields = try #require(observed as? [String: Any])
+        #expect((fields["platform"] as? String) == platform)
+        #expect((fields["cores"] as? Int) == cores)
+        #expect((fields["zone"] as? String) == timezone)
     }
 
     private func assertPasskeyBox(_ page: DevToolsPage, id: String) async throws {
@@ -147,9 +198,9 @@ final class InstalledEngineTests: XCTestCase {
                 })()
                 """)
             if let fields = observed as? [String: Any] {
-                XCTAssertEqual(fields["id"] as? String, id)
-                XCTAssertEqual(fields["version"] as? String, "0.2.0")
-                XCTAssertEqual(fields["server"] as? String, "https://password.riba2534.cn/")
+                #expect((fields["id"] as? String) == id)
+                #expect((fields["version"] as? String) == "0.3.0")
+                #expect((fields["server"] as? String) == "https://password.riba2534.cn/")
                 return
             }
             try await Task.sleep(nanoseconds: 100_000_000)
@@ -162,6 +213,23 @@ final class InstalledEngineTests: XCTestCase {
             "chrome.storage.local.get('anybrowserFixture').then(data => data.anybrowserFixture ?? null)",
             awaitPromise: true
         )
+    }
+}
+
+/// A local Passkey Box server, a strict WebAuthn test site (passkey-box/e2e/rp) and an account.
+private struct PasskeyFlow {
+    var app: String
+    var account: PasskeyBoxAccount
+    var rp: String
+
+    static var current: PasskeyFlow? {
+        let environment = ProcessInfo.processInfo.environment
+        guard let app = environment["ANYBROWSER_TEST_APP"],
+              let server = environment["ANYBROWSER_TEST_PASSKEY_SERVER"],
+              let username = environment["ANYBROWSER_TEST_PASSKEY_USERNAME"],
+              let password = environment["ANYBROWSER_TEST_PASSKEY_PASSWORD"],
+              let rp = environment["ANYBROWSER_TEST_PASSKEY_RP"] else { return nil }
+        return PasskeyFlow(app: app, account: PasskeyBoxAccount(serverURL: server, username: username, password: password), rp: rp)
     }
 }
 
@@ -225,11 +293,11 @@ private final class DevToolsPage {
     }
 
     static func open(port: Int, url: URL) async throws -> DevToolsPage {
-        let local = try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/json/list"))
+        let local = try #require(URL(string: "http://127.0.0.1:\(port)/json/list"))
         let (data, _) = try await URLSession.shared.data(from: local)
-        let targets = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: String]])
-        let endpoint = try XCTUnwrap(targets.first { $0["type"] == "page" }?["webSocketDebuggerUrl"])
-        let socketURL = try XCTUnwrap(URL(string: endpoint))
+        let targets = try #require(JSONSerialization.jsonObject(with: data) as? [[String: String]])
+        let endpoint = try #require(targets.first { $0["type"] == "page" }?["webSocketDebuggerUrl"])
+        let socketURL = try #require(URL(string: endpoint))
         guard socketURL.scheme == "ws", socketURL.host == "127.0.0.1", socketURL.port == port else {
             throw VerificationFailure.message("Unexpected session endpoint")
         }
@@ -245,6 +313,23 @@ private final class DevToolsPage {
         }
     }
 
+    static func pageCount(port: Int) async throws -> Int {
+        let list = try #require(URL(string: "http://127.0.0.1:\(port)/json/list"))
+        let (data, _) = try await URLSession.shared.data(from: list)
+        let targets = try #require(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        return targets.filter { $0["type"] as? String == "page" }.count
+    }
+
+    /// The test site's #result once it is no longer idle or pending.
+    func siteResult() async throws -> String {
+        for _ in 0..<150 {
+            let value = try await evaluate("document.querySelector('#result')?.textContent ?? ''") as? String ?? ""
+            if !value.isEmpty, value != "idle", !value.hasPrefix("pending:") { return value }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw VerificationFailure.message("测试网站没有返回结果")
+    }
+
     func navigate(to url: URL) async throws {
         _ = try await command("Page.navigate", ["url": url.absoluteString])
         for _ in 0..<50 {
@@ -257,11 +342,11 @@ private final class DevToolsPage {
         throw VerificationFailure.message("Timed out waiting for the local page")
     }
 
-    func evaluate(_ expression: String, awaitPromise: Bool = false) async throws -> Any {
+    func evaluate(_ expression: String, awaitPromise: Bool = false, userGesture: Bool = false) async throws -> Any {
         let response = try await command("Runtime.evaluate", [
-            "expression": expression, "returnByValue": true, "awaitPromise": awaitPromise,
+            "expression": expression, "returnByValue": true, "awaitPromise": awaitPromise, "userGesture": userGesture,
         ])
-        let result = try XCTUnwrap(response["result"] as? [String: Any])
+        let result = try #require(response["result"] as? [String: Any])
         return result["value"] ?? NSNull()
     }
 
@@ -284,12 +369,12 @@ private final class DevToolsPage {
             case .data(let data): bytes = data
             @unknown default: throw VerificationFailure.message("Unknown DevTools message")
             }
-            let value = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+            let value = try #require(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
             if value["id"] as? Int == commandID {
                 if let error = value["error"] {
                     throw VerificationFailure.message("DevTools \(name) failed: \(error)")
                 }
-                return try XCTUnwrap(value["result"] as? [String: Any])
+                return try #require(value["result"] as? [String: Any])
             }
         }
     }

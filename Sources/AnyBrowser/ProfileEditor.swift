@@ -229,20 +229,23 @@ struct ProfileEditor: View {
     }
 }
 
-private struct EditorInput: View {
+struct EditorInput: View {
     let label: String
     let placeholder: String
     @Binding var value: String
     let identifier: String
     var numeric = false
+    var secure = false
     @FocusState private var focused: Bool
 
-    init(_ label: String, placeholder: String, value: Binding<String>, identifier: String, numeric: Bool = false) {
+    init(_ label: String, placeholder: String, value: Binding<String>, identifier: String,
+         numeric: Bool = false, secure: Bool = false) {
         self.label = label
         self.placeholder = placeholder
         self._value = value
         self.identifier = identifier
         self.numeric = numeric
+        self.secure = secure
     }
 
     var body: some View {
@@ -250,7 +253,7 @@ private struct EditorInput: View {
             Text(label)
                 .font(.system(size: 12, weight: .medium))
                 .accessibilityHidden(true)
-            TextField(label, text: $value, prompt: Text(placeholder).foregroundColor(WorkbenchPalette.muted))
+            field
                 .textFieldStyle(.plain)
                 .font(.system(size: 13, design: numeric ? .monospaced : .default))
                 .focused($focused)
@@ -261,6 +264,15 @@ private struct EditorInput: View {
                 .accessibilityIdentifier(identifier)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private var field: some View {
+        let prompt = Text(placeholder).foregroundColor(WorkbenchPalette.muted)
+        if secure {
+            SecureField(label, text: $value, prompt: prompt)
+        } else {
+            TextField(label, text: $value, prompt: prompt)
+        }
     }
 
     private var fieldShape: RoundedRectangle {
