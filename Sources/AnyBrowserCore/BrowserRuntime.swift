@@ -115,10 +115,12 @@ public final class BrowserRuntime: ObservableObject {
     }
 
     /// Starts the Profile's browser. Passkey Box signs in with `passkeyBox` when it is set.
-    public func start(_ profile: BrowserProfile, passkeyBox: PasskeyBoxAccount? = nil) async throws {
+    /// Returns false when it found the Profile's browser already running and left it as it was.
+    @discardableResult
+    public func start(_ profile: BrowserProfile, passkeyBox: PasskeyBoxAccount? = nil) async throws -> Bool {
         let profile = try profile.validated()
         let id = profile.id
-        guard status(for: id) != .starting && status(for: id) != .stopping else { return }
+        guard status(for: id) != .starting && status(for: id) != .stopping else { return false }
         let directory = dataDirectory(for: id)
         states[id] = .starting
         do {
@@ -134,7 +136,7 @@ public final class BrowserRuntime: ObservableObject {
                     if !ready {
                         throw BrowserRuntimeError.message("浏览器正在运行，但本机调试端口 \(port) 尚未就绪。")
                     }
-                    return
+                    return false
                 default:
                     break
                 }
@@ -174,7 +176,7 @@ public final class BrowserRuntime: ObservableObject {
                 while child.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
                     if await verifyEndpoint(receipt, directory: directory) {
                         states[id] = .running(pid: receipt.pid, port: receipt.port, debugReady: true)
-                        return
+                        return true
                     }
                     try await Task.sleep(nanoseconds: 150_000_000)
                 }

@@ -488,7 +488,11 @@ enum AutomationHTTP {
         guard !backend.isBusy(id) else { return busy }
         var endpoint: URL?
         if case .running = backend.state(for: id) {
+            // Already running: report it, never start it again over its current configuration.
             endpoint = await backend.devToolsEndpoint(for: id)
+            if endpoint == nil {
+                return .error(503, "unavailable", "浏览器正在运行，但调试端口尚未就绪，请稍后重试。")
+            }
         }
         if endpoint == nil {
             guard !backend.isBusy(id) else { return busy }

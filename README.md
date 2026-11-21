@@ -64,7 +64,7 @@ open dist/AnyBrowser.app
 3. 点击「保存并启动」。调试就绪后，可复制类似 `http://127.0.0.1:9222` 的 DevTools 地址。
 4. 编辑正在运行的 Profile 后，重启该实例应用新配置，界面会显示「等待重启」。
 
-网页实际读到的内存和 WebGL 参数由内置引擎根据平台与种子决定。未选平台和 Windows、macOS 平台下引擎会改写 WebGL；选 Linux 平台时这版内核不改写 WebGL，网页会读到本机真实显卡，编辑器会对 Linux 身份给出提示。调试端口仅用于本机连接，启动器会校验监听进程和具体的 Profile。
+网页实际读到的内存和 WebGL 参数由内置引擎根据平台与种子决定。未选平台和 Windows、macOS 平台下引擎会改写 WebGL；选 Linux 平台时这版内核不改写 WebGL，网页会读到本机真实显卡，编辑器会对 Linux 身份给出提示。调试端口只监听本机，启动器会校验监听进程和具体的 Profile；端口本身没有认证，本机任何程序都能通过它控制该 Profile，请仅交给受信的本机程序使用。
 
 ### 代理
 
@@ -113,6 +113,8 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:50330/api/v1/
 | `GET /api/v1/profiles/{id}` | `{"profile":Profile}` |
 | `POST /api/v1/profiles/{id}/start` | `{"profile":Profile,"debug":{"http":"http://127.0.0.1:9222","webSocket":"ws://127.0.0.1:9222/devtools/browser/…"}}`，已在运行时同样返回 |
 | `POST /api/v1/profiles/{id}/stop` | `{"profile":Profile}` |
+
+访问令牌只控制启动和停止。浏览器运行后，它的本机调试端口本身没有认证，本机任何程序都能通过它完全控制该 Profile（读取 Cookie、执行脚本），请只在受信的电脑上使用，并只把调试地址交给受信的程序。
 
 Profile 对象为 `{"id","name","group","port","status","debugReady"}`，`status` 取值 `stopped`、`starting`、`stopping`、`running`、`failed`。错误返回 `{"error":{"code","message"}}`。启动使用已保存的配置。拿到 `webSocket` 后可以用 Playwright 的 `chromium.connectOverCDP` 或 Puppeteer 的 `connect` 接管浏览器。
 

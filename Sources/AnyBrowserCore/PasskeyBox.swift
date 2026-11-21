@@ -117,6 +117,7 @@ enum PasskeyBoxInstall {
                 try FileManager.default.moveItem(at: staging, to: target)
             } catch {
                 try? FileManager.default.removeItem(at: staging)
+                try? FileManager.default.moveItem(at: retired, to: target)
                 throw error
             }
             try? FileManager.default.removeItem(at: retired)

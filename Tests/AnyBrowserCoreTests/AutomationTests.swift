@@ -289,6 +289,20 @@ struct AutomationTests {
         }
     }
 
+    @Test("A running Profile whose debug port is not ready is reported, never started again")
+    func runningWithoutEndpoint() async throws {
+        let backend = FakeBackend()
+        let profile = backend.add("Alpha", port: 9402)
+        backend.states[profile.id] = .running(pid: 42, port: 9402, debugReady: false)
+        backend.endpointAvailable = false
+        try await serve(backend) { port in
+            let pending = await request(port, "POST", "/api/v1/profiles/\(profile.id)/start")
+            #expect(pending.status == 503)
+            #expect(pending.errorCode == "unavailable")
+            #expect(backend.started.isEmpty)
+        }
+    }
+
     @Test("Malformed requests get 400")
     func malformedRequests() throws {
         func parse(_ text: String) -> AutomationHTTP.Parse { AutomationHTTP.parse(Data(text.utf8)) }

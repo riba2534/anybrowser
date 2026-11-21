@@ -100,7 +100,8 @@ final class Workbench: ObservableObject {
         if stored.port != port { return true }
         if let running = runningConfigurations[id] {
             return running.fingerprint != stored.fingerprint || running.proxy != stored.proxy
-                || running.launch != stored.launch || running.passkeyBox != stored.passkeyBox
+                || running.launch != stored.launch
+                || running.passkeyBox != (stored.passkeyBox ?? store?.passkeyBoxAccount)
         }
         return runtime?.matchesRunningConfiguration(stored) != true
     }
@@ -199,8 +200,11 @@ final class Workbench: ObservableObject {
             try await runtime.stop(id)
             runningConfigurations[id] = nil
         }
-        try await runtime.start(profile, passkeyBox: profile.passkeyBox ?? store?.passkeyBoxAccount)
-        runningConfigurations[id] = profile
+        var launched = profile
+        launched.passkeyBox = profile.passkeyBox ?? store?.passkeyBoxAccount
+        // A browser that was already running keeps whatever configuration it was started with.
+        guard try await runtime.start(profile, passkeyBox: launched.passkeyBox) else { return warning }
+        runningConfigurations[id] = launched
         store?.recordLaunch(id)
         if let warning { notice = Notice(text: warning, isError: true) }
         return warning
@@ -247,7 +251,7 @@ final class Workbench: ObservableObject {
     func clearPasskeyBox() -> String? {
         do {
             try store?.savePasskeyBoxAccount(nil)
-            notice = Notice(text: "已移除 Passkey Box 账号，之后启动的 Profile 需要在扩展里自行登录。")
+            notice = Notice(text: "已移除 Passkey Box 账号。之后新建的 Profile 不再自动登录；已登录过的 Profile 仍保留扩展里的账号，需要时在扩展里退出。")
             return nil
         } catch {
             return error.localizedDescription

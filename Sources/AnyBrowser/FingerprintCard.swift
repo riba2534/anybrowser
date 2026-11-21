@@ -102,7 +102,8 @@ struct FingerprintCard: View {
     /// Hints only: a mismatch never blocks saving or launching.
     @ViewBuilder private var consistencyWarnings: some View {
         let issues = draft.profile.consistencyIssues(engineVersion: workbench.engineVersion,
-                                                      exit: workbench.proxyCenter.exit(for: draft.profile.id))
+                                                      exit: workbench.proxyCenter.exit(for: draft.profile.id,
+                                                                                       proxy: draft.profile.proxy))
         if !issues.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(issues) { issue in

@@ -49,5 +49,14 @@ struct ProfileModelTests {
         profile.group = ""
         profile.notes = String(repeating: "n", count: 2001)
         #expect(throws: ProfileError.self) { try profile.validated() }
+
+        // Combining marks stack on one character: the scalar bound stops a huge value hiding in it.
+        profile.notes = ""
+        profile.name = "a" + String(repeating: "\u{0301}", count: 100_000)
+        #expect(profile.name.count == 1)
+        #expect(throws: ProfileError.self) { try profile.validated() }
+        profile.name = "Org"
+        profile.group = "g" + String(repeating: "\u{0301}", count: 1_000)
+        #expect(throws: ProfileError.self) { try profile.validated() }
     }
 }

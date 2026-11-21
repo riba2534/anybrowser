@@ -123,6 +123,10 @@ public struct LaunchOptions: Codable, Equatable, Sendable {
               (parts.port.map { (1...65535).contains($0) } ?? true) else {
             throw ProfileError.invalid("启动网址须为 http:// 或 https:// 开头、带主机名的完整网址：\(shown)")
         }
+        // Credentials in a start URL would show in the process list and in password-free exports.
+        guard parts.percentEncodedUser == nil, parts.percentEncodedPassword == nil else {
+            throw ProfileError.invalid("启动网址不能包含账号密码：\(shown)")
+        }
         parts.scheme = scheme
         parts.percentEncodedHost = host.lowercased()
         if parts.percentEncodedPath.isEmpty { parts.percentEncodedPath = "/" }

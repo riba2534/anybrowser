@@ -14,9 +14,9 @@ final class ProxyCenter: ObservableObject {
     /// The latest check of each Profile, with the proxy address it was made through.
     @Published private(set) var checks: [UUID: (proxy: String, check: Check)] = [:]
 
-    /// The latest successful exit lookup for a Profile, if any.
-    func exit(for id: UUID) -> ProxyExit? {
-        if case .succeeded(let exit) = checks[id]?.check { return exit }
+    /// The latest successful exit lookup made through `proxy`, if any.
+    func exit(for id: UUID, proxy: String) -> ProxyExit? {
+        if case .succeeded(let exit) = check(for: id, proxy: proxy) { return exit }
         return nil
     }
 

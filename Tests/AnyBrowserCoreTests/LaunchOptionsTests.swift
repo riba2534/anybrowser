@@ -18,6 +18,7 @@ struct LaunchOptionsTests {
         "example.com", "ftp://example.com/", "file:///etc/hosts", "javascript:alert(1)", "https:example.com",
         "https:///path", "--disable-web-security", "chrome://settings", "http://example.com:70000/",
         "https://example.com/" + String(repeating: "a", count: 2029),
+        "https://user:secret@example.com/", "https://user@example.com/",
     ])
     func rejectsStartURL(_ url: String) {
         #expect(throws: ProfileError.self) { try LaunchOptions(startURLs: [url]).validated() }

@@ -128,7 +128,8 @@ extension BrowserProfile {
     public func validated() throws -> BrowserProfile {
         var result = self
         result.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !result.name.isEmpty, result.name.count <= 80,
+        // Combining marks can stack without limit on one character, so scalars are bounded too.
+        guard !result.name.isEmpty, result.name.count <= 80, result.name.unicodeScalars.count <= 160,
               !result.name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
             throw ProfileError.invalid("输入 1–80 字的 Profile 名称。")
         }
@@ -139,11 +140,11 @@ extension BrowserProfile {
         result.proxy = proxy.trimmingCharacters(in: .whitespacesAndNewlines)
         _ = try ProxyEndpoint.parse(result.proxy)
         result.group = group.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard result.group.count <= 40,
+        guard result.group.count <= 40, result.group.unicodeScalars.count <= 80,
               !result.group.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
             throw ProfileError.invalid("分组名称最多 40 个字符。")
         }
-        guard notes.count <= 2000 else {
+        guard notes.count <= 2000, notes.unicodeScalars.count <= 4000 else {
             throw ProfileError.invalid("备注最多 2000 个字符。")
         }
         result.passkeyBox = try passkeyBox?.validated()

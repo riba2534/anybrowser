@@ -155,6 +155,8 @@ struct InstalledEngineTests {
             #expect(restored.status(for: first.id) == runtime.status(for: first.id))
             #expect(restored.status(for: second.id) == runtime.status(for: second.id))
             #expect(restored.matchesRunningConfiguration(first) == true)
+            // Starting a Profile that is already running adopts it and reports that nothing was launched.
+            #expect(try await restored.start(first) == false)
             var changed = first
             changed.fingerprint.cpuCount = 16
             #expect(restored.matchesRunningConfiguration(changed) == false)
