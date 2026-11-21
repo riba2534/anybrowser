@@ -108,6 +108,17 @@ public enum ProfileLibrary {
         return result
     }
 
+    /// Reads a file chosen for import without loading more than an export can hold.
+    public static func contents(of url: URL) throws -> Data {
+        do {
+            let file = try FileHandle(forReadingFrom: url)
+            defer { try? file.close() }
+            return try file.read(upToCount: maxImportBytes + 1) ?? Data()
+        } catch {
+            throw ProfileError.invalid("无法读取文件「\(url.lastPathComponent)」。")
+        }
+    }
+
     /// Writes a file only the current user can read, replacing any file at `url`.
     public static func writePrivately(_ data: Data, to url: URL) throws {
         let failure = ProfileError.invalid("无法写入文件「\(url.lastPathComponent)」。")

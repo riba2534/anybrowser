@@ -225,6 +225,21 @@ struct LibraryTests {
         #expect(empty == ProfileLibrary.ImportResult(profiles: [], skipped: 0))
     }
 
+    @Test("Import files larger than any export are rejected without reading them whole")
+    func importSizeLimit() throws {
+        let directory = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("large.json")
+        try Data(count: ProfileLibrary.maxImportBytes + 4096).write(to: file)
+        let data = try ProfileLibrary.contents(of: file)
+        #expect(data.count == ProfileLibrary.maxImportBytes + 1)
+        let error = #expect(throws: ProfileError.self) {
+            try ProfileLibrary.importProfiles(from: data, takenPorts: [], takenSeeds: [])
+        }
+        #expect(message(error).contains("过大"))
+        #expect(throws: ProfileError.self) { try ProfileLibrary.contents(of: directory.appendingPathComponent("missing.json")) }
+    }
+
     @Test("Export files are readable only by the current user")
     func exportFilePermissions() throws {
         let directory = try scratchDirectory()
@@ -519,6 +534,23 @@ struct BrowserDataRemovalTests {
         }
         #expect(message(error).contains("路径异常"))
         #expect(!recordRemoved)
+        #expect(fixture.exists(victim.appendingPathComponent("Keep")))
+    }
+
+    @Test("Data reached through a link that stays inside the storage directory is not deleted")
+    func refusesRedirectInsideStorage() async throws {
+        let fixture = try DataFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let id = UUID()
+        let backups = fixture.runtime.storage.appendingPathComponent("Backups", isDirectory: true)
+        let victim = backups.appendingPathComponent(id.uuidString.lowercased(), isDirectory: true)
+        try FileManager.default.createDirectory(at: victim, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        try Data("keep".utf8).write(to: victim.appendingPathComponent("Keep"))
+        try FileManager.default.createSymbolicLink(at: fixture.runtime.storage.appendingPathComponent("Profiles"),
+                                                   withDestinationURL: backups)
+
+        await #expect(throws: ProfileError.self) { try await fixture.runtime.removeData(for: id) }
         #expect(fixture.exists(victim.appendingPathComponent("Keep")))
     }
 
