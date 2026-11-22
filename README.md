@@ -117,25 +117,145 @@ AnyBrowser 把内置扩展复制到每个 Profile 的 `Extensions/<UUID>/Passkey
 
 ### 自动化接口
 
-菜单「自动化接口…」里打开开关后，AnyBrowser 在 `127.0.0.1:50330`（可修改）提供 HTTP API。每个请求都要带 `Authorization: Bearer <访问令牌>`；带 `Origin` 头的请求（来自网页）和 Host 不是本机的请求一律拒绝。
+菜单「自动化接口…」里打开开关后，AnyBrowser 在 `127.0.0.1:50330`（可修改）提供 HTTP API。每个请求都要带 `Authorization: Bearer <访问令牌>`；带 `Origin` 头的请求（来自网页）和 Host 不是本机的请求一律拒绝。访问令牌能读写全部 Profile 配置（加 `?secrets=1` 时包括代理和 Passkey Box 的密码）、删除 Profile 和代理，并启动浏览器。浏览器运行后，它的调试端口本身没有认证，本机任何程序都能通过它完全控制该 Profile（读取 Cookie、执行脚本），请只把令牌和调试地址交给受信的程序。
 
 ```bash
 TOKEN=<在设置里复制的访问令牌>
-curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:50330/api/v1/profiles
-curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:50330/api/v1/profiles/<id>/start
-curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:50330/api/v1/profiles/<id>/stop
+API=http://127.0.0.1:50330/api/v1
+curl -s -H "Authorization: Bearer $TOKEN" $API/profiles
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -d '{"name":"店铺 1","preset":"win11-chrome","proxyFromLibrary":"unused"}' $API/profiles
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -d '{"headless":true}' $API/profiles/<id>/start
+curl -s -X POST -H "Authorization: Bearer $TOKEN" $API/profiles/<id>/stop
 ```
 
-| 端点 | 返回 |
+#### 命令行工具 anybrowserctl
+
+`anybrowserctl` 封装了上面的接口，随应用打包在 `AnyBrowser.app/Contents/MacOS/anybrowserctl`，可以软链接到 PATH：
+
+```bash
+ln -s /Applications/AnyBrowser.app/Contents/MacOS/anybrowserctl /usr/local/bin/anybrowserctl
+anybrowserctl list --status running
+anybrowserctl create --name 店铺 --preset win11-chrome --proxy-from-library unused
+anybrowserctl create --count 5 --prefix 店铺 --group 电商 --proxy-from-library unused
+anybrowserctl update 店铺 --tag 美区 --json '{"fingerprint":{"timeZone":"America/New_York"}}'
+anybrowserctl start 店铺 --headless --url https://example.com --arg --mute-audio
+anybrowserctl cookies export 店铺 --output cookies.json
+anybrowserctl cookies import 店铺 cookies.txt
+anybrowserctl selfcheck 店铺 --pretty
+anybrowserctl proxies add --file proxies.txt
+anybrowserctl delete 店铺
+```
+
+Profile 可以用 id 或名称指定，重名时须用 id。访问令牌和端口依次取自 `--token`、`--port`，环境变量 `ANYBROWSER_TOKEN`、`ANYBROWSER_PORT`，都没有时只读读取 AnyBrowser 保存的自动化接口设置（数据目录可用 `--data-dir` 或 `ANYBROWSER_DATA_DIR` 指定），所以在本机打开接口后可以直接使用。输出是接口返回的 JSON，加 `--pretty` 缩进显示。出错时在 stderr 输出原因，退出状态为 1（接口返回错误）、2（用法错误）或 3（无法连接或读取设置）。`anybrowserctl help` 列出全部命令和选项。
+
+#### 端点
+
+| 方法与路径 | 说明 |
 | --- | --- |
-| `GET /api/v1/profiles` | `{"profiles":[Profile]}` |
-| `GET /api/v1/profiles/{id}` | `{"profile":Profile}` |
-| `POST /api/v1/profiles/{id}/start` | `{"profile":Profile,"debug":{"http":"http://127.0.0.1:9222","webSocket":"ws://127.0.0.1:9222/devtools/browser/…"}}`，已在运行时同样返回 |
-| `POST /api/v1/profiles/{id}/stop` | `{"profile":Profile}` |
+| `GET /api/v1/profiles` | 列出 Profile：`{"profiles":[Profile]}`。`q` 是侧栏搜索（支持 `tag:`、`group:` 和按账号状态筛选的 `status:`），`group` 按完整分组名（空值为未分组），`tag` 按完整标签（可重复，须全部符合），`status` 按运行状态，`accountStatus` 按账号状态（`none` 为未设置） |
+| `GET /api/v1/profiles/{id}` | `{"profile":Profile,"config":配置}`；`?secrets=1` 时配置含密码 |
+| `POST /api/v1/profiles` | 新建，返回 201 和 `{"profile","config","warnings"}` |
+| `POST /api/v1/profiles/batch` | 批量新建 1–50 个，返回 201 和 `{"profiles","warnings"}` |
+| `POST /api/v1/profiles/{id}/clone` | 复制（新 id、名称、端口和种子，不复制浏览器资料），请求体可带要改的字段 |
+| `PATCH /api/v1/profiles/{id}` | 修改任意字段，返回 `{"profile","config","pendingRestart"}` |
+| `DELETE /api/v1/profiles/{id}` | 移到回收站；`?purge=1` 永久删除记录（回收站里的也可以），再加 `&deleteData=1` 同时删除浏览器资料 |
+| `GET /api/v1/trash` | 回收站：`{"profiles":[Profile]}`，每项多一个 `deletedAt` |
+| `POST /api/v1/profiles/{id}/restore` | 从回收站恢复 |
+| `POST /api/v1/profiles/{id}/start` | 启动，请求体可选 `{"headless","urls","args"}`；返回 `{"profile","debug":{"http","webSocket"},"startedFresh","warnings"}`，已在运行时同样返回 |
+| `POST /api/v1/profiles/{id}/restart` | 停止后按保存的配置重新启动，请求体同 start |
+| `POST /api/v1/profiles/{id}/stop` | 停止，`?force=1` 强制结束；返回 `{"profile"}` |
+| `GET /api/v1/profiles/{id}/log` | 本次运行 AnyBrowser 启动它时的浏览器输出：`{"log"}`，没有时为 `null` |
+| `GET /api/v1/profiles/{id}/cookies` | 导出 Cookie：`{"cookies":[…],"count","skipped","format","startedHeadless","warnings"}`；`?format=devTools` 改用 DevTools 格式 |
+| `POST /api/v1/profiles/{id}/cookies` | 导入 Cookie，请求体是 Cookie 文件本身；返回 `{"imported","skipped","evicted","displaced","summary","startedHeadless","warnings"}` |
+| `GET /api/v1/profiles/{id}/selfcheck` | 运行时自检，Profile 须正在运行；返回自检报告 |
+| `POST /api/v1/windows/arrange` | 平铺窗口，请求体可选 `{"ids","columns"}`；返回 `{"windows":[{"id","frame","error"}]}` |
+| `GET /api/v1/proxies` | 代理库：`{"proxies":[Proxy]}`；`?secrets=1` 时地址含账号密码 |
+| `POST /api/v1/proxies` | 添加 `{"text"}`（每行一个，写法同界面里粘贴）或 `{"urls":[…]}`，可带 `label`；返回 `{"added","duplicates","rejected"}` |
+| `GET`、`PATCH`、`DELETE /api/v1/proxies/{id}` | 查看、修改（`url`、`label`、`tags`、`note`）或删除一条代理 |
+| `POST /api/v1/proxies/check` | 经代理查询出口并记录，请求体可选 `{"ids"}`，默认全部；返回 `{"results":[{"proxy","error"}]}` |
 
-访问令牌只控制启动和停止。浏览器运行后，它的本机调试端口本身没有认证，本机任何程序都能通过它完全控制该 Profile（读取 Cookie、执行脚本），请只在受信的电脑上使用，并只把调试地址交给受信的程序。
+Profile 对象为 `{"id","name","group","port","status","debugReady","tags","accountStatus","pendingRestart"}`。`status` 是浏览器状态，取值 `stopped`、`starting`、`stopping`、`running`、`failed`；`accountStatus` 是记录的账号状态，取值 `active`、`verifying`、`limited`、`banned` 或 `null`；`pendingRestart` 表示浏览器还在用修改前的配置运行。运行中的浏览器报告它启动时用的端口。
 
-Profile 对象为 `{"id","name","group","port","status","debugReady"}`，`status` 取值 `stopped`、`starting`、`stopping`、`running`、`failed`。错误返回 `{"error":{"code","message"}}`。启动使用已保存的配置。拿到 `webSocket` 后可以用 Playwright 的 `chromium.connectOverCDP` 或 Puppeteer 的 `connect` 接管浏览器。
+`config` 是完整配置，字段与「导出 Profile…」文件里的 Profile 相同：`name`、`port`、`proxy`、`group`、`notes`、`tags`、`accountStatus`、`fingerprint`（`seed`、`platform`、`platformVersion`、`brand`、`brandVersion`、`cpuCount`、`language`、`languages`、`timeZone`、`adjustments` 等）、`launch`（`startURLs`、`window`、`extensionDirectories`、`loadPasskeyBox`、`restoreSession`、`sharedExtensions`）和 `passkeyBox`。默认不含密码：代理只保留 `scheme://主机:端口`，没有 Profile 自己的 Passkey Box 账号。
+
+Proxy 对象为 `{"id","url","hasCredentials","label","tags","note","createdAt","lastExit","lastCheckedAt","profiles"}`，`profiles` 是使用这个代理的 Profile（含回收站中的），时间为 ISO 8601。
+
+错误返回 `{"error":{"code","message"}}`，`message` 是中文原因：
+
+| 状态码 | `code` | 含义 |
+| --- | --- | --- |
+| 400 | `bad_request`、`invalid_json`、`invalid` | 无法解析的请求、请求体不是 JSON 对象、字段或取值无效（包括拼错的字段名） |
+| 401、403 | `unauthorized`、`forbidden_host`、`forbidden_origin` | 令牌错误，或请求不是来自本机程序 |
+| 404、405 | `not_found`、`method_not_allowed` | 没有这个接口、Profile 或代理；方法不对时 `Allow` 头列出可用的方法 |
+| 409 | `busy`、`running`、`trashed`、`not_running`、`conflict`、`read_only` | 正在执行另一个操作、需要先停止、已在回收站、需要先启动、端口种子或代理地址已被占用、数据库由更新版本写入 |
+| 413 | `payload_too_large` | 请求头和请求体合计超过 64 KB |
+| 500、503 | `start_failed`、`stop_failed`、`cookies_failed`、`selfcheck_failed` 等；`unavailable` | 操作失败；浏览器在运行但调试端口尚未就绪 |
+
+#### 新建与修改
+
+`POST /api/v1/profiles` 的请求体可以只写要指定的字段，其余按「新建 Profile」的方式生成：名称 `Profile N`、空闲端口、新种子和一套自洽的身份，再按代理出口填写语言和时区（不用代理时按本机），出口查询失败时保持随机并在 `warnings` 里说明。另有三个选项：
+
+- `preset`：身份模板 id，`win11-chrome`、`win11-edge`、`win10-chrome`、`macos27-chrome`、`macos26-chrome`、`macos15-chrome`。
+- `proxyFromLibrary`：代理库条目的 id，或 `"unused"`（取第一条没有 Profile 使用的代理）；不能与 `proxy` 同时填写。
+- `localeFromExit`：设为 `false` 时不查询出口。`fingerprint` 里写了 `language`、`timeZone` 或 `languages` 时同样不查询。
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" $API/profiles -d '{
+  "name": "店铺 1", "group": "电商", "tags": ["美区"], "preset": "win11-chrome",
+  "proxy": "us.example.com:8000:user:pass", "launch": {"startURLs": ["https://example.com"]}
+}'
+```
+
+`POST /api/v1/profiles/batch` 需要 `count`（1–50），可选 `prefix`（默认 `Profile`，名称为 `<前缀> <序号>`）、`preset`、`proxy`、`localeFromExit` 和 `proxyFromLibrary`。批量时 `proxyFromLibrary` 为 `"unused"` 时每个 Profile 分到一条不同的未使用代理，也可以是与 `count` 等长的 id 数组；每个 Profile 按自己代理的出口填写语言和时区，同一个地址只查询一次。请求体里的其他 Profile 字段（如 `group`、`tags`、`notes`、`launch`）应用到每一个，`name`、`port` 和 `fingerprint.seed` 除外。全部成功才保存。
+
+`PATCH` 按 JSON Merge Patch（RFC 7386）合并：对象逐层合并，`null` 删除字段（恢复默认值），其他值直接替换，数组整体替换。所有字段都可以改，包括 `passkeyBox`、`launch.extensionDirectories` 和 `fingerprint`；不认识的字段返回 400。运行中照样保存，浏览器在重启前继续用原来的配置，这时 `pendingRestart` 为 `true`。把不含密码的 `config` 原样改了发回时，与它相同的 `proxy` 视为未修改，已保存的账号密码保留；不用代理请写 `"proxy": ""`。
+
+```bash
+curl -s -X PATCH -H "Authorization: Bearer $TOKEN" $API/profiles/<id> -d '{"fingerprint": {"timeZone": "Asia/Tokyo"}, "accountStatus": null}'
+```
+
+#### 启动、Cookie 与自检
+
+`start` 和 `restart` 的请求体只对这一次启动生效，不保存，也不算配置修改：`headless` 为 `true` 时不打开窗口（`--headless=new`；内核只把 UA 里的 HeadlessChrome 换成 Chrome，其他无头特征仍在，网站可能识别出来），`urls` 替换这次打开的启动网址（空数组表示不打开），`args` 追加以 `--` 开头的 Chromium 开关（不能包含 `--user-data-dir` 和 `--remote-debugging-*`）。浏览器已在运行时 `start` 不会再次启动，返回的 `warnings` 会说明参数没有生效，需要时用 `restart`。所有启动都经过与界面相同的排队（默认同时启动 3 个），正在启动、停止或删除的 Profile 返回 409。
+
+Cookie 接口在 Profile 未运行时，自动以无头方式启动它，完成后再停止，返回里 `startedHeadless` 为 `true`；这期间对该 Profile 的其他请求返回 409。导出默认是 Cookie-Editor 和 EditThisCookie 能导入的格式，含分区 Cookie；导入接受 Cookie-Editor、EditThisCookie、DevTools、Playwright 的 JSON（包括 `{"cookies": [...]}` 包装）和 Netscape cookies.txt。`evicted` 和 `displaced` 是浏览器因数量上限丢弃的新旧 Cookie 数。一次导入的文件不能超过 64 KB 的请求上限，更大的文件请分批导入。
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" "$API/profiles/<id>/cookies?format=devTools"
+curl -s -X POST -H "Authorization: Bearer $TOKEN" --data-binary @cookies.txt $API/profiles/<id>/cookies
+```
+
+自检在运行中的浏览器里开一个后台标签，访问本机回环地址上的测试页，读取平台、品牌与版本、CPU、内存、WebGL、语言、时区、屏幕、Canvas 文本宽度和页面上的 AnyBrowser 标记，与保存的配置和最近一次出口逐项比对，再关闭标签，不访问外部网站。返回 `{"profileID","checkedAt","passed","items":[{"id","title","expected","observed","status","note"}],"observation"}`，`status` 为 `pass`、`fail` 或 `info`（没有可比的值，或内核暂时改不了的项）。
+
+`windows/arrange` 把所选 Profile（默认全部运行中的）的窗口按网格排在主显示器上，`columns` 默认取接近正方形的列数。无窗口运行或未运行的 Profile 不占格子，`error` 说明原因。
+
+#### 接入 Playwright、Puppeteer 与 Selenium
+
+`start` 返回的 `debug.http` 和 `debug.webSocket` 就是内置 Chromium 148 的 DevTools 地址；`GET <debug.http>/json/version` 返回内核版本。[examples/](examples/) 里有三个完整示例：先经接口启动 Profile，再连接并打开一个网页。连接时注意：
+
+- 使用 Profile 自带的默认上下文（Playwright 的 `browser.contexts()[0]`），它带着该 Profile 的 Cookie 和登录状态。Playwright 的 `browser.newContext()`、Puppeteer 的 `browser.createBrowserContext()` 新建的是空白上下文，相当于无痕窗口。
+- 断开连接（Playwright 的 `browser.close()`、Puppeteer 的 `browser.disconnect()`、Selenium 的 `driver.quit()`）不会关闭浏览器，Profile 继续运行，需要时调用 `stop`。
+- 带账号密码的代理（HTTP、HTTPS、SOCKS5）经 AnyBrowser 的本机代理中继登录，新建的上下文和无痕窗口同样经过它，脚本里不需要再设置代理。
+
+```js
+// Playwright（Node.js）
+const browser = await chromium.connectOverCDP(started.debug.http);
+const context = browser.contexts()[0];
+```
+
+```js
+// Puppeteer（Node.js）；defaultViewport: null 保持窗口本来的大小，不模拟 800×600 的屏幕
+const browser = await puppeteer.connect({ browserWSEndpoint: started.debug.webSocket, defaultViewport: null });
+```
+
+```python
+# Selenium（Python），需要与内核同为 148 版的 chromedriver，例如 npx @puppeteer/browsers install chromedriver@148
+options = webdriver.ChromeOptions()
+options.debugger_address = started["debug"]["http"].removeprefix("http://")
+driver = webdriver.Chrome(service=Service("/path/to/chromedriver"), options=options)
+```
+
+AI Agent 可以先用 `anybrowserctl start <Profile>` 拿到 `debug.http`，再交给 Playwright MCP 的 `--cdp-endpoint` 或 chrome-devtools-mcp 的 `--browserUrl` 接管浏览器。
 
 ## 本机数据
 
