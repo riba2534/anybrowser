@@ -66,6 +66,10 @@ public struct SelfCheckObservation: Codable, Equatable, Sendable {
     public var markers: [String]
     /// The long zone name for the probe date in the Profile's language, as Intl formats it.
     public var expectedZoneName: String?
+    /// The name Intl gives the Profile's and the exit's time zones. ICU keeps older names for some
+    /// zones the configuration or the exit service spells the current way: Asia/Kolkata reads as
+    /// Asia/Calcutta, Europe/Kyiv as Europe/Kiev.
+    public var timeZoneNames: [String: String]?
 }
 
 /// The probe results compared item by item with the Profile's saved configuration.
@@ -118,7 +122,9 @@ public struct SelfCheckReport: Codable, Equatable, Sendable {
 /// Nothing is sent to an outside service.
 public enum SelfCheck {
     public static func run(endpoint: URL, profile: BrowserProfile, exit: ProxyExit?) async throws -> SelfCheckReport {
-        let value = try await evaluate(probeScript(language: profile.fingerprint.primaryLanguage), endpoint: endpoint)
+        let zones = [timeZone(of: profile.fingerprint), exit?.timeZone ?? ""]
+        let value = try await evaluate(probeScript(language: profile.fingerprint.primaryLanguage, timeZones: zones),
+                                       endpoint: endpoint)
         guard JSONSerialization.isValidJSONObject(value) else {
             throw ProfileError.invalid("自检脚本没有返回结果。")
         }
@@ -282,17 +288,17 @@ public enum SelfCheck {
         if language.isEmpty {
             add("languages", "语言列表", expected: nil, observed: seen.languages.joined(separator: ", "), .info)
         } else {
-            let base = language.split(separator: "-").first.map(String.init) ?? language
             let expected = fingerprint.acceptLanguages
             add("languages", "语言列表", expected: expected.joined(separator: ", "),
                 observed: seen.languages.joined(separator: ", "),
                 judge(seen.language == language && seen.languages == expected
                       && observation.worker.map { $0.languages == expected } != false))
-            // ICU uses Chromium's UI locale, which is the bare language where there is no regional one ("de").
-            let localeOK = seen.locale == language || seen.locale == base
+            let mapped = engineLocale(for: language)
+            let localeOK = seen.locale == language || seen.locale == mapped
             // A restart from inside the browser (chrome://restart, the settings page) rebuilds argv
             // without `-AppleLanguages`, so ICU falls back to this Mac's languages.
-            add("locale", "Intl 默认语言", expected: language,
+            add("locale", "Intl 默认语言",
+                expected: mapped.map { $0 == language ? language : "\(language)（Chromium 读作 \($0)）" } ?? language,
                 observed: ([seen.locale] + realms.map { "\($0.0) \($0.1)" }).joined(separator: " · "),
                 judge(localeOK && realms.allSatisfy { $0.1 == seen.locale }),
                 note: localeOK ? nil : "语言与 Profile 不一致：可能是浏览器自行重启过，请从 AnyBrowser 重启此 Profile")
@@ -304,13 +310,21 @@ public enum SelfCheck {
                       && realms.allSatisfy { $0.2 == seen.dateString }))
         }
 
-        let zone = fingerprint.timeZone.isEmpty ? TimeZone.current.identifier : fingerprint.timeZone
-        add("time-zone", "时区", expected: zone,
+        // Either spelling of a renamed zone is the same zone; the page says which one ICU uses.
+        let zoneNames = observation.timeZoneNames ?? [:]
+        func isZone(_ observed: String, _ configured: String) -> Bool {
+            observed == configured || observed == zoneNames[configured]
+        }
+        func zoneTitle(_ zone: String) -> String {
+            zoneNames[zone].map { $0 == zone ? zone : "\(zone)（Chromium 读作 \($0)）" } ?? zone
+        }
+        let zone = Self.timeZone(of: fingerprint)
+        add("time-zone", "时区", expected: zoneTitle(zone),
             observed: Self.pair(seen.timeZone, observation.worker?.timeZone),
-            judge(seen.timeZone == zone && observation.worker.map { $0.timeZone == zone } != false))
+            judge(isZone(seen.timeZone, zone) && observation.worker.map { isZone($0.timeZone, zone) } != false))
         if let exit, !exit.timeZone.isEmpty {
-            add("exit-time-zone", "时区与出口", expected: exit.timeZone, observed: seen.timeZone,
-                judge(seen.timeZone == exit.timeZone))
+            add("exit-time-zone", "时区与出口", expected: zoneTitle(exit.timeZone), observed: seen.timeZone,
+                judge(isZone(seen.timeZone, exit.timeZone)))
         }
         if let exit, !exit.languages.isEmpty {
             let spoken = Set(exit.languages.compactMap { $0.split(separator: "-").first?.lowercased() })
@@ -348,6 +362,35 @@ public enum SelfCheck {
         return String(dateString[dateString.index(after: open)..<dateString.index(before: dateString.endIndex)])
     }
 
+    /// The zone the browser runs in: the Profile's, or this Mac's when it has none.
+    static func timeZone(of fingerprint: FingerprintSettings) -> String {
+        fingerprint.timeZone.isEmpty ? TimeZone.current.identifier : fingerprint.timeZone
+    }
+
+    /// The Intl locale pages get for `language`. Chromium runs in the UI localization Cocoa picks
+    /// for `-AppleLanguages` among the ones the engine ships, and Foundation makes the same pick
+    /// here: en-AU and en-IN become en-GB, en-CA en-US, zh-MO zh-HK, pt-AO pt-PT, es-AR es-419,
+    /// de-AT de, a language without a localization en. ICU then takes `es` as es-ES and `es-419` as es-MX.
+    static func engineLocale(for language: String) -> String? {
+        guard let picked = Bundle.preferredLocalizations(from: engineLocalizations, forPreferences: [language]).first else {
+            return nil
+        }
+        switch picked {
+        case "en": return "en-US"
+        case "es": return "es-ES"
+        case "es_419": return "es-MX"
+        default: return picked.replacingOccurrences(of: "_", with: "-")
+        }
+    }
+
+    /// The `.lproj` folders of the bundled engine's Chromium.app; IsolationProbeTests compares
+    /// them with the engine.
+    static let engineLocalizations = """
+        af am ar as az be bg bn bs ca cs cy da de el en en_GB es es_419 et eu fa fi fil fr fr_CA gl gu he hi \
+        hr hu hy id is it ja ka kk km kn ko ky lo lt lv mk ml mn mr ms my nb ne nl or pa pl pt_BR pt_PT ro \
+        ru si sk sl sq sr sr_Latn sv sw ta te th tr uk ur uz vi zh_CN zh_HK zh_TW zu
+        """.split(separator: " ").map(String.init)
+
     /// `Edg/148.0.0.0` for prefix `Edg/`.
     private static func token(_ prefix: String, in userAgent: String) -> String? {
         userAgent.split(separator: " ").first { $0.hasPrefix(prefix) }.map(String.init)
@@ -368,16 +411,20 @@ public enum SelfCheck {
 
     // MARK: Probe
 
-    /// The probe as one expression. `language` is only used to format the expected zone name.
-    static func probeScript(language: String) -> String {
-        let encoded = (try? JSONSerialization.data(withJSONObject: [language], options: [.fragmentsAllowed]))
-            .map { String(decoding: $0, as: UTF8.self) } ?? "[\"\"]"
-        return probeTemplate.replacingOccurrences(of: "__LANGUAGES__", with: encoded)
+    /// The probe as one expression. `language` is only used to format the expected zone name, and
+    /// `timeZones` only to ask Intl for their names.
+    static func probeScript(language: String, timeZones: [String] = []) -> String {
+        let json = { (values: [String]) in
+            (try? JSONSerialization.data(withJSONObject: values)).map { String(decoding: $0, as: UTF8.self) } ?? "[]"
+        }
+        return probeTemplate.replacingOccurrences(of: "__LANGUAGES__", with: json([language]))
+            .replacingOccurrences(of: "__TIME_ZONES__", with: json(timeZones.filter { !$0.isEmpty }))
     }
 
     private static let probeTemplate = #"""
     (async () => {
       const [profileLanguage] = __LANGUAGES__;
+      const timeZones = __TIME_ZONES__;
       const text = 'Cwm fjordbank glyphs vext quiz';
       const read = () => {
         let measureText = null, webGLVendor = null, webGLRenderer = null;
@@ -474,6 +521,12 @@ public enum SelfCheck {
         expectedZoneName = new Intl.DateTimeFormat(profileLanguage || undefined, { timeZoneName: 'long' })
           .formatToParts(new Date(2026, 0, 15, 12)).find((part) => part.type === 'timeZoneName').value;
       } catch (e) {}
+      const timeZoneNames = {};
+      for (const zone of timeZones) {
+        try {
+          timeZoneNames[zone] = new Intl.DateTimeFormat('en', { timeZone: zone }).resolvedOptions().timeZone;
+        } catch (e) {}
+      }
 
       return {
         main, worker, frame, clientHints,
@@ -482,7 +535,7 @@ public enum SelfCheck {
         canvasMeasureText: page.measureText(text).width,
         canvasStable: draw() === draw(),
         markers: markersOf(window),
-        expectedZoneName,
+        expectedZoneName, timeZoneNames,
       };
     })()
     """#

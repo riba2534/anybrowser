@@ -26,7 +26,7 @@ struct IsolationProbeTests {
 
     /// Starts the Profiles together, self-checks each one and stops them all.
     @MainActor
-    private func probe(_ profiles: [BrowserProfile], label: String,
+    private func probe(_ profiles: [BrowserProfile], label: String, exits: [ProxyExit] = [],
                        extra: String? = nil) async throws -> [(report: SelfCheckReport, extra: Any?)] {
         let storage = try scratchDirectory(label)
         defer { try? FileManager.default.removeItem(at: storage) }
@@ -34,9 +34,10 @@ struct IsolationProbeTests {
         var results: [(report: SelfCheckReport, extra: Any?)] = []
         do {
             for profile in profiles { try await runtime.start(profile) }
-            for profile in profiles {
+            for (index, profile) in profiles.enumerated() {
                 let endpoint = try #require(await runtime.devToolsEndpoint(for: profile.id))
-                let report = try await SelfCheck.run(endpoint: endpoint, profile: profile, exit: nil)
+                let exit = exits.indices.contains(index) ? exits[index] : nil
+                let report = try await SelfCheck.run(endpoint: endpoint, profile: profile, exit: exit)
                 var value: Any?
                 if let extra { value = try await SelfCheck.evaluate(extra, endpoint: endpoint) }
                 results.append((report, value))
@@ -241,5 +242,55 @@ struct IsolationProbeTests {
         let decoded = try decoder.decode(SelfCheckReport.self, from: encoder.encode(report))
         #expect(decoded.items == report.items)
         #expect(decoded.observation == report.observation)
+    }
+
+    @Test("Identities generated for exits pass their whole self-check where Chromium maps the language and ICU renames the zone")
+    @MainActor
+    func exitIdentitiesPassSelfCheck() async throws {
+        // The first language of each exit, as ProxyProbe fills it in, has no localization of its own
+        // (en-IN reads as en-GB, es-AR as es-MX, zh-MO as zh-HK, de-AT as de), and ICU keeps the
+        // old name of several zones (Asia/Calcutta, America/Buenos_Aires, Europe/Kiev, Asia/Saigon).
+        let places = [
+            ("IN", "Asia/Kolkata"), ("AU", "Australia/Sydney"), ("NZ", "Pacific/Auckland"),
+            ("AR", "America/Argentina/Buenos_Aires"), ("MO", "Asia/Macau"), ("AT", "Europe/Vienna"),
+            ("UA", "Europe/Kyiv"), ("VN", "Asia/Ho_Chi_Minh"), ("CA", "America/Toronto"), ("SG", "Asia/Singapore"),
+        ]
+        let exits = places.enumerated().map { index, place in
+            ProxyExit(ip: "203.0.113.\(index + 1)", countryCode: place.0, timeZone: place.1,
+                      languages: ProxyProbe.commonLanguages[place.0] ?? [])
+        }
+        var seeds: Set<Int> = []
+        let profiles = try exits.enumerated().map { index, exit in
+            let seed = FingerprintSettings.newSeed(excluding: seeds)
+            seeds.insert(seed)
+            var fingerprint = IdentitySampler.sample(seed: seed)
+            fingerprint.apply(try #require(IdentitySampler.LocaleHint(exit: exit)))
+            return try BrowserProfile(name: "Exit \(exit.countryCode)", port: testPort(9340 + index),
+                                      fingerprint: fingerprint, proxy: "").validated()
+        }
+        let results = try await probe(profiles, label: "isolation-exits", exits: exits)
+        for (profile, result) in zip(profiles, results) {
+            let report = result.report
+            let language = profile.fingerprint.language
+            #expect(report.passed, "\(language) \(profile.fingerprint.timeZone): \(report.items.filter { $0.status == .fail })")
+            expectPassed(report, ["languages", "locale", "date-string", "time-zone", "exit-time-zone", "exit-language"],
+                         language)
+            #expect(report.observation.main.locale == SelfCheck.engineLocale(for: language), "\(language)")
+        }
+        let read = Dictionary(uniqueKeysWithValues: zip(profiles, results).map {
+            ($0.fingerprint.language, "\($1.report.observation.main.locale) \($1.report.observation.main.timeZone)")
+        })
+        #expect(read["en-IN"] == "en-GB Asia/Calcutta")
+        #expect(read["es-AR"] == "es-MX America/Buenos_Aires")
+        #expect(read["zh-MO"] == "zh-HK Asia/Macau")
+        #expect(read["uk-UA"] == "uk Europe/Kiev")
+    }
+
+    @Test("SelfCheck maps languages with the localizations the engine ships")
+    func engineLocalizations() throws {
+        let engine = URL(fileURLWithPath: try #require(testAppPath))
+            .appendingPathComponent("Contents/Frameworks/Chromium.app", isDirectory: true)
+        let localizations = try #require(Bundle(url: engine)?.localizations)
+        #expect(localizations.sorted() == SelfCheck.engineLocalizations.sorted())
     }
 }
