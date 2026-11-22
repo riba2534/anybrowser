@@ -11,9 +11,16 @@ let testAppPath = ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"]
 
 /// Engine suites add `ANYBROWSER_TEST_PORT_OFFSET` to their fixed debug ports, so several
 /// worktrees can run them at the same time without fighting over 9222 and friends.
-func testPort(_ port: Int) -> Int {
-    port + (ProcessInfo.processInfo.environment["ANYBROWSER_TEST_PORT_OFFSET"].flatMap(Int.init) ?? 0)
-}
+func testPort(_ port: Int) -> Int { port + testPortOffset }
+
+/// Without an explicit offset, unit runs from several worktrees at once would start their fake
+/// engines on the same ports, so each process shifts them by its own multiple of 100. Engine runs
+/// keep the documented ports unless the offset is set.
+let testPortOffset: Int = {
+    let environment = ProcessInfo.processInfo.environment
+    if let offset = environment["ANYBROWSER_TEST_PORT_OFFSET"].flatMap(Int.init) { return offset }
+    return environment["ANYBROWSER_TEST_APP"] == nil ? Int(getpid() % 100 + 1) * 100 : 0
+}()
 
 func testEngine() throws -> BrowserEngine {
     try BrowserEngine.bundled(in: URL(fileURLWithPath: try #require(testAppPath)))

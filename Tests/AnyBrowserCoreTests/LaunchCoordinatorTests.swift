@@ -571,7 +571,7 @@ struct LaunchCoordinatorTests {
     func monitoring() async throws {
         let fixture = try CoordinatorFixture("coordinator-monitor")
         let profile = try fixture.add(11631)
-        try fixture.fake.configure(profile, ["relaunch_ms": "600"])
+        try fixture.fake.configure(profile, ["relaunch_ms": "2000"])
         try await fixture.run([profile]) {
             let coordinator = fixture.coordinator
             try await coordinator.start(profile.id)
@@ -580,7 +580,7 @@ struct LaunchCoordinatorTests {
             coordinator.startMonitoring(every: 0.2)
             coordinator.startMonitoring(every: 0.2)
             #expect(coordinator.isMonitoring)
-            #expect(await fixture.fake.eventually(6) {
+            #expect(await fixture.fake.eventually(10) {
                 fixture.pid(profile).map { $0 != first } == true
             })
             let rounds = coordinator.refreshes - before

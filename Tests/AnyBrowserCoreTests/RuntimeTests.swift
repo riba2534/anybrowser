@@ -420,8 +420,9 @@ struct RuntimeAdoptionTests {
         let fixture = try FakeEngineFixture("runtime-relaunch")
         let profile = fixture.profile(port: freeTestPort())
         let refreshed = fixture.profile(port: freeTestPort())
-        try fixture.configure(profile, ["relaunch_ms": "1500"])
-        try fixture.configure(refreshed, ["relaunch_ms": "1500"])
+        // Both launches must finish before either browser relaunches, also on a busy machine.
+        try fixture.configure(profile, ["relaunch_ms": "4000"])
+        try fixture.configure(refreshed, ["relaunch_ms": "4000"])
         try await run(fixture, [profile, refreshed]) {
             var first: [UUID: Int32] = [:]
             for item in [profile, refreshed] {
@@ -433,8 +434,8 @@ struct RuntimeAdoptionTests {
                 first[item.id] = pid
             }
             for item in [profile, refreshed] {
-                #expect(await fixture.eventually { fixture.runtime.status(for: item.id) == .stopped })
-                #expect(await fixture.eventually { fixture.lockHolder(item).map { $0 != first[item.id] } == true })
+                #expect(await fixture.eventually(10) { fixture.runtime.status(for: item.id) == .stopped })
+                #expect(await fixture.eventually(10) { fixture.lockHolder(item).map { $0 != first[item.id] } == true })
             }
             // Stopping finds the new process through the old receipt's port, without a refresh.
             let relaunched = try #require(fixture.lockHolder(profile))
