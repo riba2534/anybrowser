@@ -10,10 +10,24 @@ public struct ConsistencyIssue: Identifiable, Equatable, Sendable {
     }
 }
 
+/// Facts about other Profiles and the engine that a single Profile cannot know by itself.
+public struct ConsistencyContext: Equatable, Sendable {
+    /// Names of other Profiles whose last seen exit IP equals this Profile's.
+    public var profilesSharingExit: [String]
+    /// How many major versions the engine is behind Chrome stable, when known.
+    public var engineMajorsBehindStable: Int?
+
+    public init(profilesSharingExit: [String] = [], engineMajorsBehindStable: Int? = nil) {
+        self.profilesSharingExit = profilesSharingExit
+        self.engineMajorsBehindStable = engineMajorsBehindStable
+    }
+}
+
 extension BrowserProfile {
     /// Combinations a website could notice: versions ahead of the engine, platform and version
     /// mismatches, or a time zone and language that disagree with the proxy's exit.
-    public func consistencyIssues(engineVersion: String?, exit: ProxyExit?) -> [ConsistencyIssue] {
+    public func consistencyIssues(engineVersion: String?, exit: ProxyExit?,
+                                  context: ConsistencyContext = ConsistencyContext()) -> [ConsistencyIssue] {
         var issues: [ConsistencyIssue] = []
         // The editor checks its unsaved draft, so values may still carry stray spaces.
         let brandVersion = fingerprint.brandVersion.trimmingCharacters(in: .whitespaces)

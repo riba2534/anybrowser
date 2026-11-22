@@ -95,7 +95,9 @@ enum PasskeyBoxInstall {
         ProfileExtensions.root(in: storage, for: id).appendingPathComponent("PasskeyBox", isDirectory: true)
     }
 
-    static func prepare(bundled source: URL, in storage: URL, for id: UUID, account: PasskeyBoxAccount?) throws {
+    /// `enabled` is the Profile's `launch.loadPasskeyBox`.
+    static func prepare(bundled source: URL, in storage: URL, for id: UUID, account: PasskeyBoxAccount?,
+                        enabled: Bool = true) throws {
         let target = directory(in: storage, for: id)
         let parent = try ProfileExtensions.prepareRoot(in: storage, for: id)
         var details = stat()

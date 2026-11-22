@@ -181,7 +181,9 @@ public final class BrowserRuntime: ObservableObject {
                 throw BrowserRuntimeError.message("调试端口 \(profile.port) 已占用，请修改此 Profile 的端口。")
             }
             try profile.launch.checkExtensionDirectories()
-            try PasskeyBoxInstall.prepare(bundled: engine.passkeyBoxDirectory, in: storage, for: id, account: passkeyBox)
+            try ProfileExtensions.check(for: profile, in: storage)
+            try PasskeyBoxInstall.prepare(bundled: engine.passkeyBoxDirectory, in: storage, for: id, account: passkeyBox,
+                                          enabled: profile.launch.loadPasskeyBox)
             if IdentityShim.isNeeded(for: engine.version) {
                 try IdentityShim.prepare(for: profile, in: storage)
             }
