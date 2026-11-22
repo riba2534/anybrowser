@@ -158,9 +158,10 @@ private struct ProxiedLaunch {
             throw VerificationFailure.message("CDP 未就绪：\(runtime.status(for: profile.id))")
         }
         let arguments = try #require(ProcessInspection.arguments(pid))
-        let relay = try #require(relay(of: pid))
-        let relayArguments = try #require(ProcessInspection.arguments(relay.pid))
-        #expect(arguments.contains("--proxy-server=http://127.0.0.1:\(relay.port)"))
+        // Not named `relay`: Swift 6.1's #require expansion would then call the constant.
+        let helper = try #require(relay(of: pid))
+        let relayArguments = try #require(ProcessInspection.arguments(helper.pid))
+        #expect(arguments.contains("--proxy-server=http://127.0.0.1:\(helper.port)"))
         #expect(!arguments.contains { $0.contains("ProxyAuth") })
         for secret in secrets {
             #expect(!arguments.contains { $0.contains(secret) }, "\(secret)")

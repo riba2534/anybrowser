@@ -37,7 +37,8 @@ struct CPUSuggestionTests {
         var fingerprint = mac(seed: 4, cpus: 12)
         let profile = BrowserProfile(name: "P", port: 9222, fingerprint: fingerprint, proxy: "")
         #expect(profile.consistencyIssues(engineVersion: engine, exit: nil).contains { $0.id == "hardware-impossible" })
-        fingerprint.cpuCount = try #require(fingerprint.suggestedCPUCount(engineVersion: engine))
+        let suggested = try #require(fingerprint.suggestedCPUCount(engineVersion: engine))
+        fingerprint.cpuCount = suggested
         let fixed = BrowserProfile(name: "P", port: 9222, fingerprint: fingerprint, proxy: "")
         #expect(!fixed.consistencyIssues(engineVersion: engine, exit: nil).contains { $0.id == "hardware-impossible" })
     }
