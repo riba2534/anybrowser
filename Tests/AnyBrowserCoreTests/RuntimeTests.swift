@@ -533,6 +533,11 @@ struct RuntimeArgumentTests {
         #expect(!BrowserRuntime.isPlaceholder(target("chrome-error://chromewebdata/", "example.com")))
         #expect(!BrowserRuntime.isPlaceholder(target("http://(de-de)/path")))
         #expect(!BrowserRuntime.isPlaceholder(target("chrome://newtab/")))
+        // Every URL the new tab page shows up at is reused for the first start page.
+        for url in ["chrome://newtab/", "chrome://new-tab-page/", "chrome://new-tab-page-third-party/"] {
+            #expect(BrowserRuntime.isNewTabPage(target(url)))
+        }
+        #expect(!BrowserRuntime.isNewTabPage(target("https://example.com/")))
     }
 
     @Test("Running cookie cleanup matches a site's own, parent-domain and subdomain cookies")

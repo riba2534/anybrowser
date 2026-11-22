@@ -142,8 +142,14 @@ extension BrowserRuntime {
             && (target["title"] as? String)?.range(of: placeholderTitle, options: .regularExpression) != nil
     }
 
-    private nonisolated static func isNewTabPage(_ target: [String: Any]) -> Bool {
-        ["chrome://newtab/", "chrome://new-tab-page/", "about:blank"].contains(target["url"] as? String ?? "")
+    /// The new tab page under any of the URLs Chromium shows it at; which one depends on the
+    /// default search provider and on when its data finished loading.
+    nonisolated static let newTabPageURLs: Set<String> = [
+        "chrome://newtab/", "chrome://new-tab-page/", "chrome://new-tab-page-third-party/", "about:blank",
+    ]
+
+    nonisolated static func isNewTabPage(_ target: [String: Any]) -> Bool {
+        newTabPageURLs.contains(target["url"] as? String ?? "")
     }
 
     /// Opens the start pages over DevTools once the browser is ready, so nothing loads before

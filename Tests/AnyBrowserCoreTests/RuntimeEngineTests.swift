@@ -59,7 +59,8 @@ struct RuntimeEngineTests {
         do {
             #expect(outcome.warnings == [])
             try await DevToolsPage.waitForTargets(port: profile.port) { targets in
-                targets.filter { $0["type"] as? String == "page" }.compactMap { $0["url"] as? String } == ["chrome://newtab/"]
+                targets.filter { $0["type"] as? String == "page" }.compactMap { $0["url"] as? String }
+                    .map { BrowserRuntime.newTabPageURLs.contains($0) ? "chrome://newtab/" : $0 } == ["chrome://newtab/"]
             }
             try await runtime.stop(profile.id)
         } catch {
@@ -94,7 +95,8 @@ struct RuntimeEngineTests {
             #expect(opened.filter { $0["type"] as? String == "page" }.count == 2)
             #expect(server.requests("/one") == 1 && server.requests("/two") == 1)
             try await DevToolsPage.waitForTargets(port: plain.port) { targets in
-                targets.filter { $0["type"] as? String == "page" }.compactMap { $0["url"] as? String } == ["chrome://newtab/"]
+                targets.filter { $0["type"] as? String == "page" }.compactMap { $0["url"] as? String }
+                    .map { BrowserRuntime.newTabPageURLs.contains($0) ? "chrome://newtab/" : $0 } == ["chrome://newtab/"]
             }
             try await runtime.stop(profile.id)
             try await runtime.stop(plain.id)
