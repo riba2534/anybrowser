@@ -36,11 +36,11 @@ AnyBrowser 是一个原生 macOS 应用。每个 Profile 对应一份 Chromium �
 | **指纹配置** | 可编辑平台、浏览器品牌及其版本、逻辑 CPU 数、语言、时区和种子。字体、音频、Canvas、元素坐标和 WebGL 参数可按项控制。 |
 | **身份模板与一致性检查** | 一键套用「Windows 11 · Chrome」「macOS 26 · Chrome」等自洽组合。编辑时提示品牌版本超过内核、平台版本不匹配、时区或语言与代理出口不一致等问题。 |
 | **按字段随机生成** | 勾选需要变化的字段并预览结果。平台与平台版本、品牌与品牌版本会一起保持匹配。保存后，每次启动使用同一份配置。 |
-| **独立代理** | 每个 Profile 可设置 HTTP、HTTPS 或 SOCKS5 代理，默认使用本机的 `127.0.0.1:7890`。HTTP/HTTPS 代理支持账号密码。启动前检查代理能否连通，可一键检测出口 IP 并按出口填写时区和语言。 |
+| **独立代理** | 每个 Profile 可设置 HTTP、HTTPS 或 SOCKS5 代理，默认使用本机的 `127.0.0.1:7890`。三种代理都可以带账号密码，无痕窗口和自动化新建的上下文同样经过代理。启动前检查代理能否连通，可一键检测出口 IP 并按出口填写时区和语言。 |
 | **通行密钥** | 每个 Profile 默认加载 Passkey Box 并自动登录，使用全局账号或 Profile 自己的账号，不用通行密钥的 Profile 可以关闭。网站请求通行密钥时直接完成注册或登录，不需要点击确认；登录只自动使用本 Profile 注册或用过的通行密钥，其他情况出现选择框。 |
 | **Profile 管理** | 搜索、分组、备注、按最近启动排序；⌘-点击多选后批量启动、停止或设置分组；批量新建、复制、导入导出；移除时可选择一并删除浏览器资料。 |
 | **启动选项** | 每个 Profile 可设置启动网址、窗口大小与位置，以及额外加载的扩展目录。 |
-| **Cookie 迁移** | 运行中的 Profile 可导出或导入 Cookie（JSON，兼容 Cookie-Editor 的导出格式）。 |
+| **Cookie 迁移** | 运行中的 Profile 可导出或导入 Cookie。导出为 Cookie-Editor 和 EditThisCookie 能导入的 JSON，含分区 Cookie；导入还接受 DevTools、Playwright 的 JSON（包括 `{"cookies": [...]}` 包装）和 Netscape cookies.txt。 |
 | **自动化接口** | 本机 HTTP API 列出、启动、停止 Profile，并返回 DevTools 地址，便于 Playwright 或 Puppeteer 连接。默认关闭，需要访问令牌。 |
 | **本机调试** | 每个 Profile 分配一个独立的回环端口，建议从 9222 开始，也可自行修改。端口就绪后可以复制连接地址。 |
 
@@ -74,11 +74,12 @@ open dist/AnyBrowser.app
 
 ### 代理
 
-在「代理」卡片里填写地址。默认的 `127.0.0.1:7890` 按 HTTP 代理连接，适用于开放相应端口的 Mihomo 设置。也可填入完整的代理地址，例如 `socks5://127.0.0.1:7891`，或带账号密码的 `http://user:pass@proxy.example.com:8080`（账号密码中的特殊字符用百分号编码）。留空时使用系统网络设置。
+在「代理」卡片里填写地址。默认的 `127.0.0.1:7890` 按 HTTP 代理连接，适用于开放相应端口的 Mihomo 设置。也可填入完整的代理地址，例如 `socks5://127.0.0.1:7891`（`socks5h://` 相同，域名都交给代理解析），或带账号密码的 `http://user:pass@proxy.example.com:8080`（账号密码中的特殊字符用百分号编码）。代理商常用的 `主机:端口:用户名:密码` 可以直接粘贴。留空时使用系统网络设置。
 
-- 内核的 `--proxy-server` 不支持账号密码。AnyBrowser 为带账号密码的 HTTP/HTTPS 代理生成一个只属于该 Profile 的小扩展，由它应答代理的认证请求；SOCKS5 代理不支持账号密码。
-- 启动时 AnyBrowser 先检查代理能否连通，连不上会提示，浏览器照常启动。
-- 「检测」经该 Profile 的代理查询出口 IP、所在地和时区（使用 ipinfo.io，失败时用 ipapi.co）；「按出口 IP 填写时区和语言」把查到的时区和常用语言填进指纹。检测带账号密码的代理和 HTTPS 代理需要 macOS 14 或更新版本。
+- HTTP、HTTPS 和 SOCKS5 代理都可以带账号密码。内核的 `--proxy-server` 不支持账号密码，AnyBrowser 为这样的 Profile 启动一个本机代理中继（`AnyBrowserRelay`）：它只监听 `127.0.0.1` 的随机端口，浏览器经它联网，由它登录代理，账号密码不出现在任何进程的启动参数里。普通窗口、无痕窗口，以及 Playwright `newContext()`、Puppeteer `createBrowserContext()` 新建的上下文都经过中继。中继随浏览器一起退出；AnyBrowser 退出后浏览器照常联网，重新打开 AnyBrowser 会接管它们。
+- 中继端口和调试端口一样没有认证，本机任何程序都能经它使用这个代理。
+- 启动时 AnyBrowser 先检查代理能否连通；带账号密码时还经中继确认代理接受这组账号密码。有问题会提示，浏览器照常启动。
+- 「检测」经该 Profile 的代理查询出口 IP、所在地和时区，依次使用 ipinfo.io、ipapi.co、ipwho.is 和 get.geojs.io，前一个失败时换下一个；请求只带通用的请求头，不含 AnyBrowser 的名字、系统语言和 macOS 版本。「按出口 IP 填写时区和语言」把查到的时区和常用语言填进指纹。新建 Profile、批量新建和重新生成身份时也会自动查询一次出口。
 
 ### 使用 Passkey Box
 
@@ -142,7 +143,7 @@ Profile 对象为 `{"id","name","group","port","status","debugReady"}`，`status
 | --- | --- |
 | `~/Library/Application Support/AnyBrowser/profiles.sqlite3` | Profile 配置（含代理和 Profile 自己的 Passkey Box 账号）、全局 Passkey Box 账号、自动化接口设置、最近启动时间 |
 | `~/Library/Application Support/AnyBrowser/Profiles/<UUID>/` | 对应 Profile 的 Chromium 用户资料 |
-| `~/Library/Application Support/AnyBrowser/Extensions/<UUID>/` | 对应 Profile 加载的 Passkey Box 副本及账号配置，以及代理登录扩展 |
+| `~/Library/Application Support/AnyBrowser/Extensions/<UUID>/` | 对应 Profile 加载的 Passkey Box 副本及账号配置 |
 
 以上文件和目录仅当前用户可读。移除 Profile 时选择「仅移除记录」，浏览器资料仍可在上述目录找到。
 

@@ -32,6 +32,10 @@ public struct ProxyEndpoint: Equatable, Sendable {
 
     public var hasCredentials: Bool { username != nil }
 
+    /// Whether the browser reaches this proxy through `ProxyRelay`. The engine signs in to no
+    /// proxy in incognito windows or contexts made over DevTools, and to a SOCKS5 proxy not at all.
+    public var needsRelay: Bool { hasCredentials }
+
     private static let unreserved = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
 
     /// Parses `host:port` (HTTP), `host:port:user:password`, or `scheme://host:port`, optionally with
@@ -39,9 +43,10 @@ public struct ProxyEndpoint: Equatable, Sendable {
     /// `socks5://`: Chromium already leaves name resolution to a SOCKS5 proxy. An empty address means
     /// no proxy (nil).
     ///
-    /// The engine cannot sign in to a SOCKS5 proxy by itself, so SOCKS5 credentials are refused unless
-    /// the caller relays the connection and sets `allowingSOCKSCredentials`.
-    public static func parse(_ text: String, allowingSOCKSCredentials: Bool = false) throws -> ProxyEndpoint? {
+    /// A Profile's browser reaches a proxy with credentials through `ProxyRelay`, since the engine
+    /// cannot sign in to SOCKS5 at all; a caller without a relay can refuse SOCKS5 credentials with
+    /// `allowingSOCKSCredentials: false`.
+    public static func parse(_ text: String, allowingSOCKSCredentials: Bool = true) throws -> ProxyEndpoint? {
         let address = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !address.isEmpty else { return nil }
         guard address.utf8.count <= 512 else { throw invalidAddress }

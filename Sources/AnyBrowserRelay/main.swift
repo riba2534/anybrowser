@@ -6,13 +6,19 @@ import Foundation
 // quits. The upstream address, credentials included, never appears in the arguments: it is read from
 // a file only this user can read, or from the first line of standard input.
 //
-//   AnyBrowserRelay --config <file|-> --port-file <file> [--watch-pid <pid>]
+//   AnyBrowserRelay --config <file|-> --port-file <file> [--watch-pid <pid>] [--follow <data directory>]
 //
-// The configuration is a JSON object: {"upstream": "socks5://user:pass@host:port", "connectTimeout": 15}.
+// The configuration is a JSON object:
+//   {"upstream": "socks5://user:pass@host:port", "connectTimeout": 15, "relaunchGrace": 10}
 // Once listening, the relay writes its port and a newline to the port file, atomically. It exits when
 // the watched process does, or on SIGTERM or SIGINT, removing the port file. Each line `watch <pid>`
 // on standard input replaces the watched process: the app watches itself while it starts the browser,
 // then hands over the browser's pid. Standard input closing changes nothing.
+//
+// With --follow, the relay outlives the watched process by up to `relaunchGrace` seconds, for the
+// browser that holds that data directory next with this relay as its proxy: Chromium relaunches
+// itself as a new process (chrome://restart), and a browser started just before the app quit was
+// never handed over.
 
 /// sysexits.h
 enum Exit: Int32 {
@@ -34,13 +40,14 @@ func fail(_ code: Exit, _ message: String) -> Never {
 struct Configuration: Decodable {
     var upstream: String
     var connectTimeout: TimeInterval?
+    var relaunchGrace: TimeInterval?
 }
 
-let usage = "用法：AnyBrowserRelay --config <文件|-> --port-file <文件> [--watch-pid <pid>]"
+let usage = "用法：AnyBrowserRelay --config <文件|-> --port-file <文件> [--watch-pid <pid>] [--follow <资料目录>]"
 var options: [String: String] = [:]
 var arguments = CommandLine.arguments.dropFirst()
 while let name = arguments.popFirst() {
-    guard ["--config", "--port-file", "--watch-pid"].contains(name), options[name] == nil,
+    guard ["--config", "--port-file", "--watch-pid", "--follow"].contains(name), options[name] == nil,
           let value = arguments.popFirst() else { fail(.usage, usage) }
     options[name] = value
 }
@@ -94,6 +101,9 @@ do {
 }
 let timeout = configuration.connectTimeout ?? 15
 guard timeout.isFinite, (1...300).contains(timeout) else { fail(.config, "connectTimeout 须为 1–300 秒。") }
+let relaunchGrace = configuration.relaunchGrace ?? RelayHelper.defaultRelaunchGrace
+guard relaunchGrace.isFinite, (0...300).contains(relaunchGrace) else { fail(.config, "relaunchGrace 须为 0–300 秒。") }
+let followed = options["--follow"].map { URL(fileURLWithPath: $0, isDirectory: true) }
 let relay: ProxyRelay
 do {
     relay = try ProxyRelay(upstream: upstream, connectTimeout: timeout)
@@ -143,17 +153,34 @@ for number in [SIGTERM, SIGINT] {
     stopSignals.append(source)
 }
 
-var watched: DispatchSourceProcess?
+var watched: (pid: pid_t, source: DispatchSourceProcess)?
 
-/// Exits once `pid` does; replaces any process watched before.
+/// Exits once `pid` does, or follows the browser that holds the data directory next; replaces
+/// any process watched before.
 func watch(_ pid: pid_t) {
-    watched?.cancel()
+    watched?.source.cancel()
     let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
-    source.setEventHandler { shutDown() }
+    source.setEventHandler { ended(pid) }
     source.resume()
-    watched = source
+    watched = (pid, source)
     // A process that is already gone never reports its exit.
-    if kill(pid, 0) != 0, errno == ESRCH { shutDown() }
+    if kill(pid, 0) != 0, errno == ESRCH { ended(pid) }
+}
+
+@Sendable func ended(_ pid: pid_t) {
+    guard watched?.pid == pid else { return }
+    watched?.source.cancel()
+    watched = nil
+    guard let followed, let listening else { shutDown() }
+    let deadline = ProcessInfo.processInfo.systemUptime + relaunchGrace
+    func look() {
+        // A `watch` command may have arrived meanwhile.
+        guard watched == nil else { return }
+        if let next = RelayHelper.browser(holding: followed, through: listening), next != pid { return watch(next) }
+        guard ProcessInfo.processInfo.systemUptime < deadline else { shutDown() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { look() }
+    }
+    look()
 }
 
 func writePortFile(_ port: Int) {

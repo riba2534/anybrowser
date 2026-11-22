@@ -286,4 +286,31 @@ struct RuntimeEngineTests {
             throw error
         }
     }
+
+    @Test(
+        "A headless browser stops at once, closed over its own DevTools endpoint",
+        .enabled(if: testAppPath != nil, "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test.")
+    )
+    func stopsHeadlessBrowsers() async throws {
+        let (runtime, root) = try prepare("runtime-headless")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let profile = BrowserProfile(name: "Headless", port: testPort(9323), fingerprint: FingerprintSettings(seed: 9323), proxy: "")
+        try await runtime.start(profile, overrides: LaunchOverrides(headless: true))
+        do {
+            guard case let .running(pid, _, true) = runtime.status(for: profile.id) else {
+                throw VerificationFailure.message("Not running: \(runtime.status(for: profile.id))")
+            }
+            #expect(ProcessInspection.arguments(pid)?.contains("--headless=new") == true)
+            // Neither the app's quit nor SIGTERM ends a headless Chromium; without Browser.close this waits out the timeout.
+            let started = Date()
+            try await runtime.stop(profile.id)
+            #expect(Date().timeIntervalSince(started) < 3)
+            #expect(runtime.status(for: profile.id) == .stopped)
+            #expect(ProcessStamp.read(pid) == nil)
+            #expect(!FileManager.default.fileExists(atPath: runtime.receiptURL(runtime.dataDirectory(for: profile.id)).path))
+        } catch {
+            try? await runtime.stop(profile.id, force: true)
+            throw error
+        }
+    }
 }

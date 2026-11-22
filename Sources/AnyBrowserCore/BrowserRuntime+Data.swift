@@ -172,7 +172,7 @@ extension BrowserRuntime {
 
     /// Deletes a Profile's browser data, cache and extension directories, and nothing else. With
     /// `keepingBrowserData`, only the extension directory goes: AnyBrowser writes the Profile's
-    /// Passkey Box and proxy passwords there. Refuses while its browser runs or when a path is not
+    /// Passkey Box account there. Refuses while its browser runs or when a path is not
     /// the plain directory Chromium or AnyBrowser created. `beforeDeleting` runs once every check
     /// has passed (the caller removes the record there); when it throws, nothing is deleted.
     public func removeData(for id: UUID, keepingBrowserData: Bool = false,

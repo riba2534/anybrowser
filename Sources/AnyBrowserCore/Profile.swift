@@ -295,7 +295,9 @@ extension BrowserProfile {
 
     /// Chromium arguments for this Profile. `extensions` are the unpacked extension directories
     /// it loads. Start URLs are not passed here; the runtime opens them once the browser is ready.
-    public func launchArguments(userDataDirectory: URL, extensions: [URL] = []) -> [String] {
+    /// `relayPort` is the port of the Profile's `ProxyRelay` on 127.0.0.1, which a proxy with
+    /// credentials is reached through.
+    public func launchArguments(userDataDirectory: URL, extensions: [URL] = [], relayPort: Int? = nil) -> [String] {
         var arguments = [
             "--user-data-dir=\(userDataDirectory.path)",
             "--remote-debugging-port=\(port)",
@@ -306,7 +308,12 @@ extension BrowserProfile {
             "--window-name=\(name)",
         ]
         if let endpoint = try? ProxyEndpoint.parse(proxy) {
-            arguments.append("--proxy-server=\(endpoint.server)")
+            // The relay looks like a proxy without sign-in, and keeps host names for the upstream to resolve.
+            if endpoint.needsRelay, let relayPort {
+                arguments.append("--proxy-server=http://127.0.0.1:\(relayPort)")
+            } else {
+                arguments.append("--proxy-server=\(endpoint.server)")
+            }
             // A proxied Profile must not leak its real address through non-proxied UDP.
             arguments.append("--webrtc-ip-handling-policy=disable_non_proxied_udp")
         }

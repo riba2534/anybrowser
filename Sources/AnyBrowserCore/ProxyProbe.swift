@@ -45,17 +45,62 @@ public enum ProxyProbe {
         }
     }
 
-    /// The warning shown when a Profile starts with a proxy that does not accept connections;
-    /// nil when it does or when there is no proxy.
+    /// The warning shown when a Profile starts with a proxy that does not accept connections, or
+    /// that refuses its user name and password; nil when neither is known or there is no proxy.
+    /// A proxy with credentials is tried through a `ProxyRelay`, as the browser reaches it: a
+    /// tunnel to the first lookup service is opened and closed again, so the proxy signs in.
     public static func preflight(_ proxy: String, timeout: TimeInterval = 1.5) async -> String? {
-        guard let endpoint = try? ProxyEndpoint.parse(proxy), await !reachable(endpoint, timeout: timeout) else {
+        guard let endpoint = try? ProxyEndpoint.parse(proxy) else { return nil }
+        guard await reachable(endpoint, timeout: timeout) else {
+            return "代理 \(endpoint.server) 无法连接，浏览器将无法联网。请确认代理已启动。"
+        }
+        guard endpoint.needsRelay, let host = lookupServices.first?.host else { return nil }
+        switch await signInFailure(through: endpoint, target: "\(host):443", timeout: timeout) {
+        case .credentialsRejected?, .credentialsRequired?:
+            return "代理 \(endpoint.server) 拒绝了用户名或密码，浏览器将无法联网。请检查代理地址里的账号密码。"
+        default:
+            // A slow or unreachable destination says nothing about the proxy itself.
             return nil
         }
-        return "代理 \(endpoint.server) 无法连接，浏览器将无法联网。请确认代理已启动。"
+    }
+
+    /// How a CONNECT to `target` through a relay to `endpoint` failed, if it did within `timeout`.
+    static func signInFailure(through endpoint: ProxyEndpoint, target: String,
+                              timeout: TimeInterval) async -> ProxyRelay.Failure? {
+        guard let relay = try? ProxyRelay(upstream: endpoint, connectTimeout: timeout),
+              let port = try? await relay.start() else { return nil }
+        defer { relay.stop() }
+        guard let local = NWEndpoint.Port(rawValue: UInt16(port)) else { return nil }
+        let connection = NWConnection(host: "127.0.0.1", port: local, using: .tcp)
+        let queue = DispatchQueue(label: "anybrowser.proxy.sign-in")
+        let once = Once()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let finish = {
+                guard once.claim() else { return }
+                connection.cancel()
+                continuation.resume()
+            }
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .failed, .cancelled: finish()
+                default: break
+                }
+            }
+            // The relay answers once the upstream has; only its status line matters.
+            connection.send(content: Data("CONNECT \(target) HTTP/1.1\r\nHost: \(target)\r\n\r\n".utf8),
+                            completion: .contentProcessed { _ in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { _, _, _, _ in finish() }
+            })
+            queue.asyncAfter(deadline: .now() + timeout) { finish() }
+            connection.start(queue: queue)
+        }
+        return relay.lastFailure
     }
 
     /// Looks up the exit through `endpoint`, trying each service in turn. Without a proxy the request
-    /// uses the system network settings, as the browser does.
+    /// uses the system network settings, as the browser does. A proxy with credentials, and an
+    /// HTTPS proxy, is reached through a `ProxyRelay` in this process, as the browser reaches the
+    /// first: URLSession's own proxy settings can neither sign in nor speak TLS to a proxy.
     ///
     /// With a `maxAge`, an exit found through the same proxy address within that many seconds is
     /// returned without asking again, which spares the services' rate limits during a batch. A
@@ -64,7 +109,17 @@ public enum ProxyProbe {
                                   timeout: TimeInterval = 8, maxAge: TimeInterval = 0,
                                   configuration: URLSessionConfiguration = .ephemeral) async throws -> ProxyExit {
         if maxAge > 0, let cached = cachedExit(for: endpoint, maxAge: maxAge) { return cached }
-        let session = URLSession(configuration: try sessionConfiguration(configuration, through: endpoint, timeout: timeout))
+        var relay: ProxyRelay?
+        let failures = RelayFailures()
+        if let endpoint, relays(endpoint) {
+            let started = try ProxyRelay(upstream: endpoint, connectTimeout: timeout)
+            started.failureHandler = { failure, _ in failures.record(failure) }
+            try await started.start()
+            relay = started
+        }
+        defer { relay?.stop() }
+        let session = URLSession(configuration: try sessionConfiguration(configuration, through: endpoint,
+                                                                         relayPort: relay?.port, timeout: timeout))
         defer { session.finishTasksAndInvalidate() }
         var reasons: [String] = []
         for service in services {
@@ -73,7 +128,9 @@ public enum ProxyProbe {
                 exitCache.store(exit, for: endpoint)
                 return exit
             } catch let failure as LookupFailure {
-                if !reasons.contains(failure.reason) { reasons.append(failure.reason) }
+                // What the relay saw of the proxy says more than how URLSession failed.
+                let reason = failures.take().map(Self.reason) ?? failure.reason
+                if !reasons.contains(reason) { reasons.append(reason) }
             }
         }
         throw ProfileError.invalid("无法查询出口 IP：\(reasons.isEmpty ? "没有可用的查询服务" : reasons.joined(separator: "；"))。")
@@ -118,8 +175,44 @@ public enum ProxyProbe {
         }
     }
 
+    /// Whether lookups through `endpoint` go through a relay.
+    static func relays(_ endpoint: ProxyEndpoint) -> Bool {
+        endpoint.needsRelay || endpoint.scheme == "https"
+    }
+
+    private static func reason(_ failure: ProxyRelay.Failure) -> String {
+        switch failure {
+        case .credentialsRejected: return "代理拒绝了用户名或密码"
+        case .credentialsRequired: return "代理要求登录，请在代理地址里填写用户名和密码"
+        case .unreachable(let reason): return "无法连接代理（\(reason)）"
+        case .refused(let reason): return "代理拒绝了连接（\(reason)）"
+        case .timedOut: return "代理没有及时响应"
+        case .invalidResponse: return "代理的响应无法识别"
+        }
+    }
+
+    /// The relay's failures since the last lookup.
+    private final class RelayFailures: @unchecked Sendable {
+        private let lock = NSLock()
+        private var latest: ProxyRelay.Failure?
+
+        func record(_ failure: ProxyRelay.Failure) {
+            lock.lock()
+            defer { lock.unlock() }
+            latest = failure
+        }
+
+        func take() -> ProxyRelay.Failure? {
+            lock.lock()
+            defer { lock.unlock() }
+            defer { latest = nil }
+            return latest
+        }
+    }
+
+    /// `relayPort` is the relay's for an endpoint that `relays`.
     static func sessionConfiguration(_ base: URLSessionConfiguration, through endpoint: ProxyEndpoint?,
-                                     timeout: TimeInterval) throws -> URLSessionConfiguration {
+                                     relayPort: Int? = nil, timeout: TimeInterval) throws -> URLSessionConfiguration {
         let configuration = base.copy() as? URLSessionConfiguration ?? .ephemeral
         configuration.timeoutIntervalForRequest = timeout
         configuration.timeoutIntervalForResource = timeout
@@ -129,15 +222,27 @@ public enum ProxyProbe {
         configuration.httpCookieStorage = nil
         configuration.urlCredentialStorage = nil
         guard let endpoint else { return configuration }
+        if relays(endpoint) {
+            guard let relayPort else { throw ProfileError.invalid("检测这个代理需要本机代理中继。") }
+            configuration.connectionProxyDictionary = [
+                kCFNetworkProxiesHTTPEnable as String: 1,
+                kCFNetworkProxiesHTTPProxy as String: "127.0.0.1",
+                kCFNetworkProxiesHTTPPort as String: relayPort,
+                kCFNetworkProxiesHTTPSEnable as String: 1,
+                kCFNetworkProxiesHTTPSProxy as String: "127.0.0.1",
+                kCFNetworkProxiesHTTPSPort as String: relayPort,
+            ]
+            return configuration
+        }
         let host = bare(endpoint.host)
         switch endpoint.scheme {
-        case "socks5" where !endpoint.hasCredentials:
+        case "socks5":
             configuration.connectionProxyDictionary = [
                 kCFNetworkProxiesSOCKSEnable as String: 1,
                 kCFNetworkProxiesSOCKSProxy as String: host,
                 kCFNetworkProxiesSOCKSPort as String: endpoint.port,
             ]
-        case "http" where !endpoint.hasCredentials:
+        default:
             configuration.connectionProxyDictionary = [
                 kCFNetworkProxiesHTTPEnable as String: 1,
                 kCFNetworkProxiesHTTPProxy as String: host,
@@ -146,24 +251,6 @@ public enum ProxyProbe {
                 kCFNetworkProxiesHTTPSProxy as String: host,
                 kCFNetworkProxiesHTTPSPort as String: endpoint.port,
             ]
-        default:
-            // The proxy dictionary can neither sign in (URLSession never surfaces a 407 from it) nor
-            // speak TLS to the proxy; a proxy configuration does both.
-            guard #available(macOS 14, *) else {
-                throw ProfileError.invalid(endpoint.scheme == "https"
-                    ? "此系统版本无法检测 HTTPS 代理，需要 macOS 14 或更高版本。"
-                    : "此系统版本无法检测带账号密码的代理，需要 macOS 14 或更高版本。")
-            }
-            guard let port = NWEndpoint.Port(rawValue: UInt16(clamping: endpoint.port)) else {
-                throw ProfileError.invalid("代理端口无效。")
-            }
-            let server = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: port)
-            let proxy = endpoint.scheme == "socks5" ? ProxyConfiguration(socksv5Proxy: server)
-                : ProxyConfiguration(httpCONNECTProxy: server, tlsOptions: endpoint.scheme == "https" ? NWProtocolTLS.Options() : nil)
-            if let username = endpoint.username, let password = endpoint.password {
-                proxy.applyCredential(username: username, password: password)
-            }
-            configuration.proxyConfigurations = [proxy]
         }
         return configuration
     }
@@ -182,11 +269,6 @@ public enum ProxyProbe {
         do {
             (data, response) = try await session.data(for: request, delegate: RedirectRefusal())
         } catch {
-            let failure = error as NSError
-            if failure.domain == NSPOSIXErrorDomain && failure.code == Int(EAUTH) {
-                throw LookupFailure(reason: endpoint?.hasCredentials == true
-                    ? "代理拒绝了用户名或密码" : "代理要求登录，请在代理地址里填写用户名和密码")
-            }
             if (error as? URLError)?.code == .timedOut {
                 throw LookupFailure(reason: "\(name) 请求超时")
             }

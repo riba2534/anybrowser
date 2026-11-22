@@ -253,7 +253,7 @@ struct SharedExtensionTests {
         profile.launch.extensionDirectories = ["/Users/me/Ext"]
         let own = "/tmp/anybrowser-storage/Extensions/\(profile.id.uuidString.lowercased())"
         #expect(ProfileExtensions.paths(for: profile, in: storage).map(\.path) == [
-            own + "/PasskeyBox", own + "/ProxyAuth",
+            own + "/PasskeyBox",
             "/tmp/anybrowser-storage/Extensions/Shared/Wallet", "/tmp/anybrowser-storage/Extensions/Shared/Ad Block",
             "/Users/me/Ext",
         ])
