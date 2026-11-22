@@ -3,7 +3,7 @@ import Foundation
 import Network
 import Testing
 
-// Debug ports 9320 and 9321 belong to this suite.
+// Debug ports 9330 and 9331 belong to this suite.
 @Suite(.serialized)
 struct RelayEngineTests {
     /// The page origin, a WebSocket echo origin, and the route the upstream stubs take to them.
@@ -68,7 +68,7 @@ struct RelayEngineTests {
         try await rejected.start()
         defer { rejected.stop() }
 
-        try await withBrowser(proxy: try #require(relay.server), port: testPort(9320)) { port, endpoint in
+        try await withBrowser(proxy: try #require(relay.server), port: testPort(9330)) { port, endpoint in
             try await expectContextsWork(port: port, endpoint: endpoint, label: "http")
             #expect(!upstream.requests.isEmpty)
             #expect(upstream.requests.allSatisfy { $0.authorization == upstream.signIn }, "\(upstream.requests.map(\.target))")
@@ -112,7 +112,7 @@ struct RelayEngineTests {
         try await relay.start()
         defer { relay.stop() }
 
-        try await withBrowser(proxy: try #require(relay.server), port: testPort(9321)) { port, endpoint in
+        try await withBrowser(proxy: try #require(relay.server), port: testPort(9331)) { port, endpoint in
             try await expectContextsWork(port: port, endpoint: endpoint, label: "socks")
             let reached = upstream.requests.filter { $0.host.hasSuffix(".anybrowser.test") }
             #expect(!reached.isEmpty)
