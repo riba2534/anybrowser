@@ -11,7 +11,7 @@ extension Workbench {
             do {
                 let export = try await CookieTransfer.exportCookies(from: cookieEndpoint(id))
                 try CookieTransfer.writeFile(export.data, to: url)
-                notice = Notice(text: "已导出 \(export.count) 条 Cookie。")
+                notice = Notice(text: export.summary)
             } catch {
                 show(error)
             }
@@ -27,7 +27,7 @@ extension Workbench {
             do {
                 let data = try CookieTransfer.readFile(url)
                 let result = try await CookieTransfer.importCookies(data, into: cookieEndpoint(id))
-                notice = Notice(text: "已导入 \(result.imported) 条 Cookie，跳过 \(result.skipped) 条。")
+                notice = Notice(text: result.summary)
             } catch {
                 show(error)
             }

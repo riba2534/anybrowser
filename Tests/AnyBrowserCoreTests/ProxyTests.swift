@@ -36,6 +36,52 @@ struct ProxyTests {
         #expect(throws: ProfileError.self) { try profile.validated() }
     }
 
+    @Test("Provider formats, socks5h and empty passwords parse to one normalized address")
+    func parsesProviderFormats() throws {
+        // host:port:user:password, as residential providers hand them out.
+        let listed = try #require(try ProxyEndpoint.parse(" gate.example.com:7777:user-zone-us:p@ss "))
+        #expect(listed == ProxyEndpoint(scheme: "http", host: "gate.example.com", port: 7777,
+                                        username: "user-zone-us", password: "p@ss"))
+        #expect(listed.url == "http://user-zone-us:p%40ss@gate.example.com:7777")
+        #expect(try ProxyEndpoint.parse(listed.url) == listed)
+        #expect(try ProxyEndpoint.parse("http://user-zone-us:p%40ss@Gate.Example.com:7777/") == listed)
+        #expect(try ProxyEndpoint.parse("user-zone-us:p%40ss@gate.example.com:7777") == listed)
+        let socksListed = try ProxyEndpoint.parse("socks5://10.0.0.2:1080:alice:secret", allowingSOCKSCredentials: true)
+        #expect(socksListed == ProxyEndpoint(scheme: "socks5", host: "10.0.0.2", port: 1080, username: "alice", password: "secret"))
+
+        // socks5h means remote DNS, which is what Chromium's socks5 already does.
+        let remote = try #require(try ProxyEndpoint.parse("SOCKS5H://127.0.0.1:1080"))
+        #expect(remote == ProxyEndpoint(scheme: "socks5", host: "127.0.0.1", port: 1080))
+        #expect(remote.url == "socks5://127.0.0.1:1080" && remote.server == remote.url)
+
+        // A key alone signs in to some providers; the password stays empty, not missing.
+        let key = try #require(try ProxyEndpoint.parse("http://APIKEY:@proxy.example:8011"))
+        #expect(key.username == "APIKEY" && key.password == "" && key.hasCredentials)
+        #expect(key.url == "http://APIKEY:@proxy.example:8011")
+        #expect(try ProxyEndpoint.parse("proxy.example:8011:APIKEY:") == key)
+        let tricky = ProxyEndpoint(scheme: "https", host: "[::1]", port: 443, username: "a b/c", password: "é:%@")
+        #expect(try ProxyEndpoint.parse(tricky.url) == tricky)
+
+        // SOCKS5 credentials are refused for the engine, accepted where a relay signs in.
+        let socks = "socks5://alice:secret@127.0.0.1:1080"
+        #expect(throws: ProfileError.self) { try ProxyEndpoint.parse(socks) }
+        #expect(try ProxyEndpoint.parse(socks, allowingSOCKSCredentials: true)?.password == "secret")
+        #expect(throws: ProfileError.self) {
+            try ProxyEndpoint.parse("socks5://\(String(repeating: "u", count: 256)):p@127.0.0.1:1080", allowingSOCKSCredentials: true)
+        }
+
+        for (address, message) in [("socks4://127.0.0.1:1080", "SOCKS4"), ("socks4a://127.0.0.1:1080", "SOCKS4"),
+                                   ("gate.example.com:7777:user:pa:ss", "%3A"),
+                                   ("gate.example.com:7777:user", "主机:端口:用户名:密码")] {
+            do {
+                _ = try ProxyEndpoint.parse(address)
+                Issue.record("\(address) was accepted")
+            } catch {
+                #expect(error.localizedDescription.contains(message), "\(address): \(error.localizedDescription)")
+            }
+        }
+    }
+
     @Test("SOCKS5 credentials and malformed credentials are refused")
     func refusesBadCredentials() throws {
         do {
@@ -46,7 +92,7 @@ struct ProxyTests {
             #expect(error.localizedDescription.contains("HTTP 代理"))
         }
         let malformed = [
-            "http://alice@127.0.0.1:8080", "http://:secret@127.0.0.1:8080", "http://alice:@127.0.0.1:8080",
+            "http://alice@127.0.0.1:8080", "http://:secret@127.0.0.1:8080", "127.0.0.1:8080::secret",
             "http://@127.0.0.1:8080", "http://al ice:secret@127.0.0.1:8080", "http://alice:sec/ret@127.0.0.1:8080",
             "http://alice:sec#ret@127.0.0.1:8080", "http://alice:sec%zzret@127.0.0.1:8080",
             "http://alice:sec%0Aret@127.0.0.1:8080", "http://al%3Aice:secret@127.0.0.1:8080",
@@ -215,6 +261,12 @@ struct ProxyTests {
         #expect(stub.requests.filter { $0.method == "GET" && $0.authorization == signedIn }.map(\.target)
             == services.map(\.absoluteString))
         #expect(stub.requests.contains { $0.method == "CONNECT" && $0.authorization == nil })
+        // The services see a generic client, not the app, the Mac's languages or its macOS build.
+        for request in stub.requests where request.method == "GET" {
+            #expect(request.headers["user-agent"] == "curl/8.7.1")
+            #expect(request.headers["accept-language"] == "en-US,en;q=0.9")
+            #expect(request.headers["accept"] == "application/json")
+        }
 
         await expectFailure("代理拒绝了用户名或密码") {
             try await ProxyProbe.lookupExit(through: try ProxyEndpoint.parse("http://alice:wrong@127.0.0.1:\(stub.port)"),
@@ -253,11 +305,17 @@ struct ProxyTests {
         let exit = try await ProxyProbe.lookupExit(through: nil, configuration: base)
         #expect(exit == ProxyExit(ip: "192.0.2.9", countryCode: "FR", timeZone: "Europe/Paris", languages: ["fr-FR"]))
         ExitService.answers = ["https://ipinfo.io/json": (429, "{}"),
-                               "https://ipapi.co/json/": (200, #"{"error":true,"reason":"RateLimited"}"#)]
-        await expectFailure("ipinfo.io 返回 429 状态；ipapi.co 返回的数据无法识别") {
+                               "https://ipapi.co/json/": (200, #"{"error":true,"reason":"RateLimited"}"#),
+                               "https://ipwho.is/": (200, #"{"ip":"192.0.2.10","success":false,"message":"limit"}"#),
+                               "https://get.geojs.io/v1/ip/geo.json": (503, "")]
+        await expectFailure("ipinfo.io 返回 429 状态；ipapi.co 返回的数据无法识别；ipwho.is 返回的数据无法识别；get.geojs.io 返回 503 状态") {
             try await ProxyProbe.lookupExit(through: nil, configuration: base)
         }
-        #expect(ProxyProbe.lookupServices.map(\.absoluteString) == ["https://ipinfo.io/json", "https://ipapi.co/json/"])
+        // Each service is tried in turn until one answers.
+        ExitService.answers["https://get.geojs.io/v1/ip/geo.json"] = (200, #"{"ip":"192.0.2.11","country_code":"JP","country":"Japan","timezone":"Asia\/Tokyo"}"#)
+        #expect(try await ProxyProbe.lookupExit(through: nil, configuration: base).ip == "192.0.2.11")
+        #expect(ProxyProbe.lookupServices.map(\.absoluteString) == ["https://ipinfo.io/json", "https://ipapi.co/json/",
+                                                                     "https://ipwho.is/", "https://get.geojs.io/v1/ip/geo.json"])
 
         let direct = try ProxyProbe.sessionConfiguration(.ephemeral, through: nil, timeout: 8)
         #expect(direct.connectionProxyDictionary == nil)
@@ -273,11 +331,80 @@ struct ProxyTests {
         if #available(macOS 14, *) {
             #expect(http.proxyConfigurations.isEmpty)
             for address in ["https://proxy.example:443", "https://alice:secret@proxy.example:443",
-                            "http://alice:secret@proxy.example:3128"] {
-                let tunnel = try ProxyProbe.sessionConfiguration(.ephemeral, through: ProxyEndpoint.parse(address), timeout: 8)
+                            "http://alice:secret@proxy.example:3128", "socks5://alice:secret@proxy.example:1080"] {
+                let endpoint = try ProxyEndpoint.parse(address, allowingSOCKSCredentials: true)
+                let tunnel = try ProxyProbe.sessionConfiguration(.ephemeral, through: endpoint, timeout: 8)
                 #expect(tunnel.proxyConfigurations.count == 1, "\(address)")
                 #expect(tunnel.connectionProxyDictionary == nil, "\(address)")
             }
+        }
+    }
+
+    @Test("ipwho.is and geojs.io answers become a ProxyExit")
+    func readsTheFallbackServices() throws {
+        let ipwho = try ProxyProbe.exit(from: Data("""
+            {"ip":"203.0.113.8","success":true,"country":"Japan","country_code":"JP","region":"Tokyo","city":"Tokyo",
+             "timezone":{"id":"Asia/Tokyo","abbr":"JST","utc":"+09:00"}}
+            """.utf8))
+        #expect(ipwho == ProxyExit(ip: "203.0.113.8", countryCode: "JP", region: "Tokyo", city: "Tokyo",
+                                   timeZone: "Asia/Tokyo", languages: ["ja-JP"]))
+        let geojs = try ProxyProbe.exit(from: Data("""
+            {"ip":"198.51.100.3","country":"Germany","country_code":"DE","region":"Hesse","city":"Frankfurt am Main",
+             "timezone":"Europe\\/Berlin","country_code3":"DEU"}
+            """.utf8))
+        #expect(geojs == ProxyExit(ip: "198.51.100.3", countryCode: "DE", region: "Hesse", city: "Frankfurt am Main",
+                                   timeZone: "Europe/Berlin", languages: ["de-DE"]))
+        for body in [#"{"ip":"203.0.113.8","success":false}"#, #"{"ip":"203.0.113.8","success":"yes"}"#,
+                     #"{"ip":"203.0.113.8","timezone":{"id":"Mars/Base"}}"#] {
+            let exit = try? ProxyProbe.exit(from: Data(body.utf8))
+            #expect(exit == nil || exit?.timeZone == "", "\(body)")
+        }
+    }
+
+    @Test("Exits are cached per proxy address and only reused within the age asked for")
+    func cachesExits() async throws {
+        ProxyProbe.forgetCachedExits()
+        defer { ProxyProbe.forgetCachedExits() }
+        let base = URLSessionConfiguration.ephemeral
+        base.protocolClasses = [ExitService.self]
+        ExitService.answers = ["https://ipinfo.io/json": (200, #"{"ip":"192.0.2.20","country":"US","timezone":"America/New_York"}"#)]
+        ExitService.served = 0
+        let first = try await ProxyProbe.lookupExit(through: nil, maxAge: 60, configuration: base)
+        #expect(first.ip == "192.0.2.20" && ExitService.served == 1)
+        ExitService.answers["https://ipinfo.io/json"] = (200, #"{"ip":"192.0.2.21"}"#)
+        #expect(try await ProxyProbe.lookupExit(through: nil, maxAge: 60, configuration: base) == first)
+        #expect(ExitService.served == 1)
+        // Without an age every lookup asks again, and refreshes the cache.
+        #expect(try await ProxyProbe.lookupExit(through: nil, configuration: base).ip == "192.0.2.21")
+        #expect(ExitService.served == 2)
+        #expect(ProxyProbe.cachedExit(for: nil, maxAge: 60)?.ip == "192.0.2.21")
+        #expect(ProxyProbe.cachedExit(for: nil, maxAge: 60, now: Date().addingTimeInterval(61)) == nil)
+
+        // Another address, or another user name at the same gateway, is another exit.
+        let gateway = try ProxyEndpoint.parse("gate.example:7777:user-session-1:pw")
+        #expect(ProxyProbe.cachedExit(for: gateway, maxAge: 60) == nil)
+        let other = try ProxyEndpoint.parse("gate.example:7777:user-session-2:pw")
+        #expect(other?.url != gateway?.url)
+        ProxyProbe.forgetCachedExits()
+        #expect(ProxyProbe.cachedExit(for: nil, maxAge: 60) == nil)
+    }
+
+    @Test("Lookups sign in to a SOCKS5 proxy with a user name and password")
+    func looksUpThroughSOCKS() async throws {
+        guard #available(macOS 14, *) else { return }
+        let service = try JSONOrigin(body: #"{"ip":"198.51.100.30","country":"NL","timezone":"Europe/Amsterdam"}"#)
+        defer { service.stop() }
+        let socks = try UpstreamSOCKSStub(username: "carol", password: "pw", route: { $0 == "ipinfo.test" ? service.port : nil })
+        defer { socks.stop() }
+        let services = [URL(string: "http://ipinfo.test/json")!]
+        let endpoint = try ProxyEndpoint.parse("socks5://carol:pw@127.0.0.1:\(socks.port)", allowingSOCKSCredentials: true)
+        let exit = try await ProxyProbe.lookupExit(through: endpoint, services: services, timeout: 5)
+        #expect(exit.ip == "198.51.100.30" && exit.countryCode == "NL")
+        #expect(socks.requests.last?.username == "carol" && socks.requests.last?.host == "ipinfo.test")
+
+        let wrong = try ProxyEndpoint.parse("socks5://carol:nope@127.0.0.1:\(socks.port)", allowingSOCKSCredentials: true)
+        await #expect(throws: ProfileError.self) {
+            try await ProxyProbe.lookupExit(through: wrong, services: services, timeout: 5)
         }
     }
 
@@ -360,11 +487,13 @@ private struct SignInScript {
 /// Answers lookups made without a proxy.
 private final class ExitService: URLProtocol {
     static var answers: [String: (Int, String)] = [:]
+    static var served = 0
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        Self.served += 1
         let url = request.url ?? URL(fileURLWithPath: "/")
         let (status, body) = Self.answers[url.absoluteString] ?? (404, "")
         if let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: [:]) {
@@ -377,6 +506,22 @@ private final class ExitService: URLProtocol {
     override func stopLoading() {}
 }
 
+/// Answers every request with the same JSON body.
+private final class JSONOrigin: SocketServer, @unchecked Sendable {
+    private let body: String
+
+    init(body: String) throws {
+        self.body = body
+        try super.init()
+    }
+
+    override func handle(_ fd: Int32) {
+        guard Sockets.readHead(fd) != nil else { return hangUp(fd) }
+        Sockets.write(fd, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)")
+        close(fd)
+    }
+}
+
 /// A loopback HTTP proxy that asks for Basic sign-in and records every request it receives.
 /// `respond` returning nil leaves the request unanswered.
 final class ProxyStub: @unchecked Sendable {
@@ -384,6 +529,7 @@ final class ProxyStub: @unchecked Sendable {
         var method: String
         var target: String
         var authorization: String?
+        var headers: [String: String] = [:]
     }
 
     struct Response: Sendable {
@@ -466,9 +612,13 @@ final class ProxyStub: @unchecked Sendable {
     private func answer(_ connection: NWConnection, head: String, tunnel: Tunnel?) {
         let lines = head.components(separatedBy: "\r\n")
         let start = lines.first?.split(separator: " ").map(String.init) ?? []
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            let name = line.prefix { $0 != ":" }
+            headers[name.lowercased()] = String(line.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces)
+        }
         var request = Request(method: start.first ?? "", target: start.count > 1 ? start[1] : "",
-                              authorization: lines.dropFirst().first { $0.lowercased().hasPrefix("proxy-authorization:") }
-                                  .map { String($0.drop { $0 != ":" }.dropFirst()).trimmingCharacters(in: .whitespaces) })
+                              authorization: headers["proxy-authorization"], headers: headers)
         if let tunnel {
             // Inside a CONNECT tunnel the stub plays the origin server; log it like a proxied request.
             request.target = "http://\(tunnel.host)\(request.target)"
@@ -495,8 +645,8 @@ final class ProxyStub: @unchecked Sendable {
         guard let response else { return }
         let reason = [200: "OK", 302: "Found", 407: "Proxy Authentication Required"][response.status] ?? "Status"
         var text = "HTTP/1.1 \(response.status) \(reason)\r\n"
-        let headers = response.headers.merging(["Content-Type": "text/html; charset=utf-8"]) { mine, _ in mine }
-        for (name, value) in headers { text += "\(name): \(value)\r\n" }
+        let replyHeaders = response.headers.merging(["Content-Type": "text/html; charset=utf-8"]) { mine, _ in mine }
+        for (name, value) in replyHeaders { text += "\(name): \(value)\r\n" }
         text += "Content-Length: \(response.body.utf8.count)\r\nConnection: close\r\n\r\n\(response.body)"
         connection.send(content: Data(text.utf8), completion: .contentProcessed { _ in connection.cancel() })
     }
