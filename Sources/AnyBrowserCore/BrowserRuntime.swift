@@ -404,9 +404,17 @@ public final class BrowserRuntime: ObservableObject {
                 guard kill(receipt.pid, SIGKILL) == 0 else {
                     throw BrowserRuntimeError.message("无法强制结束此 Profile 的浏览器进程。")
                 }
-            } else if NSRunningApplication(processIdentifier: receipt.pid)?.terminate() != true {
-                guard owns(receipt, directory: directory), kill(receipt.pid, SIGTERM) == 0 else {
-                    throw BrowserRuntimeError.message("无法关闭此 Profile 的浏览器进程。")
+            } else if !askToQuit(receipt) {
+                // Without an app to ask, the browser closes itself over its DevTools endpoint; a
+                // headless Chromium ignores SIGTERM. What still runs a moment later gets SIGTERM.
+                let closing = await closeOverDevTools(receipt, directory: directory)
+                if closing {
+                    await waitUntil(seconds: min(2, stopTimeout)) { ProcessStamp.read(receipt.pid) != receipt.stamp }
+                }
+                if ProcessStamp.read(receipt.pid) == receipt.stamp {
+                    guard owns(receipt, directory: directory), kill(receipt.pid, SIGTERM) == 0 || closing else {
+                        throw BrowserRuntimeError.message("无法关闭此 Profile 的浏览器进程。")
+                    }
                 }
             }
             let deadline = ProcessInfo.processInfo.systemUptime + (force ? 5 : stopTimeout)
@@ -425,6 +433,29 @@ public final class BrowserRuntime: ObservableObject {
             states[id] = await runningState(receipt, directory: directory)
             throw error
         }
+    }
+
+    /// Asks the browser's app to quit, as its user would, so it saves what it holds; a window may
+    /// first ask the user to confirm. False for a headless browser, which is no app to quit.
+    private func askToQuit(_ receipt: Receipt) -> Bool {
+        let headless = ProcessInspection.arguments(receipt.pid)?.dropFirst().prefix { $0 != "--" }
+            .contains { $0 == "--headless" || $0.hasPrefix("--headless=") } == true
+        return !headless && NSRunningApplication(processIdentifier: receipt.pid)?.terminate() == true
+    }
+
+    /// Sends Browser.close to the browser's verified DevTools endpoint; true once it was sent.
+    private func closeOverDevTools(_ receipt: Receipt, directory: URL) async -> Bool {
+        guard let endpoint = await verifiedEndpoint(receipt, directory: directory),
+              let client = try? DevToolsClient(endpoint: endpoint, timeout: 2) else { return false }
+        defer { client.close() }
+        do {
+            _ = try await client.send("Browser.close")
+        } catch is DevToolsCommandError {
+            return false
+        } catch {
+            // The browser may close the connection before it replies.
+        }
+        return true
     }
 
     public func refresh(_ profiles: [BrowserProfile]) async {
