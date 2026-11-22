@@ -264,7 +264,7 @@ extension BrowserProfile {
     }
 
     /// Chromium arguments for this Profile. `extensions` are the unpacked extension directories
-    /// it loads; start URLs always come last.
+    /// it loads. Start URLs are not passed here; the runtime opens them once the browser is ready.
     public func launchArguments(userDataDirectory: URL, extensions: [URL] = []) -> [String] {
         var arguments = [
             "--user-data-dir=\(userDataDirectory.path)",
@@ -272,6 +272,8 @@ extension BrowserProfile {
             "--no-first-run",
             "--no-default-browser-check",
             "--fingerprint=\(fingerprint.seed)",
+            // The window's name in the Window and Dock menus, in place of the page title.
+            "--window-name=\(name)",
         ]
         if let endpoint = try? ProxyEndpoint.parse(proxy) {
             arguments.append("--proxy-server=\(endpoint.server)")

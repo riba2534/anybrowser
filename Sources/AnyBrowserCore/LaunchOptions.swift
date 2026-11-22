@@ -135,7 +135,8 @@ public struct LaunchOptions: Codable, Equatable, Sendable {
         }
     }
 
-    /// Window switches, then the start URLs (positional, always last).
+    /// Window and session switches. The start URLs are not among them: `BrowserRuntime` opens
+    /// them over DevTools once the browser is ready, so editing them never needs a restart.
     func arguments() -> [String] {
         var arguments: [String] = []
         if let window {
@@ -144,7 +145,10 @@ public struct LaunchOptions: Codable, Equatable, Sendable {
                 arguments.append("--window-position=\(x),\(y)")
             }
         }
-        return arguments + startURLs
+        if restoreSession {
+            arguments.append("--restore-last-session")
+        }
+        return arguments
     }
 
     /// Lower-cases the scheme and host and gives an empty path "/", so equal pages compare equal.
