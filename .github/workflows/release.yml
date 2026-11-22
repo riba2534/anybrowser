@@ -28,7 +28,9 @@ jobs:
         run: ./scripts/build-app.sh
       # The archive below is made from this very app, so what ships has run the real-browser suites.
       - name: Test the packaged app
-        run: ./scripts/test.sh --engine dist/AnyBrowser.app
+        # One suite at a time: the hosted runner has three cores, and dozens of browsers starting
+        # at once there miss their 20-second readiness deadline.
+        run: ./scripts/test.sh --engine dist/AnyBrowser.app --no-parallel
       - name: Archive
         run: |
           /usr/bin/codesign --verify --deep --strict dist/AnyBrowser.app

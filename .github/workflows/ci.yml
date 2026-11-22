@@ -24,7 +24,9 @@ jobs:
       - name: Package the app
         run: ./scripts/build-app.sh
       - name: Test, with the real-browser suites on the packaged app
-        run: ./scripts/test.sh --engine dist/AnyBrowser.app
+        # One suite at a time: the hosted runner has three cores, and dozens of browsers starting
+        # at once there miss their 20-second readiness deadline.
+        run: ./scripts/test.sh --engine dist/AnyBrowser.app --no-parallel
       - name: Check the package
         run: |
           /usr/bin/codesign --verify --deep --strict dist/AnyBrowser.app
