@@ -73,6 +73,9 @@ prepare_asset "$dmg" "$engine_sha256" "$engine_url" "Fingerprint Chromium $engin
 prepare_asset "$passkey_zip" "$passkey_sha256" "$passkey_url" "Passkey Box $passkey_version for AnyBrowser"
 
 printf 'Building AnyBrowser for ARM64…\n'
+# shellcheck source=scripts/toolchain.sh
+source "$root/scripts/toolchain.sh"
+select_swiftui_sdk || fail "no installed SDK can compile SwiftUI; install Xcode"
 swift build --configuration release --arch arm64 --product AnyBrowser
 bin_path="$(swift build --configuration release --arch arm64 --show-bin-path)"
 [[ "$(/usr/bin/lipo -archs "$bin_path/AnyBrowser")" == arm64 ]] || fail "SwiftPM did not produce an ARM64 executable"
