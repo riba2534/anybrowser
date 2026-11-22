@@ -99,7 +99,7 @@ struct ProxyCard: View {
         let names = workbench.consistencyContext(for: draft.profile.id).profilesSharingExit
         if !names.isEmpty, workbench.saved.map({ Workbench.sameProxy($0.proxy, draft.profile.proxy) }) == true {
             let listed = names.prefix(3).map { "「\($0)」" }.joined(separator: "、")
-            Label("与 \(listed)\(names.count > 3 ? " 等 \(names.count) 个 Profile" : "")使用同一个出口 IP，网站可以据此把它们关联起来。",
+            Label("与\(listed)\(names.count > 3 ? "等 \(names.count) 个 Profile " : "")使用同一个出口 IP，网站可以据此把它们关联起来。",
                   systemImage: "exclamationmark.triangle")
                 .font(.system(size: 12))
                 .foregroundColor(WorkbenchPalette.amber)

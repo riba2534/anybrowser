@@ -689,3 +689,29 @@ struct StoreTests {
         #expect(lock != nil)
     }
 }
+
+@MainActor
+struct BackupPathTests {
+    @Test("A database backup restores from a folder reached through a link, such as /tmp")
+    func restoresThroughALinkedFolder() throws {
+        let directory = try scratchDirectory("store-linked")
+        let elsewhere = try scratchDirectory("store-linked-backups")
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: elsewhere)
+        }
+        let saved: BrowserProfile
+        let backup: URL
+        do {
+            let store = try ProfileStore(directory: directory)
+            saved = try store.makeDraft()
+            try store.save(saved)
+            backup = try store.backup(reason: "manual")
+            try store.save(try store.makeDraft())
+        }
+        let link = elsewhere.appendingPathComponent("link", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: backup.deletingLastPathComponent())
+        try ProfileStore.restoreBackup(link.appendingPathComponent(backup.lastPathComponent), into: directory)
+        #expect(try ProfileStore(directory: directory).profiles == [saved])
+    }
+}
