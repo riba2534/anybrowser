@@ -3,6 +3,8 @@ import AppKit
 import Combine
 import SwiftUI
 
+/// The window's state: the draft being edited, notices, navigation and dialogs. Starting, stopping
+/// and tracking browsers belongs to the `LaunchCoordinator`.
 @MainActor
 final class Workbench: ObservableObject {
     enum Destination {
@@ -16,40 +18,61 @@ final class Workbench: ObservableObject {
         var isError = false
     }
 
+    /// A launch waiting for the user to decide what happens to the site data the old fingerprint left.
+    struct FingerprintLaunch: Identifiable {
+        var id: UUID
+        var name: String
+        var restart: Bool
+    }
+
     let store: ProfileStore?
     let runtime: BrowserRuntime?
+    /// Starts, stops and tracks the browsers; nil without the database or the built-in engine.
+    let coordinator: LaunchCoordinator?
     let engineVersion: String?
     let engineError: String?
     @Published var draft: ProfileDraft?
     @Published var notice: Notice?
     @Published var pendingDestination: Destination?
+    @Published var pendingFingerprintLaunch: FingerprintLaunch?
     @Published var showingPasskeyBox = false
     @Published var showingAutomation = false
     @Published var showingBatchCreate = false
     let proxyCenter = ProxyCenter()
     let library = LibraryModel()
-    let automation = AutomationController()
-    @Published private(set) var launches: Set<UUID> = []
-    private var runningConfigurations: [UUID: BrowserProfile] = [:]
+    /// Keeps this process the only AnyBrowser on the data directory for as long as it runs.
+    private let instanceLock: InstanceLock?
+    private var activationObserver: NSObjectProtocol?
     private var subscriptions: Set<AnyCancellable> = []
 
-    init() {
+    /// `instance` is this process's claim on the data directory; when another AnyBrowser holds
+    /// it, the database stays closed.
+    init(instance: SingleInstance.Claim?) {
         let openedStore: ProfileStore?
-        var storageError: String?
-        do {
-            openedStore = try ProfileStore(directory: ProfileStore.defaultDirectory())
-        } catch {
+        var problems: [String] = []
+        instanceLock = instance?.lock
+        if let failure = instance?.failure {
             openedStore = nil
-            storageError = error.localizedDescription
+            problems.append(failure)
+        } else {
+            do {
+                openedStore = try ProfileStore(directory: ProfileStore.defaultDirectory())
+            } catch {
+                openedStore = nil
+                problems.append(error.localizedDescription)
+            }
         }
 
         let engineResult = Result { try BrowserEngine.bundled() }
         let engine = try? engineResult.get()
         store = openedStore
         if let engine, let openedStore {
-            runtime = BrowserRuntime(engine: engine, storage: openedStore.directory)
+            let runtime = BrowserRuntime(engine: engine, storage: openedStore.directory)
+            self.runtime = runtime
+            coordinator = LaunchCoordinator(store: openedStore, runtime: runtime)
         } else {
             runtime = nil
+            coordinator = nil
         }
         engineVersion = engine?.version
         if case .failure(let error) = engineResult {
@@ -59,20 +82,42 @@ final class Workbench: ObservableObject {
         }
 
         draft = openedStore?.profiles.first.map(ProfileDraft.init)
-        if let storageError {
-            notice = Notice(text: storageError, isError: true)
-        } else if let count = openedStore?.unreadableProfiles, count > 0 {
-            notice = Notice(text: "有 \(count) 份 Profile 配置无法读取，已跳过。", isError: true)
+        if let openedStore {
+            if openedStore.isReadOnly {
+                problems.append("本机 Profile 数据库由更新版本的 AnyBrowser 写入（数据库版本 \(openedStore.openedSchemaVersion)），"
+                    + "当前版本只能查看，不能修改。请升级 AnyBrowser。")
+            }
+            if let failure = openedStore.backupFailure {
+                problems.append("本机 Profile 数据库的自动备份失败：\(failure)")
+            }
+            if openedStore.unreadableProfiles > 0 {
+                problems.append("有 \(openedStore.unreadableProfiles) 份 Profile 配置无法读取，已跳过。")
+            }
+        }
+        if !problems.isEmpty {
+            notice = Notice(text: problems.joined(separator: "\n"), isError: true)
         }
 
-        openedStore?.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
-            .store(in: &subscriptions)
-        runtime?.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
-            .store(in: &subscriptions)
-        for model in [proxyCenter.objectWillChange, library.objectWillChange, automation.objectWillChange] {
+        var models = [proxyCenter.objectWillChange, library.objectWillChange]
+        if let openedStore { models.append(openedStore.objectWillChange) }
+        if let coordinator {
+            models += [coordinator.objectWillChange, coordinator.runtime.objectWillChange,
+                       coordinator.automation.objectWillChange]
+        }
+        for model in models {
             model.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &subscriptions)
         }
-        automation.attach(to: self)
+        library.coordinator = coordinator
+        if let instance, instance.lock != nil {
+            activationObserver = SingleInstance.listen(instance.directory)
+        }
+        guard let coordinator else { return }
+        coordinator.lateWarnings.sink { [weak self] late in self?.showLate(late.warnings, for: late.profile) }
+            .store(in: &subscriptions)
+        // For as long as AnyBrowser runs, not only while its window is open.
+        coordinator.startMonitoring()
+        Task { await coordinator.automation.load() }
+        Task { await coordinator.performLaunchMaintenance() }
     }
 
     static let storeUnavailable = "本机 Profile 数据库不可用。"
@@ -80,6 +125,7 @@ final class Workbench: ObservableObject {
     var profiles: [BrowserProfile] { store?.profiles ?? [] }
     var selectedID: UUID? { draft?.profile.id }
     var saved: BrowserProfile? { profiles.first { $0.id == selectedID } }
+    var automation: AutomationHost? { coordinator?.automation }
 
     var hasChanges: Bool {
         guard let draft else { return false }
@@ -87,33 +133,19 @@ final class Workbench: ObservableObject {
     }
 
     func state(for id: UUID) -> BrowserRunState {
-        runtime?.status(for: id) ?? .stopped
+        coordinator?.state(for: id) ?? .stopped
     }
 
     func isBusy(_ id: UUID) -> Bool {
-        launches.contains(id) || library.removing.contains(id) || state(for: id) == .starting || state(for: id) == .stopping
+        coordinator?.isBusy(id) ?? false
+    }
+
+    func isRegenerating(_ id: UUID) -> Bool {
+        coordinator?.regenerating.contains(id) ?? false
     }
 
     func hasPendingRestart(_ id: UUID) -> Bool {
-        guard case .running(_, let port, _) = state(for: id),
-              let stored = profiles.first(where: { $0.id == id }) else { return false }
-        if stored.port != port { return true }
-        if let running = runningConfigurations[id] {
-            return running.fingerprint != stored.fingerprint || running.proxy != stored.proxy
-                || running.launch != stored.launch
-                || accountChanged(running.passkeyBox, stored)
-        }
-        return runtime?.matchesRunningConfiguration(stored) != true
-    }
-
-    /// A different account takes effect on restart; clearing the account does not sign the extension out.
-    private func accountChanged(_ running: PasskeyBoxAccount?, _ stored: BrowserProfile) -> Bool {
-        guard let effective = stored.passkeyBox ?? store?.passkeyBoxAccount else { return false }
-        return running != effective
-    }
-
-    func refresh() async {
-        await runtime?.refresh(profiles)
+        coordinator?.hasPendingRestart(id) ?? false
     }
 
     func request(_ destination: Destination) {
@@ -131,14 +163,28 @@ final class Workbench: ObservableObject {
         navigate(destination)
     }
 
+    /// Saves the draft. A new identity is saved together with the mark that its old site data must
+    /// go: a stopped Profile's is deleted right away, unless `clearingSiteData` is false because a
+    /// launch follows and deletes it before the browser starts; a running one's at the restart.
     @discardableResult
-    func save() -> Bool {
+    func save(clearingSiteData: Bool = true) -> Bool {
         guard let draft, let store else { return false }
         do {
             let value = try draft.validated()
-            try store.save(value)
+            if draft.resetsSiteData {
+                guard let coordinator else { throw ProfileError.invalid("内置浏览器不可用，无法清除旧网站数据。") }
+                try coordinator.saveNewIdentity(value)
+            } else {
+                try store.save(value)
+            }
             self.draft = ProfileDraft(store.profiles.first(where: { $0.id == value.id }) ?? value)
-            notice = Notice(text: hasPendingRestart(value.id) ? "配置已保存，重启后应用。" : "配置已保存。")
+            if !draft.resetsSiteData {
+                notice = Notice(text: hasPendingRestart(value.id) ? "配置已保存，重启后应用。" : "配置已保存。")
+            } else if state(for: value.id).isRunning {
+                notice = Notice(text: "新身份已保存。重启浏览器时先清除此 Profile 的网站数据，再使用新身份。")
+            } else if clearingSiteData {
+                clearOldSiteData(value.id)
+            }
             return true
         } catch {
             show(error)
@@ -146,11 +192,25 @@ final class Workbench: ObservableObject {
         }
     }
 
+    private func clearOldSiteData(_ id: UUID) {
+        guard let coordinator else { return }
+        notice = Notice(text: "新身份已保存，正在清除旧网站数据…")
+        Task {
+            do {
+                try await coordinator.clearPendingSiteData(id)
+                notice = Notice(text: "新身份已保存，旧网站数据已清除。")
+            } catch {
+                notice = Notice(text: "新身份已保存，但旧网站数据未能清除：\(error.localizedDescription)下次启动前会再清除。",
+                                isError: true)
+            }
+        }
+    }
+
+    /// Removes only the record; used when the built-in engine is unavailable.
     func remove(_ id: UUID) {
         guard let store, !isBusy(id), !state(for: id).isRunning else { return }
         do {
             try store.remove(id)
-            runningConfigurations[id] = nil
             if selectedID == id { draft = store.profiles.first.map(ProfileDraft.init) }
             notice = Notice(text: "已移除 Profile。")
         } catch {
@@ -158,32 +218,32 @@ final class Workbench: ObservableObject {
         }
     }
 
-    /// Replaces the whole device identity and clears the Profile's site data first, so the new
-    /// fingerprint never shares cookies/localStorage with the old device. Nothing is saved until
-    /// the user saves; a running browser applies the new identity after a restart.
-    func regenerateIdentity() async -> Bool {
-        guard var draft, let store else { return false }
-        let proxy = draft.profile.proxy
+    /// Puts a whole new device identity into the editor. Nothing is deleted or saved here: saving
+    /// deletes the old identity's site data (FingerprintCard asks first), discarding keeps it all.
+    func regenerateIdentity() async {
+        guard let draft, let coordinator else { return }
         let id = draft.profile.id
-        notice = Notice(text: "正在检测代理出口并清理站点数据…")
+        let isSaved = saved != nil
+        notice = Notice(text: "正在检测代理出口并生成新身份…")
         do {
-            let locale = await localeHint(for: proxy)
-            let regenerated = try store.regenerateIdentity(draft.profile, locale: locale)
-            guard let runtime else {
-                throw ProfileError.invalid("浏览器运行时不可用，无法清理站点数据。")
+            let identity = try await coordinator.generateIdentity(for: draft.profile)
+            // The user may have moved to another Profile while the exit lookup ran.
+            guard var current = self.draft, current.profile.id == id else { return }
+            current.profile.fingerprint = identity.fingerprint
+            current.seedText = String(identity.fingerprint.seed)
+            current.cpuText = identity.fingerprint.cpuCount.map(String.init) ?? ""
+            // A Profile that was never saved has no site data.
+            if isSaved { current.resetsSiteData = true }
+            self.draft = current
+            let warning = identity.exitLookupFailed ? "代理出口检测失败，语言/时区保持随机。" : ""
+            if isSaved {
+                let action = state(for: id).isRunning ? "点击「保存并重启」后" : "保存后"
+                notice = Notice(text: "已生成新身份。\(action)清除此 Profile 的网站数据并使用新身份；放弃修改则不删除任何数据。\(warning)")
+            } else {
+                notice = Notice(text: "已生成新身份。\(warning)")
             }
-            try await runtime.clearSiteData(for: id)
-            draft.profile = regenerated
-            draft.seedText = String(regenerated.fingerprint.seed)
-            draft.cpuText = regenerated.fingerprint.cpuCount.map(String.init) ?? ""
-            self.draft = draft
-            let warning = (locale == nil && !proxy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                ? "；代理出口检测失败，语言/时区保持随机" : ""
-            notice = Notice(text: "已清理站点数据并生成新身份，保存后重启应用\(warning)。")
-            return true
         } catch {
             show(error)
-            return false
         }
     }
 
@@ -251,60 +311,65 @@ final class Workbench: ObservableObject {
         }
     }
 
+    /// Saves pending edits, then starts or restarts the selected Profile. When its seed or platform
+    /// changed since the last launch without a new identity, the user first decides what happens
+    /// to the old site data (`pendingFingerprintLaunch`).
     func launch(restart: Bool = false) async {
-        guard runtime != nil, let id = selectedID, !isBusy(id) else { return }
-        if hasChanges, !save() { return }
+        guard let coordinator, let id = selectedID, !isBusy(id) else { return }
+        // The launch deletes a new identity's old site data itself, before the browser starts.
+        if hasChanges, !save(clearingSiteData: false) { return }
         guard let profile = saved else { return }
+        if coordinator.fingerprintChangedSinceLastLaunch(id) {
+            pendingFingerprintLaunch = FingerprintLaunch(id: id, name: profile.name, restart: restart)
+            return
+        }
+        await launch(id, restart: restart, fingerprintChange: .keepSiteData)
+    }
+
+    func resolveFingerprintLaunch(_ pending: FingerprintLaunch, clearingSiteData: Bool) async {
+        pendingFingerprintLaunch = nil
+        await launch(pending.id, restart: pending.restart,
+                     fingerprintChange: clearingSiteData ? .clearSiteData : .keepSiteData)
+    }
+
+    private func launch(_ id: UUID, restart: Bool, fingerprintChange: FingerprintChangeHandling) async {
+        guard let coordinator else { return }
         notice = nil
         do {
-            try await start(profile, restart: restart)
+            let outcome = restart
+                ? try await coordinator.restart(id, fingerprintChange: fingerprintChange)
+                : try await coordinator.start(id, fingerprintChange: fingerprintChange)
+            if !outcome.warnings.isEmpty {
+                notice = Notice(text: outcome.warnings.joined(separator: "\n"), isError: true)
+            }
         } catch {
             show(error)
         }
     }
 
-    /// Starts a saved Profile; also used by batch actions and the automation API.
-    /// Returns the proxy warning it showed, if any; the browser starts regardless.
-    @discardableResult
-    func start(_ profile: BrowserProfile, restart: Bool = false) async throws -> String? {
-        guard let runtime else { throw ProfileError.invalid("内置浏览器不可用。") }
-        let id = profile.id
-        guard !isBusy(id) else { throw ProfileError.invalid("「\(profile.name)」正在执行另一个操作。") }
-        launches.insert(id)
-        defer { launches.remove(id) }
-        let warning = await ProxyProbe.preflight(profile.proxy)
-        if restart {
-            try await runtime.stop(id)
-            runningConfigurations[id] = nil
-        }
-        var launched = profile
-        launched.passkeyBox = profile.passkeyBox ?? store?.passkeyBoxAccount
-        // A browser that was already running keeps whatever configuration it was started with.
-        guard try await runtime.start(profile, passkeyBox: launched.passkeyBox).startedFresh else { return warning }
-        runningConfigurations[id] = launched
-        store?.recordLaunch(id)
-        if let warning { notice = Notice(text: warning, isError: true) }
-        return warning
+    /// Warnings that arrived after the launch went ahead, such as an exit lookup that took longer.
+    private func showLate(_ warnings: [String], for id: UUID) {
+        guard let name = profiles.first(where: { $0.id == id })?.name else { return }
+        notice = Notice(text: "「\(name)」：" + warnings.joined(separator: "\n"), isError: true)
     }
 
-    func stop(_ id: UUID) async {
-        guard runtime != nil, !isBusy(id) else { return }
+    /// `force` kills a browser that did not quit within the timeout.
+    func stop(_ id: UUID, force: Bool = false) async {
+        guard let coordinator, !isBusy(id) else { return }
         notice = nil
         do {
-            try await stopProfile(id)
+            try await coordinator.stop(id, force: force)
         } catch {
             show(error)
         }
     }
 
-    /// Stops a Profile's browser; also used by batch actions and the automation API.
-    func stopProfile(_ id: UUID) async throws {
-        guard let runtime else { throw ProfileError.invalid("内置浏览器不可用。") }
-        guard !isBusy(id) else { throw ProfileError.invalid("该 Profile 正在执行另一个操作。") }
-        launches.insert(id)
-        defer { launches.remove(id) }
-        try await runtime.stop(id)
-        runningConfigurations[id] = nil
+    /// Brings the Profile's browser windows to the front.
+    func showWindows(_ id: UUID) {
+        guard coordinator?.activate(id) == true else {
+            notice = Notice(text: "无法切换到此 Profile 的浏览器窗口，请确认它正在运行。", isError: true)
+            return
+        }
     }
 
     var passkeyBoxAccount: PasskeyBoxAccount? { store?.passkeyBoxAccount }

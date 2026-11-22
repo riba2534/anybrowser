@@ -40,6 +40,17 @@ struct Workspace: View {
                 Text("当前 Profile 有尚未保存的修改。")
             }
         }
+        .alert("指纹已改变", isPresented: showFingerprintAlert, presenting: workbench.pendingFingerprintLaunch) { pending in
+            Button("清理并启动", role: .destructive) {
+                Task { await workbench.resolveFingerprintLaunch(pending, clearingSiteData: true) }
+            }
+            Button("保留并启动") {
+                Task { await workbench.resolveFingerprintLaunch(pending, clearingSiteData: false) }
+            }
+            Button("取消", role: .cancel) { workbench.pendingFingerprintLaunch = nil }
+        } message: { pending in
+            Text("「\(pending.name)」的指纹种子或平台与上次启动时不同，浏览器里仍保存着旧身份的网站数据。清理会删除 Cookie、Storage、IndexedDB、Service Worker、HTTP 缓存和 Code Cache，所有网站都要重新登录；扩展数据和偏好设置保留。")
+        }
         .sheet(isPresented: $workbench.showingPasskeyBox) {
             PasskeyBoxSettings(workbench: workbench)
         }
@@ -475,6 +486,13 @@ struct Workspace: View {
         Binding(
             get: { workbench.pendingDestination != nil },
             set: { showing in if !showing { workbench.pendingDestination = nil } }
+        )
+    }
+
+    private var showFingerprintAlert: Binding<Bool> {
+        Binding(
+            get: { workbench.pendingFingerprintLaunch != nil },
+            set: { showing in if !showing { workbench.pendingFingerprintLaunch = nil } }
         )
     }
 
