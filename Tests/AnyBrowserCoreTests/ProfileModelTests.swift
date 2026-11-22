@@ -13,6 +13,43 @@ struct ProfileModelTests {
         #expect(profile.proxy == BrowserProfile.defaultProxy)
     }
 
+    @Test("Fingerprints fill in missing fields and refuse values only a newer version knows")
+    func lenientFingerprintDecoding() throws {
+        func decode(_ json: String) throws -> FingerprintSettings {
+            try JSONDecoder().decode(FingerprintSettings.self, from: Data(json.utf8))
+        }
+        #expect(try decode(#"{"seed":7}"#) == FingerprintSettings(seed: 7))
+        #expect(try decode(#"{"seed":7,"adjustments":[]}"#).adjustments.isEmpty)
+        for (key, value) in [("adjustments", #"["canvas","webgpu"]"#), ("fontProfile", #""macos27""#),
+                             ("brand", #""Arc""#), ("platform", #""android""#)] {
+            let error = #expect(throws: NewerValue.self) { try decode(#"{"seed":7,"\#(key)":\#(value)}"#) }
+            #expect(value.contains(error?.value ?? "-"))
+        }
+        #expect(throws: DecodingError.self) { try decode(#"{"platform":"macos"}"#) }
+        #expect(throws: DecodingError.self) { try decode(#"{"seed":7,"cpuCount":"8"}"#) }
+
+        var full = FingerprintSettings(seed: 9)
+        full.platform = .windows
+        full.platformVersion = "19.0.0"
+        full.brand = .edge
+        full.brandVersion = "148.0.3967.54"
+        full.cpuCount = 8
+        full.language = "de-DE"
+        full.languages = ["de-DE", "de"]
+        full.timeZone = "Europe/Berlin"
+        full.adjustments = [.gpu, .audio]
+        full.screenWidth = 1920
+        full.screenHeight = 1080
+        full.availWidth = 1920
+        full.availHeight = 1040
+        full.colorDepth = 30
+        full.deviceScaleFactor = 1.25
+        full.deviceMemory = 8
+        full.touch = true
+        full.fontProfile = .windows11
+        #expect(try JSONDecoder().decode(FingerprintSettings.self, from: JSONEncoder().encode(full)) == full)
+    }
+
     @Test("New Profile fields survive a round trip")
     func newFieldsRoundTrip() throws {
         var profile = BrowserProfile(name: "New", port: 9300, fingerprint: FingerprintSettings(seed: 9))
