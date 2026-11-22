@@ -3,7 +3,10 @@ import Foundation
 /// Profile import and export, cloning, batch creation and sidebar arrangement.
 public enum ProfileLibrary {
     public static let format = "anybrowser-profiles"
-    public static let version = 1
+    /// Version 2 adds the export time and app version; its Profiles carry tags and status.
+    /// Version 1 files read the same way, without those fields.
+    public static let version = 2
+    static let readableVersions: ClosedRange<Int> = 1...2
     static let maxNameLength = 80
     public static let maxBatch = 50
     static let maxImportBytes = 16 << 20
@@ -29,6 +32,8 @@ public enum ProfileLibrary {
     public struct ImportResult: Equatable, Sendable {
         public var profiles: [BrowserProfile]
         public var skipped: Int
+        /// "第 <n> 条：<reason>" for each skipped entry, in file order.
+        public var skippedReasons: [String] = []
     }
 
     public struct BatchRequest: Sendable {
@@ -53,12 +58,16 @@ public enum ProfileLibrary {
 
     // MARK: Export and import
 
-    /// The export file. Without secrets, proxy credentials and per-Profile Passkey Box accounts are dropped.
-    public static func export(_ profiles: [BrowserProfile], includeSecrets: Bool) throws -> Data {
+    /// The export file holding exactly `profiles`, in order, so any selection can be exported.
+    /// Without secrets, proxy credentials and per-Profile Passkey Box accounts are dropped.
+    public static func export(_ profiles: [BrowserProfile], includeSecrets: Bool, exportedAt: Date = Date()) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
         let entries = includeSecrets ? profiles : profiles.map(withoutSecrets)
-        return try encoder.encode(Envelope(format: format, version: version, profiles: entries))
+        let app = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        return try encoder.encode(Envelope(format: format, version: version, exportedAt: exportedAt,
+                                           appVersion: app, profiles: entries))
     }
 
     public static func withoutSecrets(_ profile: BrowserProfile) -> BrowserProfile {
@@ -70,7 +79,8 @@ public enum ProfileLibrary {
     }
 
     /// New Profiles from an export file: each gets a new id, and a new port or seed when it collides
-    /// with `takenPorts`/`takenSeeds` or an earlier entry. Entries that fail validation are skipped.
+    /// with `takenPorts`/`takenSeeds` or an earlier entry. Entries that fail validation are skipped
+    /// with the reason.
     public static func importProfiles(from data: Data, takenPorts: Set<Int>, takenSeeds: Set<Int>) throws -> ImportResult {
         guard data.count <= maxImportBytes else {
             throw ProfileError.invalid("文件过大，不是 AnyBrowser 导出的 Profile 文件。")
@@ -78,8 +88,9 @@ public enum ProfileLibrary {
         guard let header = try? JSONDecoder().decode(Header.self, from: data), header.format == format else {
             throw ProfileError.invalid("不是 AnyBrowser 导出的 Profile 文件。")
         }
-        guard header.version == version else {
-            throw ProfileError.invalid("不支持此版本的 Profile 文件（版本 \(header.version.map(String.init) ?? "未知")）。")
+        guard let fileVersion = header.version, readableVersions.contains(fileVersion) else {
+            let newer = (header.version ?? 0) > version ? "，请升级 AnyBrowser 后再导入" : ""
+            throw ProfileError.invalid("不支持此版本的 Profile 文件（版本 \(header.version.map(String.init) ?? "未知")）\(newer)。")
         }
         guard let entries = try? JSONDecoder().decode(Entries.self, from: data).profiles else {
             throw ProfileError.invalid("Profile 文件缺少 Profile 列表。")
@@ -87,21 +98,35 @@ public enum ProfileLibrary {
         var ports = takenPorts
         var seeds = takenSeeds
         var result = ImportResult(profiles: [], skipped: 0)
-        for entry in entries {
-            guard var profile = try? entry.value?.validated() else {
-                result.skipped += 1
+        func skip(_ index: Int, _ reason: String) {
+            result.skipped += 1
+            result.skippedReasons.append("第 \(index + 1) 条：\(reason)")
+        }
+        for (index, entry) in entries.enumerated() {
+            var profile: BrowserProfile
+            switch entry.value {
+            case .success(let value):
+                do {
+                    profile = try value.validated()
+                } catch {
+                    skip(index, error.localizedDescription)
+                    continue
+                }
+            case .failure(let error):
+                skip(index, ProfileStore.readFailure(error, below: entry.path.count))
                 continue
             }
             profile.id = UUID()
             if ports.contains(profile.port) {
                 guard let port = try? freePort(excluding: ports) else {
-                    result.skipped += 1
+                    skip(index, "没有可分配的调试端口。")
                     continue
                 }
                 profile.port = port
             }
             if seeds.contains(profile.fingerprint.seed) {
-                profile.fingerprint.seed = FingerprintSettings.newSeed(excluding: seeds)
+                profile.fingerprint.seed = FingerprintSettings.newSeed(excluding: seeds,
+                                                                       sameHardwareAs: profile.fingerprint.seed)
             }
             ports.insert(profile.port)
             seeds.insert(profile.fingerprint.seed)
@@ -129,7 +154,7 @@ public enum ProfileLibrary {
         copy.id = UUID()
         copy.name = copyName(of: profile.name, existing: existingNames)
         copy.port = try freePort(excluding: takenPorts)
-        copy.fingerprint.seed = FingerprintSettings.newSeed(excluding: takenSeeds)
+        copy.fingerprint.seed = FingerprintSettings.newSeed(excluding: takenSeeds, sameHardwareAs: profile.fingerprint.seed)
         return try copy.validated()
     }
 
@@ -239,43 +264,87 @@ public enum ProfileLibrary {
         }
     }
 
-    /// Runs `action` on one Profile at a time. Each Profile is looked up again right before its turn,
-    /// so one removed or changed while earlier ones ran is skipped or used as it is now.
-    /// `action` may return a warning to report.
-    @MainActor
-    public static func runBatch(_ ids: [UUID], lookup: (UUID) -> BrowserProfile?, applies: (BrowserProfile) -> Bool,
-                                action: (BrowserProfile) async throws -> String?) async -> BatchOutcome {
-        var outcome = BatchOutcome()
-        for id in ids {
-            guard let profile = lookup(id), applies(profile) else {
-                outcome.skipped += 1
-                continue
-            }
-            do {
-                if let warning = try await action(profile) { outcome.warnings.append("\(profile.name)：\(warning)") }
-                outcome.succeeded += 1
-            } catch {
-                outcome.failures.append("\(profile.name)：\(error.localizedDescription)")
-            }
-        }
-        return outcome
-    }
-
     // MARK: Sidebar
 
-    /// Whether the name, group, notes or debug port contains `query`.
+    /// A sidebar search. `tag:`, `status:` and `group:` terms (quoted when the value has spaces)
+    /// each narrow the result; the rest of the text must appear in the name, group, notes, debug
+    /// port or a tag. A status matches by its raw value or its Chinese title.
+    struct Query {
+        private(set) var text: String
+        private(set) var tags: [String] = []
+        private(set) var statuses: [String] = []
+        private(set) var groups: [String] = []
+        private static let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
+
+        init(_ query: String) {
+            text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            var words: [String] = []
+            var found = false
+            for word in Self.words(text) {
+                // The full-width colon is what Chinese input methods type.
+                let parts = word.split(maxSplits: 1, omittingEmptySubsequences: false, whereSeparator: { $0 == ":" || $0 == "：" })
+                let value = parts.count == 2 ? String(parts[1]).replacingOccurrences(of: "\"", with: "") : ""
+                switch parts.count == 2 ? parts[0].lowercased() : nil {
+                case "tag": tags.append(value)
+                case "status": statuses.append(value)
+                case "group": groups.append(value)
+                default:
+                    words.append(word)
+                    continue
+                }
+                found = true
+            }
+            // Without terms the text is matched as typed, spaces included.
+            if found { text = words.joined(separator: " ") }
+            tags.removeAll(where: \.isEmpty)
+            statuses.removeAll(where: \.isEmpty)
+            groups.removeAll(where: \.isEmpty)
+        }
+
+        /// Splits at spaces outside double quotes.
+        private static func words(_ text: String) -> [String] {
+            var words: [String] = []
+            var current = ""
+            var quoted = false
+            for character in text {
+                if character == "\"" { quoted.toggle() }
+                if character.isWhitespace, !quoted {
+                    if !current.isEmpty { words.append(current) }
+                    current = ""
+                } else {
+                    current.append(character)
+                }
+            }
+            if !current.isEmpty { words.append(current) }
+            return words
+        }
+
+        private static func contains(_ value: String, _ part: String) -> Bool {
+            value.range(of: part, options: options) != nil
+        }
+
+        func matches(_ profile: BrowserProfile) -> Bool {
+            guard tags.allSatisfy({ tag in profile.tags.contains { Self.contains($0, tag) } }),
+                  groups.allSatisfy({ Self.contains(profile.group, $0) }),
+                  statuses.allSatisfy({ status in
+                      profile.accountStatus.map { Self.contains($0.rawValue, status) || Self.contains($0.title, status) } ?? false
+                  }) else { return false }
+            guard !text.isEmpty else { return true }
+            return ([profile.name, profile.group, profile.notes, String(profile.port)] + profile.tags)
+                .contains { Self.contains($0, text) }
+        }
+    }
+
+    /// Whether `profile` matches the sidebar search `query`; see `Query`.
     public static func matches(_ profile: BrowserProfile, query: String) -> Bool {
-        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return true }
-        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
-        return [profile.name, profile.group, profile.notes, String(profile.port)]
-            .contains { $0.range(of: text, options: options) != nil }
+        Query(query).matches(profile)
     }
 
     /// Matching Profiles in sections ordered by group name, with Profiles without a group last.
     public static func sections(_ profiles: [BrowserProfile], query: String, sort: Sort,
                                 lastLaunched: [UUID: Date]) -> [Section] {
-        let ordered = sorted(profiles.filter { matches($0, query: query) }, by: sort, lastLaunched: lastLaunched)
+        let search = Query(query)
+        let ordered = sorted(profiles.filter(search.matches), by: sort, lastLaunched: lastLaunched)
         var groups: [String: [BrowserProfile]] = [:]
         for profile in ordered { groups[profile.group, default: []].append(profile) }
         return groups.keys
@@ -317,6 +386,8 @@ public enum ProfileLibrary {
     private struct Envelope: Encodable {
         var format: String
         var version: Int
+        var exportedAt: Date
+        var appVersion: String?
         var profiles: [BrowserProfile]
     }
 
@@ -329,30 +400,33 @@ public enum ProfileLibrary {
         var profiles: [Entry]
     }
 
-    /// One entry of the list; nil when it is not a Profile, so a bad entry does not reject the file.
+    /// One entry of the list, or why it is not a Profile, so a bad entry does not reject the file.
     private struct Entry: Decodable {
-        var value: BrowserProfile?
+        var value: Result<BrowserProfile, Error>
+        /// Where the entry sits in the file, left out of the reason.
+        var path: [CodingKey]
 
         init(from decoder: Decoder) throws {
-            value = try? BrowserProfile(from: decoder)
+            value = Result { try BrowserProfile(from: decoder) }
+            path = decoder.codingPath
         }
     }
 }
 
 extension ProfileStore {
-    /// Saves Profiles read from an export file and returns them with the number of skipped entries.
+    /// Saves the Profiles read from an export file in one transaction, so a failure leaves nothing
+    /// half imported, and returns them with the entries skipped and why.
     public func importProfiles(from data: Data) throws -> ProfileLibrary.ImportResult {
-        let plan = try ProfileLibrary.importProfiles(from: data, takenPorts: takenPorts, takenSeeds: takenSeeds)
-        var result = ProfileLibrary.ImportResult(profiles: [], skipped: plan.skipped)
-        for profile in plan.profiles {
-            do {
-                try save(profile)
-                result.profiles.append(profile)
-            } catch {
-                result.skipped += 1
-            }
-        }
+        try requireWritable()
+        var result = try ProfileLibrary.importProfiles(from: data, takenPorts: takenPorts, takenSeeds: takenSeeds)
+        result.profiles = try saveAll(result.profiles)
         return result
+    }
+
+    /// The export file for the saved Profiles in `ids`, in creation order; for exporting a selection.
+    /// Ids that are not saved Profiles are left out.
+    public func exportProfiles(_ ids: Set<UUID>, includeSecrets: Bool) throws -> Data {
+        try ProfileLibrary.export(profiles.filter { ids.contains($0.id) }, includeSecrets: includeSecrets)
     }
 
     /// Saves a copy of a saved Profile; browser data is not copied.

@@ -6,7 +6,7 @@ import Testing
 @Suite("Automation API", .serialized)
 @MainActor
 struct AutomationTests {
-    nonisolated static let token = String(repeating: "5a", count: 32)
+    nonisolated static let token = automationTestToken
 
     @Test("Settings default to disabled on port 50330 with a fresh 32-byte token")
     func defaultSettings() throws {
@@ -52,8 +52,8 @@ struct AutomationTests {
 
     @Test("Requests without the right Bearer token get 401")
     func requiresTheToken() async throws {
-        let backend = FakeBackend()
-        try await serve(backend) { port in
+        let backend = try FakeBackend()
+        try await serveAutomation(backend) { port in
             let host = "Host: 127.0.0.1:\(port)"
             for headers in [
                 [host],
@@ -66,24 +66,24 @@ struct AutomationTests {
                 [host, "Authorization: \(Self.token)"],
                 [host, "Authorization: Bearer \(Self.token)", "Authorization: Bearer \(Self.token)"],
             ] {
-                let reply = await request(port, "GET", "/api/v1/profiles", headers: headers)
+                let reply = await automationRequest(port, "GET", "/api/v1/profiles", headers: headers)
                 #expect(reply.status == 401, "\(headers)")
                 #expect(reply.errorCode == "unauthorized")
                 #expect(reply.headers["www-authenticate"] == "Bearer")
             }
-            let accepted = await request(port, "GET", "/api/v1/profiles", headers: [host, "Authorization: bearer \(Self.token)"])
+            let accepted = await automationRequest(port, "GET", "/api/v1/profiles", headers: [host, "Authorization: bearer \(Self.token)"])
             #expect(accepted.status == 200)
         }
     }
 
     @Test("Requests with an Origin header get 403 even with the token")
     func rejectsOrigins() async throws {
-        let backend = FakeBackend()
-        let profile = backend.add("Alpha", port: 9401)
-        try await serve(backend) { port in
+        let backend = try FakeBackend()
+        let profile = try backend.add("Alpha", port: 9401)
+        try await serveAutomation(backend) { port in
             for origin in ["http://evil.example", "null", "http://127.0.0.1:\(port)", ""] {
-                let reply = await request(port, "POST", "/api/v1/profiles/\(profile.id)/start",
-                                          headers: authorized(port) + ["Origin: \(origin)"])
+                let reply = await automationRequest(port, "POST", "/api/v1/profiles/\(profile.id)/start",
+                                                    headers: automationHeaders(port) + ["Origin: \(origin)"])
                 #expect(reply.status == 403, "\(origin)")
                 #expect(reply.errorCode == "forbidden_origin")
             }
@@ -93,8 +93,8 @@ struct AutomationTests {
 
     @Test("Only 127.0.0.1 or localhost with the server's port pass the Host check")
     func checksTheHost() async throws {
-        let backend = FakeBackend()
-        try await serve(backend) { port in
+        let backend = try FakeBackend()
+        try await serveAutomation(backend) { port in
             let auth = "Authorization: Bearer \(Self.token)"
             for hosts in [
                 [String](),
@@ -106,29 +106,29 @@ struct AutomationTests {
                 ["Host: localhost.:\(port)"],
                 ["Host: 127.0.0.1:\(port)", "Host: evil.example"],
             ] {
-                let reply = await request(port, "GET", "/api/v1/profiles", headers: hosts + [auth])
+                let reply = await automationRequest(port, "GET", "/api/v1/profiles", headers: hosts + [auth])
                 #expect(reply.status == 403, "\(hosts)")
                 #expect(reply.errorCode == "forbidden_host")
             }
             for host in ["127.0.0.1:\(port)", "localhost:\(port)", "LocalHost:\(port)"] {
-                let reply = await request(port, "GET", "/api/v1/profiles", headers: ["Host: \(host)", auth])
+                let reply = await automationRequest(port, "GET", "/api/v1/profiles", headers: ["Host: \(host)", auth])
                 #expect(reply.status == 200, "\(host)")
             }
             // Host is checked first, then Origin, then the token.
-            let rebinding = await request(port, "GET", "/api/v1/profiles", headers: ["Host: evil.example", "Origin: http://evil.example"])
+            let rebinding = await automationRequest(port, "GET", "/api/v1/profiles", headers: ["Host: evil.example", "Origin: http://evil.example"])
             #expect(rebinding.errorCode == "forbidden_host")
-            let page = await request(port, "GET", "/api/v1/profiles", headers: ["Host: localhost:\(port)", "Origin: http://evil.example"])
+            let page = await automationRequest(port, "GET", "/api/v1/profiles", headers: ["Host: localhost:\(port)", "Origin: http://evil.example"])
             #expect(page.errorCode == "forbidden_origin")
         }
     }
 
     @Test("Requests over 64 KB get 413")
     func limitsTheRequestSize() async throws {
-        let backend = FakeBackend()
-        let profile = backend.add("Alpha", port: 9401)
-        try await serve(backend) { port in
-            let long = await request(port, "GET", "/api/v1/profiles",
-                                     headers: authorized(port) + ["X-Padding: \(String(repeating: "a", count: 70_000))"])
+        let backend = try FakeBackend()
+        let profile = try backend.add("Alpha", port: 9401)
+        try await serveAutomation(backend) { port in
+            let long = await automationRequest(port, "GET", "/api/v1/profiles",
+                                               headers: automationHeaders(port) + ["X-Padding: \(String(repeating: "a", count: 70_000))"])
             #expect(long.status == 413)
             #expect(long.errorCode == "payload_too_large")
 
@@ -138,48 +138,52 @@ struct AutomationTests {
                 return Data((head + String(repeating: "x", count: sent)).utf8)
             }
             // The declared length alone is enough to refuse; the server does not wait for the body.
-            #expect(await send(port, [stop(declaring: 65_536, sending: 0)]).status == 413)
+            #expect(await automationSend(port, [stop(declaring: 65_536, sending: 0)]).status == 413)
             // Exactly 64 KB in total is still accepted.
             let fits = 65_536 - stop(declaring: 10_000, sending: 0).count
             #expect(stop(declaring: fits, sending: fits).count == 65_536)
-            #expect(await send(port, [stop(declaring: fits + 1, sending: fits + 1)]).status == 413)
+            #expect(await automationSend(port, [stop(declaring: fits + 1, sending: fits + 1)]).status == 413)
             #expect(backend.stopped.isEmpty)
-            #expect(await send(port, [stop(declaring: fits, sending: fits)]).status == 200)
+            #expect(await automationSend(port, [stop(declaring: fits, sending: fits)]).status == 200)
             #expect(backend.stopped == [profile.id])
         }
     }
 
-    @Test("The four endpoints answer with the documented JSON")
+    @Test("The first four endpoints answer with the documented JSON, plus new fields only")
     func endpoints() async throws {
-        let backend = FakeBackend()
-        let alpha = backend.add("Alpha", port: 9401, group: "工作")
-        let beta = backend.add("Beta", port: 9402)
+        let backend = try FakeBackend()
+        let alpha = try backend.add("Alpha", port: 9401, group: "工作")
+        let beta = try backend.add("Beta", port: 9402)
         backend.states[beta.id] = .running(pid: 7, port: 9410, debugReady: true)
-        try await serve(backend) { port in
-            let list = await request(port, "GET", "/api/v1/profiles")
+        try await serveAutomation(backend) { port in
+            let list = await automationRequest(port, "GET", "/api/v1/profiles")
             #expect(list.status == 200)
             #expect(list.headers["content-type"] == "application/json; charset=utf-8")
             #expect(list.headers["connection"] == "close")
             let profiles = try #require(list.json?["profiles"] as? [[String: Any]])
             #expect(profiles.count == 2)
-            #expect(Set(profiles[0].keys) == ["id", "name", "group", "port", "status", "debugReady"])
+            #expect(Set(profiles[0].keys) == ["id", "name", "group", "port", "status", "debugReady",
+                                              "tags", "accountStatus", "pendingRestart"])
             #expect(profiles[0]["id"] as? String == alpha.id.uuidString)
             #expect(profiles[0]["name"] as? String == "Alpha")
             #expect(profiles[0]["group"] as? String == "工作")
             #expect(profiles[0]["port"] as? Int == 9401)
             #expect(profiles[0]["status"] as? String == "stopped")
             #expect(profiles[0]["debugReady"] as? Bool == false)
+            #expect(profiles[0]["tags"] as? [String] == [])
+            #expect(profiles[0]["accountStatus"] is NSNull)
+            #expect(profiles[0]["pendingRestart"] as? Bool == false)
             // A running browser reports the port it was started with.
             #expect(profiles[1]["port"] as? Int == 9410)
             #expect(profiles[1]["status"] as? String == "running")
             #expect(profiles[1]["debugReady"] as? Bool == true)
-            #expect(await request(port, "GET", "/api/v1/profiles?view=all").status == 200)
+            #expect(await automationRequest(port, "GET", "/api/v1/profiles?view=all").status == 200)
 
-            let single = await request(port, "GET", "/api/v1/profiles/\(alpha.id.uuidString.lowercased())")
+            let single = await automationRequest(port, "GET", "/api/v1/profiles/\(alpha.id.uuidString.lowercased())")
             #expect(single.status == 200)
             #expect((single.json?["profile"] as? [String: Any])?["name"] as? String == "Alpha")
 
-            let started = await request(port, "POST", "/api/v1/profiles/\(alpha.id)/start")
+            let started = await automationRequest(port, "POST", "/api/v1/profiles/\(alpha.id)/start")
             #expect(started.status == 200)
             #expect(backend.started == [alpha.id])
             let profile = try #require(started.json?["profile"] as? [String: Any])
@@ -188,14 +192,18 @@ struct AutomationTests {
             let debug = try #require(started.json?["debug"] as? [String: String])
             #expect(debug == ["http": "http://127.0.0.1:9401",
                               "webSocket": "ws://127.0.0.1:9401/devtools/browser/\(alpha.id.uuidString.lowercased())"])
+            #expect(started.json?["warnings"] as? [String] == [])
+            #expect(started.json?["startedFresh"] as? Bool == true)
+            // Without a body the saved configuration starts, as before.
+            #expect(backend.overrides == [LaunchOverrides()])
 
             // An already running Profile is not started again.
-            let again = await request(port, "POST", "/api/v1/profiles/\(beta.id)/start", body: "{}")
+            let again = await automationRequest(port, "POST", "/api/v1/profiles/\(beta.id)/start", body: "{}")
             #expect(again.status == 200)
             #expect(backend.started == [alpha.id])
             #expect((again.json?["debug"] as? [String: String])?["http"] == "http://127.0.0.1:9410")
 
-            let stopped = await request(port, "POST", "/api/v1/profiles/\(beta.id)/stop")
+            let stopped = await automationRequest(port, "POST", "/api/v1/profiles/\(beta.id)/stop")
             #expect(stopped.status == 200)
             #expect(backend.stopped == [beta.id])
             #expect((stopped.json?["profile"] as? [String: Any])?["status"] as? String == "stopped")
@@ -204,25 +212,35 @@ struct AutomationTests {
 
     @Test("Unknown Profiles and paths get 404, but only after authentication")
     func unknownResources() async throws {
-        let backend = FakeBackend()
-        let profile = backend.add("Alpha", port: 9401)
-        try await serve(backend) { port in
+        let backend = try FakeBackend()
+        let profile = try backend.add("Alpha", port: 9401)
+        try await serveAutomation(backend) { port in
             for (method, path) in [
                 ("GET", "/api/v1/profiles/\(UUID())"),
                 ("POST", "/api/v1/profiles/\(UUID())/start"),
                 ("POST", "/api/v1/profiles/\(UUID())/stop"),
                 ("GET", "/api/v1/profiles/not-a-uuid"),
                 ("GET", "/api/v1/profiles/"),
-                ("POST", "/api/v1/profiles/\(profile.id)/restart"),
+                ("POST", "/api/v1/profiles/\(profile.id)/reboot"),
+                ("POST", "/api/v1/profiles/\(UUID())/restart"),
+                ("GET", "/api/v1/profiles/\(UUID())/log"),
+                ("POST", "/api/v1/profiles/\(UUID())/clone"),
+                ("PATCH", "/api/v1/profiles/\(UUID())"),
+                ("DELETE", "/api/v1/profiles/\(UUID())"),
+                ("POST", "/api/v1/profiles/\(profile.id)/restore"),
+                ("PATCH", "/api/v1/proxies/\(UUID())"),
+                ("GET", "/api/v1/proxies/not-a-uuid"),
+                ("GET", "/api/v1/trash/x"),
+                ("POST", "/api/v1/windows"),
                 ("GET", "/api/v1/profiles/\(profile.id)/start/now"),
                 ("GET", "/api/v2/profiles"),
                 ("GET", "/"),
             ] {
-                let reply = await request(port, method, path)
+                let reply = await automationRequest(port, method, path)
                 #expect(reply.status == 404, "\(method) \(path)")
                 #expect(reply.errorCode == "not_found")
             }
-            let anonymous = await request(port, "GET", "/api/v2/profiles", headers: ["Host: 127.0.0.1:\(port)"])
+            let anonymous = await automationRequest(port, "GET", "/api/v2/profiles", headers: ["Host: 127.0.0.1:\(port)"])
             #expect(anonymous.status == 401)
             #expect(backend.started.isEmpty && backend.stopped.isEmpty)
         }
@@ -230,17 +248,29 @@ struct AutomationTests {
 
     @Test("Wrong methods get 405 with Allow")
     func wrongMethods() async throws {
-        let backend = FakeBackend()
-        let profile = backend.add("Alpha", port: 9401)
-        try await serve(backend) { port in
+        let backend = try FakeBackend()
+        let profile = try backend.add("Alpha", port: 9401)
+        try await serveAutomation(backend) { port in
             for (method, path, allowed) in [
-                ("POST", "/api/v1/profiles", "GET"),
-                ("DELETE", "/api/v1/profiles/\(profile.id)", "GET"),
+                ("PUT", "/api/v1/profiles", "GET, POST"),
+                ("PUT", "/api/v1/profiles/\(profile.id)", "GET, PATCH, DELETE"),
                 ("GET", "/api/v1/profiles/\(profile.id)/start", "POST"),
                 ("PUT", "/api/v1/profiles/\(profile.id)/stop", "POST"),
-                ("HEAD", "/api/v1/profiles", "GET"),
+                ("HEAD", "/api/v1/profiles", "GET, POST"),
+                ("GET", "/api/v1/profiles/batch", "POST"),
+                ("GET", "/api/v1/profiles/\(profile.id)/restart", "POST"),
+                ("GET", "/api/v1/profiles/\(profile.id)/clone", "POST"),
+                ("GET", "/api/v1/profiles/\(profile.id)/restore", "POST"),
+                ("POST", "/api/v1/profiles/\(profile.id)/log", "GET"),
+                ("DELETE", "/api/v1/profiles/\(profile.id)/cookies", "GET, POST"),
+                ("POST", "/api/v1/profiles/\(profile.id)/selfcheck", "GET"),
+                ("POST", "/api/v1/trash", "GET"),
+                ("DELETE", "/api/v1/proxies", "GET, POST"),
+                ("GET", "/api/v1/proxies/check", "POST"),
+                ("POST", "/api/v1/proxies/\(UUID())", "GET, PATCH, DELETE"),
+                ("GET", "/api/v1/windows/arrange", "POST"),
             ] {
-                let reply = await request(port, method, path)
+                let reply = await automationRequest(port, method, path)
                 #expect(reply.status == 405, "\(method) \(path)")
                 #expect(reply.headers["allow"] == allowed)
                 #expect(reply.errorCode == "method_not_allowed")
@@ -251,12 +281,12 @@ struct AutomationTests {
 
     @Test("Busy Profiles get 409")
     func busyProfiles() async throws {
-        let backend = FakeBackend()
-        let profile = backend.add("Alpha", port: 9401)
+        let backend = try FakeBackend()
+        let profile = try backend.add("Alpha", port: 9401)
         backend.busy = [profile.id]
-        try await serve(backend) { port in
+        try await serveAutomation(backend) { port in
             for action in ["start", "stop"] {
-                let reply = await request(port, "POST", "/api/v1/profiles/\(profile.id)/\(action)")
+                let reply = await automationRequest(port, "POST", "/api/v1/profiles/\(profile.id)/\(action)")
                 #expect(reply.status == 409)
                 #expect(reply.errorCode == "busy")
             }
@@ -266,23 +296,23 @@ struct AutomationTests {
 
     @Test("Start and stop failures get 500 with the reason")
     func failures() async throws {
-        let backend = FakeBackend()
-        let profile = backend.add("Alpha", port: 9401)
-        try await serve(backend) { port in
+        let backend = try FakeBackend()
+        let profile = try backend.add("Alpha", port: 9401)
+        try await serveAutomation(backend) { port in
             backend.startError = ProfileError.invalid("调试端口 9401 已占用。")
-            let failed = await request(port, "POST", "/api/v1/profiles/\(profile.id)/start")
+            let failed = await automationRequest(port, "POST", "/api/v1/profiles/\(profile.id)/start")
             #expect(failed.status == 500)
             #expect(failed.errorCode == "start_failed")
             #expect((failed.json?["error"] as? [String: String])?["message"] == "调试端口 9401 已占用。")
 
             backend.startError = nil
             backend.endpointAvailable = false
-            let unverified = await request(port, "POST", "/api/v1/profiles/\(profile.id)/start")
+            let unverified = await automationRequest(port, "POST", "/api/v1/profiles/\(profile.id)/start")
             #expect(unverified.status == 500)
             #expect(unverified.errorCode == "start_failed")
 
             backend.stopError = ProfileError.invalid("浏览器尚未退出。")
-            let stuck = await request(port, "POST", "/api/v1/profiles/\(profile.id)/stop")
+            let stuck = await automationRequest(port, "POST", "/api/v1/profiles/\(profile.id)/stop")
             #expect(stuck.status == 500)
             #expect(stuck.errorCode == "stop_failed")
             #expect((stuck.json?["error"] as? [String: String])?["message"] == "浏览器尚未退出。")
@@ -291,12 +321,12 @@ struct AutomationTests {
 
     @Test("A running Profile whose debug port is not ready is reported, never started again")
     func runningWithoutEndpoint() async throws {
-        let backend = FakeBackend()
-        let profile = backend.add("Alpha", port: 9402)
+        let backend = try FakeBackend()
+        let profile = try backend.add("Alpha", port: 9402)
         backend.states[profile.id] = .running(pid: 42, port: 9402, debugReady: false)
         backend.endpointAvailable = false
-        try await serve(backend) { port in
-            let pending = await request(port, "POST", "/api/v1/profiles/\(profile.id)/start")
+        try await serveAutomation(backend) { port in
+            let pending = await automationRequest(port, "POST", "/api/v1/profiles/\(profile.id)/start")
             #expect(pending.status == 503)
             #expect(pending.errorCode == "unavailable")
             #expect(backend.started.isEmpty)
@@ -304,7 +334,7 @@ struct AutomationTests {
             // The browser has gone away since the window last refreshed: the API starts it.
             backend.refreshedStates[profile.id] = .stopped
             backend.endpointAvailable = true
-            let restarted = await request(port, "POST", "/api/v1/profiles/\(profile.id)/start")
+            let restarted = await automationRequest(port, "POST", "/api/v1/profiles/\(profile.id)/start")
             #expect(restarted.status == 200)
             #expect(backend.started == [profile.id])
         }
@@ -334,8 +364,12 @@ struct AutomationTests {
         }
         #expect(parse("GET / HTTP/1.1\r\nHost: a\r\n") == .incomplete)
         #expect(parse("POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\nab") == .incomplete)
-        let complete = AutomationHTTP.Request(method: "POST", target: "/x?y", headers: ["content-length": ["3"], "x-a": ["1", "2"]])
+        let complete = AutomationHTTP.Request(method: "POST", target: "/x?y", headers: ["content-length": ["3"], "x-a": ["1", "2"]],
+                                              body: Data("abc".utf8))
         #expect(parse("POST /x?y HTTP/1.1\r\nContent-Length: 3\r\nX-A:  1 \r\nx-a:2\r\n\r\nabc") == .request(complete))
+        // The body is exactly Content-Length bytes; without one it is empty.
+        #expect(parse("POST /x?y HTTP/1.1\r\nContent-Length: 3\r\nX-A:  1 \r\nx-a:2\r\n\r\nabcdef") == .request(complete))
+        #expect(parse("GET / HTTP/1.1\r\nHost: a\r\n\r\n") == .request(.init(method: "GET", target: "/", headers: ["host": ["a"]])))
 
         #expect(AutomationHTTP.constantTimeEqual(Array("abc".utf8), Array("abc".utf8)))
         #expect(!AutomationHTTP.constantTimeEqual(Array("abd".utf8), Array("abc".utf8)))
@@ -345,13 +379,13 @@ struct AutomationTests {
 
     @Test("Requests split across packets are read whole")
     func splitRequests() async throws {
-        let backend = FakeBackend()
-        let profile = backend.add("Alpha", port: 9401)
-        try await serve(backend) { port in
+        let backend = try FakeBackend()
+        let profile = try backend.add("Alpha", port: 9401)
+        try await serveAutomation(backend) { port in
             let text = "POST /api/v1/profiles/\(profile.id)/stop HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\n"
                 + "Authorization: Bearer \(Self.token)\r\nContent-Length: 4\r\n\r\n{}{}"
             let bytes = Data(text.utf8)
-            let reply = await send(port, [bytes.prefix(20), bytes.dropFirst(20).dropLast(3), bytes.suffix(3)])
+            let reply = await automationSend(port, [bytes.prefix(20), bytes.dropFirst(20).dropLast(3), bytes.suffix(3)])
             #expect(reply.status == 200)
             #expect(backend.stopped == [profile.id])
         }
@@ -359,21 +393,21 @@ struct AutomationTests {
 
     @Test("A new token applies without restarting the server")
     func updatesTheToken() async throws {
-        let backend = FakeBackend()
+        let backend = try FakeBackend()
         let server = AutomationServer(port: 0, token: Self.token, backend: backend)
         let port = try await server.start()
         let replacement = try AutomationConfiguration.newToken()
         server.update(token: replacement)
-        #expect(await request(port, "GET", "/api/v1/profiles").status == 401)
-        let reply = await request(port, "GET", "/api/v1/profiles",
-                                  headers: ["Host: 127.0.0.1:\(port)", "Authorization: Bearer \(replacement)"])
+        #expect(await automationRequest(port, "GET", "/api/v1/profiles").status == 401)
+        let reply = await automationRequest(port, "GET", "/api/v1/profiles",
+                                            headers: ["Host: 127.0.0.1:\(port)", "Authorization: Bearer \(replacement)"])
         #expect(reply.status == 200)
         await server.stop()
     }
 
     @Test("The server listens on 127.0.0.1 only and reports a taken port")
     func listensOnLoopbackOnly() async throws {
-        let backend = FakeBackend()
+        let backend = try FakeBackend()
         let server = AutomationServer(port: 0, token: Self.token, backend: backend)
         let port = try await server.start()
         #expect(port > 0)
@@ -392,7 +426,7 @@ struct AutomationTests {
         #expect(!(await RawClient.connects(to: "127.0.0.1", port: port)))
         let restarted = AutomationServer(port: port, token: Self.token, backend: backend)
         #expect(try await restarted.start() == port)
-        #expect(await request(port, "GET", "/api/v1/profiles").status == 200)
+        #expect(await automationRequest(port, "GET", "/api/v1/profiles").status == 200)
         await restarted.stop()
     }
 
@@ -409,21 +443,21 @@ struct AutomationTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try ProfileStore(directory: directory)
         var profile = try store.makeDraft()
-        profile.port = 9305
+        profile.port = testPort(9305)
         profile.proxy = ""
         try store.save(profile)
         let runtime = BrowserRuntime(engine: engine, storage: store.directory)
-        let backend = RuntimeBackend(store: store, runtime: runtime)
-        try await serve(backend) { port in
+        let backend = LaunchCoordinator(store: store, runtime: runtime)
+        try await serveAutomation(backend) { port in
             do {
-                let started = await request(port, "POST", "/api/v1/profiles/\(profile.id)/start")
+                let started = await automationRequest(port, "POST", "/api/v1/profiles/\(profile.id)/start")
                 #expect(started.status == 200)
                 #expect((started.json?["profile"] as? [String: Any])?["status"] as? String == "running")
                 let debug = try #require(started.json?["debug"] as? [String: String])
-                #expect(debug["http"] == "http://127.0.0.1:9305")
+                #expect(debug["http"] == "http://127.0.0.1:\(profile.port)")
                 let webSocket = try #require(debug["webSocket"])
-                #expect(webSocket.hasPrefix("ws://127.0.0.1:9305/devtools/browser/"))
-                let version = try #require(URL(string: "http://127.0.0.1:9305/json/version"))
+                #expect(webSocket.hasPrefix("ws://127.0.0.1:\(profile.port)/devtools/browser/"))
+                let version = try #require(URL(string: "http://127.0.0.1:\(profile.port)/json/version"))
                 let (data, _) = try await URLSession.shared.data(from: version)
                 let info = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
                 #expect(info["webSocketDebuggerUrl"] as? String == webSocket)
@@ -431,11 +465,11 @@ struct AutomationTests {
                     throw VerificationFailure.message("The browser is not running")
                 }
 
-                let again = await request(port, "POST", "/api/v1/profiles/\(profile.id)/start")
+                let again = await automationRequest(port, "POST", "/api/v1/profiles/\(profile.id)/start")
                 #expect((again.json?["debug"] as? [String: String])?["webSocket"] == webSocket)
-                #expect(runtime.status(for: profile.id) == .running(pid: pid, port: 9305, debugReady: true))
+                #expect(runtime.status(for: profile.id) == .running(pid: pid, port: profile.port, debugReady: true))
 
-                let stopped = await request(port, "POST", "/api/v1/profiles/\(profile.id)/stop")
+                let stopped = await automationRequest(port, "POST", "/api/v1/profiles/\(profile.id)/stop")
                 #expect(stopped.status == 200)
                 #expect((stopped.json?["profile"] as? [String: Any])?["status"] as? String == "stopped")
                 #expect(runtime.status(for: profile.id) == .stopped)
@@ -446,198 +480,79 @@ struct AutomationTests {
         }
     }
 
-    // MARK: Helpers
+    @Test(
+        "A Profile created over the API runs without windows, moves cookies, passes the self-check and survives the recycle bin",
+        .enabled(
+            if: testAppPath != nil,
+            "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test."
+        )
+    )
+    func managesARealBrowser() async throws {
+        let engine = try testEngine()
+        let directory = try scratchDirectory("automation-engine")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        let runtime = BrowserRuntime(engine: engine, storage: store.directory)
+        // Run from a test, Chromium cannot keep its key in the login keychain and so persists no cookies.
+        runtime.additionalArguments = ["--use-mock-keychain"]
+        let backend = LaunchCoordinator(store: store, runtime: runtime)
+        var created: UUID?
+        try await serveAutomation(backend) { port in
+            do {
+                let reply = await automationRequest(port, "POST", "/api/v1/profiles", json: [
+                    "name": "API 引擎", "proxy": "", "port": testPort(9380), "preset": "macos26-chrome",
+                ])
+                #expect(reply.status == 201, "\(reply.errorMessage ?? "")")
+                let id = try #require(((reply.json?["profile"] as? [String: Any])?["id"] as? String).flatMap { UUID(uuidString: $0) })
+                created = id
+                let path = "/api/v1/profiles/\(id)"
 
-    private func serve(_ backend: AutomationBackend, _ body: (Int) async throws -> Void) async throws {
-        let server = AutomationServer(port: 0, token: Self.token, backend: backend)
-        let port = try await server.start()
-        do {
-            try await body(port)
-        } catch {
-            await server.stop()
-            throw error
-        }
-        await server.stop()
-    }
+                let started = await automationRequest(port, "POST", path + "/start", json: ["headless": true])
+                #expect(started.status == 200, "\(started.errorMessage ?? "")")
+                guard case let .running(pid, _, _) = runtime.status(for: id) else {
+                    throw VerificationFailure.message("The browser is not running")
+                }
+                #expect(ProcessInspection.arguments(pid)?.contains("--headless=new") == true)
 
-    private func authorized(_ port: Int) -> [String] {
-        ["Host: 127.0.0.1:\(port)", "Authorization: Bearer \(Self.token)"]
-    }
+                let expiry = Date().timeIntervalSince1970 + 30 * 86400
+                let cookies = [["name": "api", "value": "1", "domain": ".example.com", "path": "/", "expirationDate": expiry,
+                                "secure": true, "httpOnly": false, "sameSite": "lax"]]
+                let imported = await automationRequest(port, "POST", path + "/cookies", json: cookies)
+                #expect(imported.status == 200, "\(imported.errorMessage ?? "")")
+                #expect(imported.json?["imported"] as? Int == 1)
+                #expect(imported.json?["startedHeadless"] as? Bool == false)
+                let exported = await automationRequest(port, "GET", path + "/cookies")
+                #expect((exported.json?["cookies"] as? [[String: Any]])?.contains { $0["name"] as? String == "api" } == true)
 
-    private func request(_ port: Int, _ method: String, _ path: String, headers: [String]? = nil,
-                         body: String = "") async -> RawClient.Reply {
-        var head = "\(method) \(path) HTTP/1.1\r\n" + (headers ?? authorized(port)).map { $0 + "\r\n" }.joined()
-        if !body.isEmpty { head += "Content-Length: \(body.utf8.count)\r\n" }
-        return await send(port, [Data((head + "\r\n" + body).utf8)])
-    }
+                let check = await automationRequest(port, "GET", path + "/selfcheck")
+                #expect(check.status == 200, "\(check.errorMessage ?? "")")
+                #expect(check.json?["profileID"] as? String == id.uuidString)
+                let items = check.json?["items"] as? [[String: Any]] ?? []
+                #expect(items.contains { $0["id"] as? String == "markers" && $0["status"] as? String == "pass" })
+                #expect(items.contains { $0["id"] as? String == "platform" && $0["status"] as? String == "pass" })
 
-    private func send(_ port: Int, _ chunks: [Data]) async -> RawClient.Reply {
-        await Task.detached { RawClient.exchange(port: port, chunks: chunks) }.value
-    }
+                let stopped = await automationRequest(port, "POST", path + "/stop")
+                #expect(stopped.status == 200, "\(stopped.errorMessage ?? "")")
+                #expect(runtime.status(for: id) == .stopped)
+                #expect(await automationRequest(port, "GET", path + "/selfcheck").errorCode == "not_running")
 
-}
+                // Stopped: the cookies are read from a browser started for it, which stops again.
+                let saved = await automationRequest(port, "GET", path + "/cookies")
+                #expect(saved.status == 200, "\(saved.errorMessage ?? "")")
+                #expect(saved.json?["startedHeadless"] as? Bool == true)
+                #expect((saved.json?["cookies"] as? [[String: Any]])?.contains { $0["name"] as? String == "api" } == true)
+                #expect(runtime.status(for: id) == .stopped)
 
-@MainActor
-private final class FakeBackend: AutomationBackend {
-    var profiles: [BrowserProfile] = []
-    var states: [UUID: BrowserRunState] = [:]
-    var busy: Set<UUID> = []
-    var startError: Error?
-    var stopError: Error?
-    var endpointAvailable = true
-    /// What a refresh finds on the system, when it differs from `states`.
-    var refreshedStates: [UUID: BrowserRunState] = [:]
-    private(set) var started: [UUID] = []
-    private(set) var stopped: [UUID] = []
-
-    @discardableResult
-    func add(_ name: String, port: Int, group: String = "") -> BrowserProfile {
-        let profile = BrowserProfile(name: name, port: port, fingerprint: FingerprintSettings(seed: port), group: group)
-        profiles.append(profile)
-        return profile
-    }
-
-    func state(for id: UUID) -> BrowserRunState { states[id] ?? .stopped }
-
-    func isBusy(_ id: UUID) -> Bool { busy.contains(id) }
-
-    func start(_ profile: BrowserProfile) async throws {
-        started.append(profile.id)
-        if let startError { throw startError }
-        states[profile.id] = .running(pid: 42, port: profile.port, debugReady: true)
-    }
-
-    func stop(_ id: UUID) async throws {
-        stopped.append(id)
-        if let stopError { throw stopError }
-        states[id] = .stopped
-    }
-
-    func refresh(_ id: UUID) async {
-        if let state = refreshedStates[id] { states[id] = state }
-    }
-
-    func devToolsEndpoint(for id: UUID) async -> URL? {
-        guard endpointAvailable, case let .running(_, port, true) = state(for: id) else { return nil }
-        return URL(string: "ws://127.0.0.1:\(port)/devtools/browser/\(id.uuidString.lowercased())")
-    }
-}
-
-/// The runtime alone, without the app's Workbench.
-@MainActor
-private final class RuntimeBackend: AutomationBackend {
-    let store: ProfileStore
-    let runtime: BrowserRuntime
-
-    init(store: ProfileStore, runtime: BrowserRuntime) {
-        self.store = store
-        self.runtime = runtime
-    }
-
-    var profiles: [BrowserProfile] { store.profiles }
-
-    func state(for id: UUID) -> BrowserRunState { runtime.status(for: id) }
-
-    func isBusy(_ id: UUID) -> Bool { [.starting, .stopping].contains(runtime.status(for: id)) }
-
-    func start(_ profile: BrowserProfile) async throws { try await runtime.start(profile) }
-
-    func stop(_ id: UUID) async throws { try await runtime.stop(id) }
-
-    func devToolsEndpoint(for id: UUID) async -> URL? { await runtime.devToolsEndpoint(for: id) }
-
-    func refresh(_ id: UUID) async { await runtime.refresh(store.profiles.filter { $0.id == id }) }
-}
-
-/// A blocking HTTP client over BSD sockets, so tests control every byte of the request.
-private enum RawClient {
-    struct Reply {
-        var status = 0
-        var headers: [String: String] = [:]
-        var body = Data()
-
-        var json: [String: Any]? { try? JSONSerialization.jsonObject(with: body) as? [String: Any] }
-        var errorCode: String? { (json?["error"] as? [String: Any])?["code"] as? String }
-    }
-
-    static func exchange(port: Int, chunks: [Data]) -> Reply {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { return Reply() }
-        defer { close(fd) }
-        var one: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
-        var timeout = timeval(tv_sec: 15, tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        var address = sockaddr_in()
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = UInt16(port).bigEndian
-        address.sin_addr.s_addr = UInt32(INADDR_LOOPBACK).bigEndian
-        let connected = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
-        }
-        guard connected == 0 else { return Reply() }
-        for (index, chunk) in chunks.enumerated() {
-            if index > 0 { usleep(100_000) }
-            var offset = 0
-            while offset < chunk.count {
-                let written = chunk.withUnsafeBytes { write(fd, $0.baseAddress! + offset, chunk.count - offset) }
-                if written <= 0 { break }
-                offset += written
+                #expect(await automationRequest(port, "DELETE", path).json?["result"] as? String == "trashed")
+                let bin = await automationRequest(port, "GET", "/api/v1/trash")
+                #expect((bin.json?["profiles"] as? [[String: Any]])?.map { $0["id"] as? String } == [id.uuidString])
+                #expect(await automationRequest(port, "POST", path + "/restore").status == 200)
+                #expect(store.profiles.map(\.id) == [id])
+                #expect(FileManager.default.fileExists(atPath: runtime.dataDirectory(for: id).path))
+            } catch {
+                if let created { try? await runtime.stop(created, force: true) }
+                throw error
             }
         }
-        var received = Data()
-        var buffer = [UInt8](repeating: 0, count: 65_536)
-        while true {
-            let count = read(fd, &buffer, buffer.count)
-            if count <= 0 { break }
-            received.append(contentsOf: buffer[0..<count])
-        }
-        guard let split = received.range(of: Data("\r\n\r\n".utf8)),
-              let head = String(data: received[..<split.lowerBound], encoding: .utf8) else { return Reply() }
-        var lines = head.components(separatedBy: "\r\n")
-        let status = lines.removeFirst().split(separator: " ")
-        var reply = Reply(status: status.count > 1 ? Int(status[1]) ?? 0 : 0, body: received[split.upperBound...])
-        for line in lines {
-            guard let colon = line.firstIndex(of: ":") else { continue }
-            reply.headers[line[..<colon].lowercased()] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-        }
-        return reply
-    }
-
-    static func connects(to host: String, port: Int) async -> Bool {
-        await Task.detached {
-            var hints = addrinfo()
-            hints.ai_flags = AI_NUMERICHOST
-            hints.ai_socktype = SOCK_STREAM
-            var result: UnsafeMutablePointer<addrinfo>?
-            guard getaddrinfo(host, String(port), &hints, &result) == 0, let info = result else { return false }
-            defer { freeaddrinfo(result) }
-            let fd = socket(info.pointee.ai_family, SOCK_STREAM, 0)
-            guard fd >= 0 else { return false }
-            defer { close(fd) }
-            return connect(fd, info.pointee.ai_addr, info.pointee.ai_addrlen) == 0
-        }.value
-    }
-
-    /// IPv4 addresses of this Mac other than loopback; the API must not answer on any of them.
-    /// Point-to-point tunnels are left out because VPN and proxy apps accept any connection there.
-    static func externalIPv4Addresses() -> [String] {
-        var list: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&list) == 0 else { return [] }
-        defer { freeifaddrs(list) }
-        var addresses: [String] = []
-        var cursor = list
-        while let entry = cursor {
-            cursor = entry.pointee.ifa_next
-            guard let address = entry.pointee.ifa_addr, address.pointee.sa_family == sa_family_t(AF_INET),
-                  entry.pointee.ifa_flags & UInt32(IFF_UP) != 0,
-                  entry.pointee.ifa_flags & UInt32(IFF_POINTOPOINT) == 0 else { continue }
-            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            guard getnameinfo(address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0
-            else { continue }
-            let text = String(cString: host)
-            if !text.hasPrefix("127.") { addresses.append(text) }
-        }
-        return addresses
     }
 }

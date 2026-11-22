@@ -4,41 +4,6 @@ import Foundation
 import SQLite3
 import Testing
 
-private func execute(_ sql: String, in directory: URL, binding values: [Any] = []) throws {
-    var database: OpaquePointer?
-    guard sqlite3_open(directory.appendingPathComponent("profiles.sqlite3").path, &database) == SQLITE_OK else {
-        throw ProfileError.invalid("open")
-    }
-    defer { sqlite3_close(database) }
-    var statement: OpaquePointer?
-    guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else { throw ProfileError.invalid("prepare") }
-    defer { sqlite3_finalize(statement) }
-    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    for (offset, value) in values.enumerated() {
-        let index = Int32(offset + 1)
-        switch value {
-        case let text as String: sqlite3_bind_text(statement, index, text, -1, transient)
-        case let number as Int: sqlite3_bind_int64(statement, index, Int64(number))
-        case let data as Data: _ = data.withUnsafeBytes { sqlite3_bind_blob(statement, index, $0.baseAddress, Int32($0.count), transient) }
-        default: throw ProfileError.invalid("bind")
-        }
-    }
-    guard sqlite3_step(statement) == SQLITE_DONE else { throw ProfileError.invalid("step") }
-}
-
-private func rowCount(_ table: String, in directory: URL) throws -> Int {
-    var database: OpaquePointer?
-    guard sqlite3_open(directory.appendingPathComponent("profiles.sqlite3").path, &database) == SQLITE_OK else {
-        throw ProfileError.invalid("open")
-    }
-    defer { sqlite3_close(database) }
-    var statement: OpaquePointer?
-    guard sqlite3_prepare_v2(database, "SELECT COUNT(*) FROM \(table)", -1, &statement, nil) == SQLITE_OK,
-          sqlite3_step(statement) == SQLITE_ROW else { throw ProfileError.invalid("count") }
-    defer { sqlite3_finalize(statement) }
-    return Int(sqlite3_column_int64(statement, 0))
-}
-
 private func message(_ error: Error?) -> String { error?.localizedDescription ?? "" }
 
 @MainActor
@@ -121,7 +86,7 @@ struct LibraryTests {
         #expect(!text.contains("proxy-secret") && !text.contains("zq-login") && !text.contains("passkey-secret"))
         let object = try #require(JSONSerialization.jsonObject(with: without) as? [String: Any])
         #expect(object["format"] as? String == "anybrowser-profiles")
-        #expect(object["version"] as? Int == 1)
+        #expect(object["version"] as? Int == 2)
         let entries = try #require(object["profiles"] as? [[String: Any]])
         #expect(entries.count == 2)
         #expect(entries[0]["passkeyBox"] == nil && entries[0]["group"] as? String == "G")
@@ -194,6 +159,64 @@ struct LibraryTests {
         #expect(stripped.profiles.first?.proxy == "https://proxy.example:443")
     }
 
+    @Test("Exports are version 2 with the time they were made, and hold exactly the Profiles given")
+    func exportFormat() throws {
+        let directory = try scratchDirectory("library")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        let created = try store.saveBatch(.init(count: 3))
+        let at = Date(timeIntervalSince1970: 1_800_000_000)
+        let data = try ProfileLibrary.export([created[2], created[0]], includeSecrets: false, exportedAt: at)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["version"] as? Int == 2)
+        #expect(object["exportedAt"] as? String == "2027-01-15T08:00:00Z")
+        let entries = try #require(object["profiles"] as? [[String: Any]])
+        #expect(entries.map { $0["name"] as? String } == [created[2].name, created[0].name])
+
+        // The store exports a selection in creation order and leaves out what is not saved.
+        let selected = try store.exportProfiles([created[2].id, created[0].id, UUID()], includeSecrets: false)
+        let names = try #require((JSONSerialization.jsonObject(with: selected) as? [String: Any])?["profiles"] as? [[String: Any]])
+            .map { $0["name"] as? String }
+        #expect(names == [created[0].name, created[2].name])
+    }
+
+    @Test("Imports read version 1 and 2 files and say why each skipped entry was skipped")
+    func importVersionsAndReasons() throws {
+        var tagged = BrowserProfile(name: "Tagged", port: 9420, fingerprint: FingerprintSettings(seed: 420))
+        tagged.tags = ["vip"]
+        tagged.accountStatus = .limited
+        let entry = try JSONSerialization.jsonObject(with: JSONEncoder().encode(tagged))
+        for version in [1, 2] {
+            let file = try JSONSerialization.data(withJSONObject: ["format": "anybrowser-profiles", "version": version, "profiles": [entry]])
+            let result = try ProfileLibrary.importProfiles(from: file, takenPorts: [], takenSeeds: [])
+            #expect(result.skipped == 0 && result.skippedReasons.isEmpty)
+            #expect(result.profiles.first?.tags == ["vip"] && result.profiles.first?.accountStatus == .limited)
+        }
+
+        var newer = try #require(entry as? [String: Any])
+        var fingerprint = try #require(newer["fingerprint"] as? [String: Any])
+        fingerprint["adjustments"] = ["webgpu"]
+        newer["fingerprint"] = fingerprint
+        let badPort = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
+            BrowserProfile(name: "Bad port", port: 80, fingerprint: FingerprintSettings(seed: 8))))
+        let full = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
+            BrowserProfile(name: "Full", port: 9421, fingerprint: FingerprintSettings(seed: 421))))
+        let file = try JSONSerialization.data(withJSONObject: [
+            "format": "anybrowser-profiles", "version": 2,
+            "profiles": [entry, ["name": 5], "not a profile", badPort, newer, full],
+        ])
+        let result = try ProfileLibrary.importProfiles(from: file, takenPorts: Set(1024...65535).subtracting([9420]), takenSeeds: [])
+        #expect(result.profiles.map(\.name) == ["Tagged"])
+        #expect(result.skipped == 5)
+        #expect(result.skippedReasons == [
+            "第 2 条：缺少字段 id。",
+            "第 3 条：不是 Profile 配置。",
+            "第 4 条：调试端口须为 1024–65535。",
+            "第 5 条：由更新版本写入：未知取值 webgpu",
+            "第 6 条：没有可分配的调试端口。",
+        ])
+    }
+
     @Test("Imports reject other files and versions")
     func importRejectsOtherFiles() throws {
         func attempt(_ object: Any) throws -> String {
@@ -205,7 +228,9 @@ struct LibraryTests {
         #expect(try attempt(["format": "something-else", "version": 1, "profiles": []]).contains("不是 AnyBrowser"))
         #expect(try attempt(["version": 1, "profiles": []]).contains("不是 AnyBrowser"))
         #expect(try attempt([["format": "anybrowser-profiles"]]).contains("不是 AnyBrowser"))
-        #expect(try attempt(["format": "anybrowser-profiles", "version": 2, "profiles": []]).contains("版本 2"))
+        #expect(try attempt(["format": "anybrowser-profiles", "version": 3, "profiles": []]).contains("版本 3）"))
+        #expect(try attempt(["format": "anybrowser-profiles", "version": 3, "profiles": []]).contains("升级"))
+        #expect(try attempt(["format": "anybrowser-profiles", "version": 0, "profiles": []]).contains("版本 0）。"))
         #expect(try attempt(["format": "anybrowser-profiles", "profiles": []]).contains("版本"))
         #expect(try attempt(["format": "anybrowser-profiles", "version": 1]).contains("缺少"))
         #expect(throws: ProfileError.self) {
@@ -335,6 +360,28 @@ struct LibraryTests {
         #expect(try ProfileStore(directory: directory).profiles == store.profiles)
     }
 
+    @Test("An import is saved in one transaction")
+    func importIsOneTransaction() throws {
+        let directory = try scratchDirectory("store")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        let entries = (0..<3).map { BrowserProfile(name: "I\($0)", port: 9600 + $0, fingerprint: FingerprintSettings(seed: 9600 + $0)) }
+        let file = try ProfileLibrary.export(entries, includeSecrets: true)
+        try execute("""
+            CREATE TRIGGER second_fails BEFORE INSERT ON profiles WHEN (SELECT COUNT(*) FROM profiles) >= 1
+            BEGIN SELECT RAISE(ABORT, 'full'); END
+            """, in: directory)
+        #expect(throws: ProfileError.self) { try store.importProfiles(from: file) }
+        #expect(store.profiles.isEmpty)
+        #expect(try rowCount("profiles", in: directory) == 0)
+
+        try execute("DROP TRIGGER second_fails", in: directory)
+        let result = try store.importProfiles(from: file)
+        #expect(result.profiles.map(\.name) == ["I0", "I1", "I2"])
+        #expect(store.profiles == result.profiles)
+        #expect(try ProfileStore(directory: directory).profiles == result.profiles)
+    }
+
     @Test("Imports point out accounts, extensions, start pages and proxies brought in from the file")
     func importReview() throws {
         func profile(_ port: Int, proxy: String = BrowserProfile.defaultProxy) -> BrowserProfile {
@@ -370,26 +417,13 @@ struct LibraryTests {
         #expect(ProfileLibrary.removalBlocker(state: .failed("x"), busy: false, batchRunning: false) == nil)
     }
 
-    @Test("Batches look each Profile up again before its turn and skip ones removed meanwhile")
-    func batchRunnerLooksUpEachProfile() async {
-        let first = BrowserProfile(name: "A", port: 9222, fingerprint: FingerprintSettings(seed: 1))
-        let removed = BrowserProfile(name: "B", port: 9223, fingerprint: FingerprintSettings(seed: 2))
-        let renamed = BrowserProfile(name: "C", port: 9224, fingerprint: FingerprintSettings(seed: 3))
-        let running = BrowserProfile(name: "D", port: 9225, fingerprint: FingerprintSettings(seed: 4))
-        var saved = [first.id: first, removed.id: removed, renamed.id: renamed, running.id: running]
-        var acted: [String] = []
-        let outcome = await ProfileLibrary.runBatch([first, removed, renamed, running].map(\.id),
-                                                    lookup: { saved[$0] }, applies: { $0.name != "D" }) { profile in
-            acted.append(profile.name)
-            if profile.id == first.id {
-                saved[removed.id] = nil
-                saved[renamed.id]?.name = "C2"
-                return "代理不可达"
-            }
-            throw ProfileError.invalid("端口已占用")
-        }
-        #expect(acted == ["A", "C2"])
-        #expect(outcome.succeeded == 1 && outcome.skipped == 2)
+    @Test("A batch's outcome is summed up in one notice")
+    func batchSummary() {
+        var outcome = ProfileLibrary.BatchOutcome()
+        outcome.succeeded = 1
+        outcome.skipped = 2
+        outcome.failures = ["C2：端口已占用"]
+        outcome.warnings = ["A：代理不可达"]
         #expect(outcome.summary(verb: "启动") == "已启动 1 个 Profile，跳过 2 个。1 个未能启动：C2：端口已占用。提醒：A：代理不可达")
     }
 
@@ -422,6 +456,41 @@ struct LibraryTests {
         #expect(ProfileLibrary.sections(all, query: "shop", sort: .created, lastLaunched: [:]).flatMap(\.profiles) == [beta, ten, two])
         #expect(ProfileLibrary.sections(all, query: "nothing", sort: .created, lastLaunched: [:]).isEmpty)
         #expect(ProfileLibrary.groups(all) == ["Ads", "Shop"])
+    }
+
+    @Test("Search terms narrow by tag, status and group; plain text also finds tags")
+    func searchTerms() {
+        func profile(_ name: String, port: Int, group: String = "", tags: [String] = [],
+                     status: AccountStatus? = nil, notes: String = "") -> BrowserProfile {
+            BrowserProfile(name: name, port: port, fingerprint: FingerprintSettings(seed: port), group: group,
+                           notes: notes, tags: tags, accountStatus: status)
+        }
+        let one = profile("Profile 1", port: 9222, group: "My Shop", tags: ["vip", "two words"], status: .banned)
+        let ten = profile("Profile 10", port: 9223, group: "Ads", tags: ["new"], status: .active)
+        let plain = profile("Profile 21", port: 9224, notes: "VIP 客户")
+        let all = [one, ten, plain]
+        func found(_ query: String) -> [String] {
+            all.filter { ProfileLibrary.matches($0, query: query) }.map(\.name)
+        }
+        #expect(found("tag:vip") == ["Profile 1"])
+        #expect(found("TAG:NEW") == ["Profile 10"])
+        #expect(found("tag:\"two words\"") == ["Profile 1"])
+        #expect(found("tag：vip") == ["Profile 1"])
+        #expect(found("status:banned") == ["Profile 1"])
+        #expect(found("status:已封禁") == ["Profile 1"])
+        #expect(found("status:正常") == ["Profile 10"])
+        #expect(found("status:limited").isEmpty)
+        #expect(found("group:shop") == ["Profile 1"])
+        #expect(found("group:\"my shop\" tag:vip") == ["Profile 1"])
+        #expect(found("group:ads tag:vip").isEmpty)
+        #expect(found("tag:vip 10").isEmpty)
+        #expect(found("tag: Profile 1") == ["Profile 1", "Profile 10"])
+        // Plain text still matches as typed, spaces included, and now finds tags too.
+        #expect(found("Profile 1") == ["Profile 1", "Profile 10"])
+        #expect(found("vip") == ["Profile 1", "Profile 21"])
+        #expect(found("VIP 客户") == ["Profile 21"])
+        #expect(found("weird:value").isEmpty)
+        #expect(ProfileLibrary.sections(all, query: "status:banned", sort: .created, lastLaunched: [:]).flatMap(\.profiles) == [one])
     }
 }
 

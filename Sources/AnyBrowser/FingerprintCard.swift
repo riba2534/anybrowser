@@ -9,7 +9,7 @@ struct FingerprintCard: View {
     @State private var showRandomizer = false
     @State private var showPresets = false
     @State private var randomFields: Set<FingerprintField> = [.seed]
-    @State private var regenerating = false
+    @State private var confirmingRegeneration = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -38,18 +38,27 @@ struct FingerprintCard: View {
                         randomizer
                     }
                     Button {
-                        regenerating = true
-                        Task {
-                            _ = await workbench.regenerateIdentity()
-                            regenerating = false
+                        // A Profile that was never saved has no site data to lose.
+                        if workbench.saved == nil {
+                            Task { await workbench.regenerateIdentity() }
+                        } else {
+                            confirmingRegeneration = true
                         }
                     } label: {
-                        Label(regenerating ? "生成中…" : "整套重新生成",
+                        Label(workbench.isRegenerating(draft.profile.id) ? "生成中…" : "整套重新生成",
                               systemImage: "arrow.triangle.2.circlepath")
                     }
                     .buttonStyle(WorkbenchButtonStyle(.neutral))
-                    .disabled(regenerating)
+                    .disabled(workbench.isBusy(draft.profile.id))
                     .accessibilityIdentifier("regenerate-identity")
+                    .alert("整套重新生成身份？", isPresented: $confirmingRegeneration) {
+                        Button("生成新身份", role: .destructive) {
+                            Task { await workbench.regenerateIdentity() }
+                        }
+                        Button("取消", role: .cancel) {}
+                    } message: {
+                        Text(regenerationWarning)
+                    }
                 }
                 fingerprintFields
                 identitySummary
@@ -67,9 +76,16 @@ struct FingerprintCard: View {
                             .accessibilityIdentifier("adjustment-\(adjustment.rawValue)")
                     }
                 }
-                Text("新建 Profile 会自动生成一套身份；「整套重新生成」会换种子、语言/时区、CPU 与字体表。屏幕、色深、设备内存与字体表需要引擎补丁，当前跟随本机。")
+                Text("新建 Profile 会自动生成一套身份；「整套重新生成」会换种子、语言/时区、CPU 与字体表，保存时清除此 Profile 的网站数据。设备内存和 WebGL 显卡由内核按种子决定。")
                     .font(.system(size: 12))
                     .foregroundColor(WorkbenchPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                Label("屏幕分辨率、色深、字体、语音列表和 WebGPU 显卡还没有内核开关：同一台 Mac 上的所有 Profile 在这些特征上都与本机相同，网站可以据此把它们关联起来。",
+                      systemImage: "desktopcomputer")
+                    .font(.system(size: 12))
+                    .foregroundColor(WorkbenchPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("host-shared-traits")
             }
         }
         .onChange(of: draft.profile.fingerprint.platform) { _ in
@@ -78,6 +94,17 @@ struct FingerprintCard: View {
         .onChange(of: draft.profile.fingerprint.brand) { brand in
             if brand == nil { draft.profile.fingerprint.brandVersion = "" }
         }
+    }
+
+    /// What saving a new identity deletes, and when: a running browser is cleared only once it has quit.
+    private var regenerationWarning: String {
+        let when = workbench.state(for: draft.profile.id).isRunning
+            ? "点击「保存并重启」后，浏览器先退出，再清除"
+            : "保存后立即清除"
+        return "将换掉种子、语言/时区、CPU 与字体表。\(when)此 Profile 的全部网站数据：Cookie、Local Storage 与 Session Storage、"
+            + "IndexedDB、Service Worker、HTTP 缓存和 Code Cache，所有网站都要重新登录；偏好设置，以及扩展存放在 chrome.storage、"
+            + "IndexedDB 和 Cache Storage 里的数据保留，扩展的 Local Storage 和文件系统（OPFS）数据会一并清除。"
+            + "放弃修改则不删除任何数据。"
     }
 
     private var fingerprintFields: some View {
@@ -91,7 +118,7 @@ struct FingerprintCard: View {
                 .disabled(draft.profile.fingerprint.platform == nil)
             EditorPicker(title: "浏览器品牌", identifier: "fingerprint-brand",
                          selection: $draft.profile.fingerprint.brand,
-                         choices: [(nil, "引擎默认")] + BrowserBrand.allCases.map { (Optional($0), $0.rawValue) })
+                         choices: [(nil, "引擎默认")] + BrowserBrand.allCases.map { (Optional($0), Self.title($0)) })
             EditorInput("品牌版本", placeholder: brandVersionPlaceholder,
                         value: $draft.profile.fingerprint.brandVersion, identifier: "brand-version")
                 .disabled(draft.profile.fingerprint.brand == nil)
@@ -106,8 +133,18 @@ struct FingerprintCard: View {
         }
     }
 
+    /// Opera and Vivaldi identities only change the UA string; the engine gives UA-CH no brand for them.
+    private static func title(_ brand: BrowserBrand) -> String {
+        switch brand {
+        case .opera, .vivaldi: return "\(brand.rawValue)（实验性）"
+        case .chrome, .edge: return brand.rawValue
+        }
+    }
+
+    /// What the engine reports for the draft as typed: memory and an unset CPU count come from the seed.
     private var identitySummary: some View {
-        let fingerprint = draft.profile.fingerprint
+        let fingerprint = draft.preview.fingerprint
+        let hardware = workbench.engineVersion.flatMap(EngineHardwareTable.forEngine) ?? .bundled
         let platform = fingerprint.platform.map {
             $0.title + (fingerprint.platformVersion.isEmpty ? "" : " \(fingerprint.platformVersion)")
         } ?? "引擎默认"
@@ -126,11 +163,13 @@ struct FingerprintCard: View {
         let fonts = fingerprint.fontProfile.map {
             $0.platform == .macOS ? "macOS 字体（宿主）" : "\($0.title)（待引擎）"
         } ?? "宿主字体"
-        let memory = fingerprint.deviceMemory.map { "\($0) GB" } ?? "不声明"
+        let memory = "\(hardware.deviceMemory(seed: fingerprint.seed)) GB"
+        let cpu = fingerprint.cpuCount.map { "\($0) 个逻辑 CPU" }
+            ?? "\(hardware.defaultCPUCount(seed: fingerprint.seed)) 个逻辑 CPU（由种子决定）"
         return VStack(alignment: .leading, spacing: 4) {
             Text("身份摘要")
                 .font(.system(size: 12, weight: .semibold))
-            Text("\(platform) · \(brand) · \(fingerprint.cpuCount.map(String.init) ?? "CPU 自动")")
+            Text("\(platform) · \(brand) · \(cpu)")
             Text("\(screen) · \(locale)")
             Text("\(fonts) · 设备内存 \(memory) · 种子 \(fingerprint.seed)")
         }
@@ -150,9 +189,9 @@ struct FingerprintCard: View {
 
     /// Hints only: a mismatch never blocks saving or launching.
     @ViewBuilder private var consistencyWarnings: some View {
-        let issues = draft.profile.consistencyIssues(engineVersion: workbench.engineVersion,
-                                                      exit: workbench.proxyCenter.exit(for: draft.profile.id,
-                                                                                       proxy: draft.profile.proxy))
+        let issues = draft.preview.consistencyIssues(engineVersion: workbench.engineVersion,
+                                                     exit: workbench.knownExit(for: draft),
+                                                     context: workbench.consistencyContext(for: draft.profile.id))
         if !issues.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(issues) { issue in
@@ -161,6 +200,13 @@ struct FingerprintCard: View {
                         .foregroundColor(WorkbenchPalette.amber)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("consistency-\(issue.id)")
+                    // Only the CPU count changes; the seed, and with it every other value, stays.
+                    if issue.id == "hardware-impossible",
+                       let cpus = draft.preview.fingerprint.suggestedCPUCount(engineVersion: workbench.engineVersion) {
+                        Button("改为 \(cpus) 个逻辑 CPU") { draft.cpuText = String(cpus) }
+                            .font(.system(size: 12))
+                            .accessibilityIdentifier("consistency-fix-cpu")
+                    }
                 }
             }
         }
@@ -171,7 +217,7 @@ struct FingerprintCard: View {
             Text("套用身份模板")
                 .font(.system(size: 16, weight: .semibold))
                 .accessibilityAddTraits(.isHeader)
-            Text("调整平台、版本、品牌、CPU 和改写项，保留种子、语言和时区。")
+            Text("调整平台、版本、品牌、CPU 和改写项，保留种子、语言和时区。标为实验性的模板在这版内核上无法完全自洽：字体、语音列表和 WebGPU 显卡仍是本机 macOS 的。")
                 .font(.system(size: 12))
                 .foregroundColor(WorkbenchPalette.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -181,6 +227,7 @@ struct FingerprintCard: View {
                     apply(preset)
                 } label: {
                     Text(preset.title)
+                        .foregroundColor(preset.isExperimental ? WorkbenchPalette.amber : WorkbenchPalette.ink)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(WorkbenchButtonStyle(.quiet))

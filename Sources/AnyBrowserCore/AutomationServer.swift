@@ -37,7 +37,10 @@ public struct AutomationConfiguration: Codable, Equatable, Sendable {
 }
 
 extension ProfileStore {
-    static let automationKey = "automation"
+    /// The `settings` row holding `AutomationConfiguration`; anybrowserctl reads it without a store.
+    nonisolated public static let automationKey = "automation"
+    /// The database file inside the store's directory.
+    nonisolated public static let databaseFileName = "profiles.sqlite3"
 
     /// The saved automation settings. Missing or unreadable settings are replaced by disabled
     /// defaults with a new token, so the token stays the same across launches.
@@ -56,18 +59,47 @@ extension ProfileStore {
     }
 }
 
-/// What the automation API reads and controls. Only authenticated requests reach it.
+/// What the automation API reads and controls. Only authenticated requests reach it. Launches go
+/// through the backend's rules (busy Profiles, launch slots); Profiles and proxies are saved to its
+/// store and library directly, as the window saves them.
 @MainActor
-public protocol AutomationBackend: AnyObject {
+public protocol AutomationBackend: AnyObject, Sendable {
     /// Saved Profiles; the API never sees unsaved edits.
     var profiles: [BrowserProfile] { get }
+    var store: ProfileStore { get }
+    var proxyLibrary: ProxyLibrary { get }
     func state(for id: UUID) -> BrowserRunState
     func isBusy(_ id: UUID) -> Bool
-    func start(_ profile: BrowserProfile) async throws
-    func stop(_ id: UUID) async throws
+    func hasPendingRestart(_ id: UUID) -> Bool
     func devToolsEndpoint(for id: UUID) async -> URL?
     /// Re-reads one Profile's browser state from the system.
     func refresh(_ id: UUID) async
+    func start(_ id: UUID, overrides: LaunchOverrides, fingerprintChange: FingerprintChangeHandling) async throws -> LaunchOutcome
+    func restart(_ id: UUID, overrides: LaunchOverrides, fingerprintChange: FingerprintChangeHandling) async throws -> LaunchOutcome
+    func stop(_ id: UUID, force: Bool) async throws
+    func launchLog(for id: UUID) -> String?
+    func lastExit(for id: UUID) -> (exit: ProxyExit, checkedAt: Date)?
+    func removalBlocker(_ id: UUID) -> String?
+    func trash(_ id: UUID) throws
+    func restore(_ id: UUID) throws
+    func remove(_ id: UUID, deletingBrowserData: Bool, recordRemoved: () -> Void) async throws -> String?
+    /// Where traffic through `proxy` leaves, for a new Profile's language and time zone; nil when unknown.
+    func lookUpExit(through proxy: String) async -> ProxyExit?
+    /// Looks up the exit of a library proxy, throwing why it failed.
+    func checkProxy(_ entry: ProxyEntry) async throws -> ProxyExit
+    /// Tiles the windows of the running Profiles in `ids` on the main display.
+    func arrangeWindows(_ ids: [UUID], columns: Int?) async throws -> [WindowArrangement.Outcome]
+}
+
+extension AutomationBackend {
+    /// Starts the saved configuration; a changed fingerprint only adds a warning.
+    public func start(_ profile: BrowserProfile) async throws {
+        _ = try await start(profile.id, overrides: LaunchOverrides(), fingerprintChange: .warn)
+    }
+
+    public func stop(_ id: UUID) async throws {
+        try await stop(id, force: false)
+    }
 }
 
 /// Serves the automation API on 127.0.0.1 with one request per connection. Network callbacks run
@@ -275,7 +307,7 @@ public final class AutomationServer: @unchecked Sendable {
     }
 }
 
-/// HTTP/1.1 parsing, the access checks and the routes of the automation API.
+/// HTTP/1.1 parsing and the access checks of the automation API; its routes are in AutomationAPI.swift.
 enum AutomationHTTP {
     /// Request line, headers and body together.
     static let limit = 65_536
@@ -285,6 +317,7 @@ enum AutomationHTTP {
         var target: String
         /// Lowercased name → values in arrival order.
         var headers: [String: [String]]
+        var body = Data()
     }
 
     struct Response: Equatable, Sendable {
@@ -295,6 +328,7 @@ enum AutomationHTTP {
         static func json<Value: Encodable>(_ status: Int, _ value: Value, headers: [String] = []) -> Response {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            encoder.dateEncodingStrategy = .iso8601
             return Response(status: status, body: (try? encoder.encode(value)) ?? Data("{}".utf8), headers: headers)
         }
 
@@ -303,7 +337,7 @@ enum AutomationHTTP {
         }
 
         func encoded() -> Data {
-            let reasons = [200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+            let reasons = [200: "OK", 201: "Created", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
                            405: "Method Not Allowed", 409: "Conflict", 413: "Content Too Large",
                            500: "Internal Server Error", 503: "Service Unavailable"]
             let lines = ["HTTP/1.1 \(status) \(reasons[status] ?? "Error")",
@@ -366,7 +400,9 @@ enum AutomationHTTP {
         }
         guard bodyLength <= limit - headLength else { return .reject(tooLarge) }
         guard data.count >= headLength + bodyLength else { return .incomplete }
-        return .request(Request(method: String(start[0]), target: String(start[1]), headers: headers))
+        let bodyStart = data.startIndex + headLength
+        return .request(Request(method: String(start[0]), target: String(start[1]), headers: headers,
+                                body: Data(data[bodyStart..<bodyStart + bodyLength])))
     }
 
     private static func isTokenCharacter(_ scalar: Unicode.Scalar) -> Bool {
@@ -402,131 +438,5 @@ enum AutomationHTTP {
         var difference: UInt8 = 0
         for (left, right) in zip(lhs, rhs) { difference |= left ^ right }
         return difference == 0
-    }
-
-    struct ProfileObject: Encodable {
-        var id: UUID
-        var name: String
-        var group: String
-        var port: Int
-        var status: String
-        var debugReady: Bool
-    }
-
-    struct DebugAddress: Encodable {
-        var http: String
-        var webSocket: String
-    }
-
-    private struct Started: Encodable {
-        var profile: ProfileObject
-        var debug: DebugAddress
-    }
-
-    static let notFound = Response.error(404, "not_found", "没有这个接口或 Profile。")
-    static let busy = Response.error(409, "busy", "该 Profile 正在执行另一个操作，请稍后重试。")
-
-    @MainActor
-    static func route(_ request: Request, backend: AutomationBackend) async -> Response {
-        let path = request.target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)[0]
-        let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
-        guard parts.count >= 4, parts[0].isEmpty, parts[1] == "api", parts[2] == "v1", parts[3] == "profiles" else {
-            return notFound
-        }
-        let action = parts.count == 6 ? parts[5] : nil
-        switch (parts.count, action) {
-        case (4, _):
-            guard request.method == "GET" else { return methodNotAllowed("GET") }
-            return .json(200, ["profiles": backend.profiles.map { object($0, backend: backend) }])
-        case (5, _):
-            guard request.method == "GET" else { return methodNotAllowed("GET") }
-            guard let profile = lookup(parts[4], backend: backend) else { return notFound }
-            return .json(200, ["profile": object(profile, backend: backend)])
-        case (6, "start"):
-            guard request.method == "POST" else { return methodNotAllowed("POST") }
-            guard let profile = lookup(parts[4], backend: backend) else { return notFound }
-            return await start(profile, backend: backend)
-        case (6, "stop"):
-            guard request.method == "POST" else { return methodNotAllowed("POST") }
-            guard let profile = lookup(parts[4], backend: backend) else { return notFound }
-            return await stop(profile, backend: backend)
-        default:
-            return notFound
-        }
-    }
-
-    private static func methodNotAllowed(_ allowed: String) -> Response {
-        .error(405, "method_not_allowed", "此接口只支持 \(allowed)。", headers: ["Allow: \(allowed)"])
-    }
-
-    @MainActor
-    private static func lookup(_ id: String, backend: AutomationBackend) -> BrowserProfile? {
-        guard let id = UUID(uuidString: id) else { return nil }
-        return backend.profiles.first { $0.id == id }
-    }
-
-    @MainActor
-    static func object(_ profile: BrowserProfile, backend: AutomationBackend) -> ProfileObject {
-        let state = backend.state(for: profile.id)
-        var object = ProfileObject(id: profile.id, name: profile.name, group: profile.group, port: profile.port,
-                                   status: "stopped", debugReady: false)
-        switch state {
-        case .stopped: object.status = "stopped"
-        case .starting: object.status = "starting"
-        case .stopping: object.status = "stopping"
-        case .failed: object.status = "failed"
-        case let .running(_, port, ready):
-            // A running browser keeps the port it was started with until it restarts.
-            object.status = "running"
-            object.port = port
-            object.debugReady = ready
-        }
-        return object
-    }
-
-    @MainActor
-    private static func start(_ profile: BrowserProfile, backend: AutomationBackend) async -> Response {
-        let id = profile.id
-        guard !backend.isBusy(id) else { return busy }
-        var endpoint: URL?
-        if case .running = backend.state(for: id) {
-            // Already running: report it, never start it again over its current configuration. The
-            // state may be stale (the window refreshes it), so re-read it before giving up.
-            endpoint = await backend.devToolsEndpoint(for: id)
-            if endpoint == nil {
-                await backend.refresh(id)
-                if case .running = backend.state(for: id) {
-                    return .error(503, "unavailable", "浏览器正在运行，但调试端口尚未就绪，请稍后重试。")
-                }
-            }
-        }
-        if endpoint == nil {
-            guard !backend.isBusy(id) else { return busy }
-            do {
-                try await backend.start(profile)
-            } catch {
-                return .error(500, "start_failed", error.localizedDescription)
-            }
-            endpoint = await backend.devToolsEndpoint(for: id)
-        }
-        guard let endpoint, let address = URLComponents(url: endpoint, resolvingAgainstBaseURL: false),
-              let host = address.host, let port = address.port else {
-            return .error(500, "start_failed", "浏览器已启动，但无法确认调试地址。")
-        }
-        let current = backend.profiles.first { $0.id == id } ?? profile
-        return .json(200, Started(profile: object(current, backend: backend),
-                                  debug: DebugAddress(http: "http://\(host):\(port)", webSocket: endpoint.absoluteString)))
-    }
-
-    @MainActor
-    private static func stop(_ profile: BrowserProfile, backend: AutomationBackend) async -> Response {
-        guard !backend.isBusy(profile.id) else { return busy }
-        do {
-            try await backend.stop(profile.id)
-        } catch {
-            return .error(500, "stop_failed", error.localizedDescription)
-        }
-        let current = backend.profiles.first { $0.id == profile.id } ?? profile
-        return .json(200, ["profile": object(current, backend: backend)])
     }
 }

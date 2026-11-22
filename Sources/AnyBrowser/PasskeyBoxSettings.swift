@@ -7,7 +7,8 @@ struct PasskeyBoxSettings: View {
     @Environment(\.dismiss) private var dismiss
     @State private var account: PasskeyBoxAccount
     @State private var error: String?
-    @State private var saving = false
+    /// The verification in flight; cancelling the sheet cancels it, and nothing is saved.
+    @State private var saving: Task<Void, Never>?
 
     init(workbench: Workbench) {
         self.workbench = workbench
@@ -16,8 +17,8 @@ struct PasskeyBoxSettings: View {
 
     var body: some View {
         WorkbenchSheet(title: "Passkey Box 账号",
-                       caption: "每个 Profile 启动时，内置的 Passkey Box 扩展会用这个账号自动登录。网站请求通行密钥时直接完成注册或登录，不需要点击确认。",
-                       width: 420) {
+                       caption: "每个 Profile 启动时，内置的 Passkey Box 扩展会用这个账号自动登录。网站请求通行密钥时直接完成注册或登录，不需要点击确认。这个账号里的通行密钥对所有使用它的 Profile 可见，但自动登录只使用本 Profile 注册或用过的那个；需要彻底分开的 Profile，在它的「Passkey Box 身份」里单独设置账号。",
+                       width: 440) {
             EditorInput("服务器地址", placeholder: PasskeyBoxAccount.defaultServerURL,
                         value: $account.serverURL, identifier: "passkey-box-server")
             EditorInput("用户名", placeholder: "Passkey Box 用户名",
@@ -34,27 +35,40 @@ struct PasskeyBoxSettings: View {
                         if error == nil { dismiss() }
                     }
                     .buttonStyle(WorkbenchButtonStyle(.quiet))
-                    .disabled(saving)
+                    .disabled(saving != nil)
                     .accessibilityIdentifier("passkey-box-remove")
                 }
                 Spacer()
-                Button("取消") { dismiss() }
+                Button("取消") { cancel() }
                     .buttonStyle(WorkbenchButtonStyle(.neutral))
                     .keyboardShortcut(.cancelAction)
-                Button(saving ? "正在验证…" : "验证并保存") {
-                    saving = true
-                    error = nil
-                    Task {
-                        error = await workbench.savePasskeyBox(account)
-                        saving = false
-                        if error == nil { dismiss() }
-                    }
-                }
-                .buttonStyle(WorkbenchButtonStyle(.primary))
-                .keyboardShortcut(.defaultAction)
-                .disabled(saving)
-                .accessibilityIdentifier("passkey-box-save")
+                    .accessibilityIdentifier("passkey-box-cancel")
+                Button(saving == nil ? "验证并保存" : "正在验证…") { save() }
+                    .buttonStyle(WorkbenchButtonStyle(.primary))
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(saving != nil)
+                    .accessibilityIdentifier("passkey-box-save")
             }
         }
+        // Closed some other way while verifying: the account must not be saved behind the user's back.
+        .onDisappear { saving?.cancel() }
+    }
+
+    private func save() {
+        error = nil
+        let candidate = account
+        saving = Task { @MainActor in
+            let failure = await workbench.savePasskeyBox(candidate)
+            guard !Task.isCancelled else { return }
+            saving = nil
+            error = failure
+            if failure == nil { dismiss() }
+        }
+    }
+
+    private func cancel() {
+        saving?.cancel()
+        saving = nil
+        dismiss()
     }
 }

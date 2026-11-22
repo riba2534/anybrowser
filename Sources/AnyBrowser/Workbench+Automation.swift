@@ -3,125 +3,6 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// The local automation API's lifecycle and settings.
-@MainActor
-final class AutomationController: ObservableObject, AutomationBackend {
-    enum Status: Equatable {
-        case stopped, starting
-        case listening(Int)
-        case failed(String)
-    }
-
-    @Published private(set) var configuration: AutomationConfiguration?
-    @Published private(set) var status: Status = .stopped
-    private weak var workbench: Workbench?
-    private var server: AutomationServer?
-    /// Bumped on every change so an outdated start or failure cannot overwrite a newer state.
-    private var generation = 0
-
-    func attach(to workbench: Workbench) {
-        self.workbench = workbench
-        guard let store = workbench.store else { return }
-        do {
-            let configuration = try store.automationConfiguration()
-            self.configuration = configuration
-            if configuration.enabled {
-                Task { await run(configuration) }
-            }
-        } catch {
-            status = .failed(error.localizedDescription)
-        }
-    }
-
-    /// Saves the settings and restarts or stops the server to match. Returns an error message
-    /// when the settings cannot be saved; a server that fails to listen shows up in `status`.
-    func save(_ draft: AutomationConfiguration) async -> String? {
-        guard let store = workbench?.store else { return Workbench.storeUnavailable }
-        let value: AutomationConfiguration
-        do {
-            value = try draft.validated()
-            try store.saveAutomationConfiguration(value)
-        } catch {
-            return error.localizedDescription
-        }
-        configuration = value
-        await run(value)
-        return nil
-    }
-
-    /// Replaces the token right away; the old token stops working immediately.
-    func regenerateToken() async -> String? {
-        guard var value = configuration else { return Workbench.storeUnavailable }
-        do {
-            value.token = try AutomationConfiguration.newToken()
-        } catch {
-            return error.localizedDescription
-        }
-        return await save(value)
-    }
-
-    private func run(_ configuration: AutomationConfiguration) async {
-        generation += 1
-        let current = generation
-        if let server, configuration.enabled, status == .listening(configuration.port) {
-            server.update(token: configuration.token)
-            return
-        }
-        let previous = server
-        server = nil
-        await previous?.stop()
-        guard current == generation else { return }
-        guard configuration.enabled else {
-            status = .stopped
-            return
-        }
-        let server = AutomationServer(port: configuration.port, token: configuration.token, backend: self) {
-            [weak self] message in
-            guard let self, self.generation == current else { return }
-            self.server = nil
-            self.status = .failed(message)
-        }
-        self.server = server
-        status = .starting
-        do {
-            let port = try await server.start()
-            guard current == generation else { return }
-            status = .listening(port)
-        } catch {
-            guard current == generation else { return }
-            self.server = nil
-            status = .failed(error.localizedDescription)
-        }
-    }
-
-    // MARK: AutomationBackend
-
-    var profiles: [BrowserProfile] { workbench?.profiles ?? [] }
-
-    func state(for id: UUID) -> BrowserRunState { workbench?.state(for: id) ?? .stopped }
-
-    func isBusy(_ id: UUID) -> Bool { workbench?.isBusy(id) ?? false }
-
-    func start(_ profile: BrowserProfile) async throws {
-        guard let workbench else { throw ProfileError.invalid("AnyBrowser 正在退出。") }
-        try await workbench.start(profile)
-    }
-
-    func stop(_ id: UUID) async throws {
-        guard let workbench else { throw ProfileError.invalid("AnyBrowser 正在退出。") }
-        try await workbench.stopProfile(id)
-    }
-
-    func devToolsEndpoint(for id: UUID) async -> URL? {
-        await workbench?.runtime?.devToolsEndpoint(for: id)
-    }
-
-    func refresh(_ id: UUID) async {
-        guard let workbench, let profile = workbench.profiles.first(where: { $0.id == id }) else { return }
-        await workbench.runtime?.refresh([profile])
-    }
-}
-
 /// Settings for the local automation API.
 struct AutomationSettings: View {
     @ObservedObject var workbench: Workbench
@@ -136,12 +17,12 @@ struct AutomationSettings: View {
 
     init(workbench: Workbench) {
         self.workbench = workbench
-        let saved = workbench.automation.configuration
+        let saved = workbench.automation?.configuration
         _enabled = State(initialValue: saved?.enabled ?? false)
         _portText = State(initialValue: String(saved?.port ?? AutomationConfiguration.defaultPort))
     }
 
-    private var automation: AutomationController { workbench.automation }
+    private var automation: AutomationHost? { workbench.automation }
 
     var body: some View {
         WorkbenchSheet(title: "自动化接口",
@@ -153,14 +34,16 @@ struct AutomationSettings: View {
                 .accessibilityIdentifier("automation-enabled")
             EditorInput("端口", placeholder: String(AutomationConfiguration.defaultPort), value: $portText,
                         identifier: "automation-port", numeric: true)
-            if let token = automation.configuration?.token {
+            if let token = automation?.configuration?.token {
                 tokenRow(token)
             }
-            statusRow
-            if let configuration = automation.configuration {
+            if let automation {
+                statusRow(automation.status)
+            }
+            if let configuration = automation?.configuration {
                 example(configuration)
             }
-            if let error {
+            if let error = error ?? (automation == nil ? "内置浏览器或本机 Profile 数据库不可用，无法提供自动化接口。" : nil) {
                 ErrorLabel(error)
             }
             HStack(spacing: 10) {
@@ -171,7 +54,7 @@ struct AutomationSettings: View {
                 Button(saving ? "正在保存…" : "保存") { save() }
                     .buttonStyle(WorkbenchButtonStyle(.primary))
                     .keyboardShortcut(.defaultAction)
-                    .disabled(saving || automation.configuration == nil)
+                    .disabled(saving || automation?.configuration == nil)
                     .accessibilityIdentifier("automation-save")
             }
         }
@@ -219,9 +102,9 @@ struct AutomationSettings: View {
         }
     }
 
-    private var statusRow: some View {
+    private func statusRow(_ status: AutomationHost.Status) -> some View {
         let (text, color): (String, Color) = {
-            switch automation.status {
+            switch status {
             case .stopped: return ("已停止", WorkbenchPalette.muted.opacity(0.65))
             case .starting: return ("正在启动…", WorkbenchPalette.amber)
             case .listening(let port): return ("监听中 · 127.0.0.1:\(port)", WorkbenchPalette.green)
@@ -291,7 +174,7 @@ struct AutomationSettings: View {
     }
 
     private func save() {
-        guard let saved = automation.configuration else { return }
+        guard let automation, let saved = automation.configuration else { return }
         guard let port = Int(portText.trimmingCharacters(in: .whitespaces)) else {
             error = "自动化接口端口须为 1024–65535。"
             return
@@ -305,6 +188,7 @@ struct AutomationSettings: View {
     }
 
     private func regenerate() {
+        guard let automation else { return }
         saving = true
         error = nil
         Task {

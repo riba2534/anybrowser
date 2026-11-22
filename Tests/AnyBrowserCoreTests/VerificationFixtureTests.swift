@@ -14,7 +14,7 @@ struct VerificationFixtureTests {
         defer { fixture.listener.cancel() }
 
         let runtime = BrowserRuntime(engine: engine, storage: root)
-        let profiles = [9307, 9308].map { port in
+        let profiles = [testPort(9307), testPort(9308)].map { port in
             BrowserProfile(name: "本地校验 \(port)", port: port, fingerprint: FingerprintSettings(seed: port), proxy: "")
         }
         let (first, second) = (profiles[0], profiles[1])

@@ -76,6 +76,25 @@ struct ProfileTests {
         #expect(arguments.contains("--fingerprint-screen-height=1080"))
         #expect(arguments.contains("--fingerprint-device-scale-factor=1"))
         #expect(arguments.contains("--disable-spoofing=font,audio,gpu"))
+        // Cocoa reads these two as the AppleLanguages default, which ICU follows.
+        #expect(Array(arguments.suffix(2)) == ["-AppleLanguages", "<array><string>zh-CN</string></array>"])
+    }
+
+    @Test("Device memory accepts what the engine reports and what older versions saved")
+    func deviceMemoryValues() throws {
+        var fingerprint = FingerprintSettings(seed: 88)
+        for value in [16, 32, 6, 1, 8] {
+            fingerprint.deviceMemory = value
+            #expect(throws: Never.self, "\(value)") {
+                try BrowserProfile(name: "M", port: 9301, fingerprint: fingerprint).validated()
+            }
+        }
+        for value in [64, 12, 0] {
+            fingerprint.deviceMemory = value
+            #expect(throws: (any Error).self, "\(value)") {
+                try BrowserProfile(name: "M", port: 9301, fingerprint: fingerprint).validated()
+            }
+        }
     }
 
     @Test("Proxy addresses are validated and legacy profiles decode")
@@ -101,7 +120,7 @@ struct ProfileTests {
         #expect(!reopened.launchArguments(userDataDirectory: home).contains { $0.hasPrefix("--proxy-server=") })
 
         for address in ["localhost", "localhost:0", "localhost:65536", "http://proxy:80/path",
-                        "socks5://name:secret@localhost:7890", "localhost:7890 --other-flag",
+                        "localhost:7890 --other-flag",
                         "http://proxy:80;direct://", "http://[not-an-ip]:7890", "http://-proxy:443"] {
             profile.proxy = address
             #expect(throws: (any Error).self, "\(address)") { try profile.validated() }
@@ -146,7 +165,8 @@ struct ProfileTests {
             #expect(changed.fingerprint.platform != nil)
             #expect(!changed.fingerprint.platformVersion.isEmpty)
             #expect(changed.fingerprint.brand != nil)
-            #expect(!changed.fingerprint.brandVersion.isEmpty)
+            // Edge keeps its version empty: an explicit one would be sent unreduced in the UA.
+            #expect(changed.fingerprint.brandVersion.isEmpty == (changed.fingerprint.brand == .edge))
             #expect(changed.fingerprint.seed == draft.fingerprint.seed)
             #expect(throws: Never.self) { try changed.validated() }
         }

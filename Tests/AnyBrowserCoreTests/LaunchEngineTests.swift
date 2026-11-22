@@ -1,4 +1,4 @@
-import AnyBrowserCore
+@testable import AnyBrowserCore
 import Foundation
 import Testing
 
@@ -28,18 +28,25 @@ struct LaunchEngineTests {
         try Data("chrome.runtime.onInstalled.addListener(() => {});".utf8)
             .write(to: extensionDirectory.appendingPathComponent(worker))
 
-        var profile = BrowserProfile(name: "Launch options", port: 9302, fingerprint: FingerprintSettings(seed: 9302), proxy: "")
+        var profile = BrowserProfile(name: "Launch options", port: testPort(9302), fingerprint: FingerprintSettings(seed: 9302), proxy: "")
         profile.launch = LaunchOptions(startURLs: [page.url.absoluteString],
-                                       window: WindowLayout(width: 1000, height: 700, x: 60, y: 80),
+                                       // Small enough for the hosted runner's display, where a larger window is moved and shrunk.
+                                       window: WindowLayout(width: 800, height: 500, x: 60, y: 80),
                                        extensionDirectories: [extensionDirectory.path])
         try profile.launch.checkExtensionDirectories()
 
         let runtime = BrowserRuntime(engine: engine, storage: root.appendingPathComponent("Storage", isDirectory: true))
         try await runtime.start(profile)
         do {
+            // The start page opens over DevTools in the tab Chromium starts with, not from the arguments.
+            guard case let .running(pid, _, true) = runtime.status(for: profile.id) else {
+                throw VerificationFailure.message("Not running: \(runtime.status(for: profile.id))")
+            }
+            #expect(ProcessInspection.arguments(pid)?.contains(page.url.absoluteString) == false)
             let opened = try await waitForTarget(port: profile.port) {
                 $0["type"] as? String == "page" && $0["url"] as? String == page.url.absoluteString
             }
+            #expect(try await DevToolsPage.pageCount(port: profile.port) == 1)
             let extensionWorker = try await waitForTarget(port: profile.port) {
                 $0["type"] as? String == "service_worker"
                     && ($0["url"] as? String).map { $0.hasPrefix("chrome-extension://") && $0.hasSuffix("/" + worker) } == true
@@ -52,8 +59,8 @@ struct LaunchEngineTests {
             let targetID = try #require(opened["id"] as? String)
             let window = try await browser.send("Browser.getWindowForTarget", ["targetId": targetID])
             let bounds = try #require(window["bounds"] as? [String: Any])
-            #expect(bounds["width"] as? Int == 1000)
-            #expect(bounds["height"] as? Int == 700)
+            #expect(bounds["width"] as? Int == 800)
+            #expect(bounds["height"] as? Int == 500)
             #expect(bounds["left"] as? Int == 60)
             #expect(bounds["top"] as? Int == 80)
             try await runtime.stop(profile.id)
@@ -81,7 +88,7 @@ struct LaunchEngineTests {
             PasskeyBoxAccount(serverURL: "http://127.0.0.1:9", username: "alice-\(suffix)", password: "first"),
             PasskeyBoxAccount(serverURL: "http://127.0.0.1:9", username: "bob-\(suffix)", password: "second"),
         ]
-        let profiles = [9302, 9312].map {
+        let profiles = [testPort(9302), testPort(9312)].map {
             BrowserProfile(name: "Identity \($0)", port: $0, fingerprint: FingerprintSettings(seed: $0), proxy: "")
         }
 

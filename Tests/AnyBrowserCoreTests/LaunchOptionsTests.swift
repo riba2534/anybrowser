@@ -107,17 +107,18 @@ struct LaunchOptionsTests {
         }
     }
 
-    @Test("Window switches come first, then the start URLs")
+    @Test("Window and session switches are arguments; start URLs open later, over DevTools")
     func argumentOrder() {
         let urls = ["https://one.example/", "https://two.example/"]
         #expect(LaunchOptions(startURLs: urls, window: WindowLayout(width: 1280, height: 800, x: -20, y: 40)).arguments()
-            == ["--window-size=1280,800", "--window-position=-20,40"] + urls)
+            == ["--window-size=1280,800", "--window-position=-20,40"])
         #expect(LaunchOptions(window: WindowLayout(width: 1280, height: 800)).arguments() == ["--window-size=1280,800"])
-        #expect(LaunchOptions(startURLs: urls).arguments() == urls)
+        #expect(LaunchOptions(startURLs: urls).arguments().isEmpty)
+        #expect(LaunchOptions(startURLs: urls, restoreSession: true).arguments() == ["--restore-last-session"])
         #expect(LaunchOptions().arguments().isEmpty)
     }
 
-    @Test("Profiles pass start URLs last, after the extensions and window switches")
+    @Test("Profiles pass the window switches last, after the extensions, and no start URLs")
     func profileArguments() throws {
         var profile = BrowserProfile(name: "Launch", port: 9302, fingerprint: FingerprintSettings(seed: 11))
         profile.fingerprint.timeZone = "UTC"
@@ -134,8 +135,6 @@ struct LaunchOptionsTests {
         let load = try #require(arguments.firstIndex { $0.hasPrefix("--load-extension=") })
         #expect(arguments[load].hasSuffix(",/Ext/One"))
         #expect(arguments.firstIndex(of: "--timezone=UTC").map { $0 < load } == true)
-        #expect(Array(arguments[(load + 1)...]) == [
-            "--window-size=1000,700", "--window-position=10,20", "https://example.com/",
-        ])
+        #expect(Array(arguments[(load + 1)...]) == ["--window-size=1000,700", "--window-position=10,20"])
     }
 }
