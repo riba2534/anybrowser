@@ -30,7 +30,8 @@ struct LaunchEngineTests {
 
         var profile = BrowserProfile(name: "Launch options", port: testPort(9302), fingerprint: FingerprintSettings(seed: 9302), proxy: "")
         profile.launch = LaunchOptions(startURLs: [page.url.absoluteString],
-                                       window: WindowLayout(width: 1000, height: 700, x: 60, y: 80),
+                                       // Small enough for the hosted runner's display, where a larger window is moved and shrunk.
+                                       window: WindowLayout(width: 800, height: 500, x: 60, y: 80),
                                        extensionDirectories: [extensionDirectory.path])
         try profile.launch.checkExtensionDirectories()
 
@@ -58,8 +59,8 @@ struct LaunchEngineTests {
             let targetID = try #require(opened["id"] as? String)
             let window = try await browser.send("Browser.getWindowForTarget", ["targetId": targetID])
             let bounds = try #require(window["bounds"] as? [String: Any])
-            #expect(bounds["width"] as? Int == 1000)
-            #expect(bounds["height"] as? Int == 700)
+            #expect(bounds["width"] as? Int == 800)
+            #expect(bounds["height"] as? Int == 500)
             #expect(bounds["left"] as? Int == 60)
             #expect(bounds["top"] as? Int == 80)
             try await runtime.stop(profile.id)
