@@ -76,9 +76,15 @@ printf 'Building AnyBrowser for ARM64…\n'
 # shellcheck source=scripts/toolchain.sh
 source "$root/scripts/toolchain.sh"
 select_swiftui_sdk || fail "no installed SDK can compile SwiftUI; install Xcode"
-swift build --configuration release --arch arm64 --product AnyBrowser
+# The app, the proxy relay helper and the command-line client.
+products=(AnyBrowser AnyBrowserRelay anybrowserctl)
+for product in "${products[@]}"; do
+    swift build --configuration release --arch arm64 --product "$product"
+done
 bin_path="$(swift build --configuration release --arch arm64 --show-bin-path)"
-[[ "$(/usr/bin/lipo -archs "$bin_path/AnyBrowser")" == arm64 ]] || fail "SwiftPM did not produce an ARM64 executable"
+for product in "${products[@]}"; do
+    [[ "$(/usr/bin/lipo -archs "$bin_path/$product")" == arm64 ]] || fail "SwiftPM did not produce an ARM64 $product"
+done
 
 staging="$(mktemp -d "$root/dist/.anybrowser-stage.XXXXXX")"
 mount_dir="$staging/engine"
@@ -132,7 +138,10 @@ for size in 16 32 128 256 512; do
         --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 /usr/bin/iconutil -c icns "$iconset" -o "$contents/Resources/AnyBrowser.icns"
-/usr/bin/install -m 755 "$bin_path/AnyBrowser" "$contents/MacOS/AnyBrowser"
+# The helpers keep the ad-hoc signature the linker gave them; the bundle signature seals them.
+for product in "${products[@]}"; do
+    /usr/bin/install -m 755 "$bin_path/$product" "$contents/MacOS/$product"
+done
 /usr/bin/plutil -insert AnyBrowserEngineVersion -string "$engine_version" "$contents/Info.plist"
 /usr/bin/plutil -insert AnyBrowserEngineSHA256 -string "$engine_sha256" "$contents/Info.plist"
 /usr/bin/plutil -insert AnyBrowserPasskeyBoxVersion -string "$passkey_version" "$contents/Info.plist"
