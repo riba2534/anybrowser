@@ -23,6 +23,20 @@ public struct ConsistencyContext: Equatable, Sendable {
     }
 }
 
+extension FingerprintSettings {
+    /// The real CPU count closest to this one for the machine the seed selects, when the seed's
+    /// GPU and memory exist together and only the CPU count is off; fewer cores win a tie.
+    public func suggestedCPUCount(engineVersion: String?) -> Int? {
+        guard let platform, adjustments.contains(.gpu), platform != .linux,
+              let table = engineVersion.flatMap(EngineHardwareTable.forEngine),
+              let gpu = table.gpu(for: platform, seed: seed),
+              gpu.deviceMemory.contains(table.deviceMemory(seed: seed)) else { return nil }
+        let current = cpuCount ?? table.defaultCPUCount(seed: seed)
+        guard !gpu.cpuCounts.contains(current) else { return nil }
+        return gpu.cpuCounts.min { (abs($0 - current), $0) < (abs($1 - current), $1) }
+    }
+}
+
 extension BrowserProfile {
     /// Combinations a website could notice: versions ahead of the engine, platform and version
     /// mismatches, or a time zone and language that disagree with the proxy's exit.

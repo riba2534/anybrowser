@@ -199,6 +199,13 @@ struct FingerprintCard: View {
                         .foregroundColor(WorkbenchPalette.amber)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("consistency-\(issue.id)")
+                    // Only the CPU count changes; the seed, and with it every other value, stays.
+                    if issue.id == "hardware-impossible",
+                       let cpus = draft.preview.fingerprint.suggestedCPUCount(engineVersion: workbench.engineVersion) {
+                        Button("改为 \(cpus) 个逻辑 CPU") { draft.cpuText = String(cpus) }
+                            .font(.system(size: 12))
+                            .accessibilityIdentifier("consistency-fix-cpu")
+                    }
                 }
             }
         }
