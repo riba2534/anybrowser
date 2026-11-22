@@ -761,11 +761,24 @@ public final class BrowserRuntime: ObservableObject {
         let fd = open(url.path, O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw BrowserRuntimeError.message("无法锁定此 Profile 的资料目录。") }
         var metadata = stat()
-        guard fstat(fd, &metadata) == 0, metadata.st_uid == getuid(),
-              metadata.st_mode & S_IFMT == S_IFREG, flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+        guard fstat(fd, &metadata) == 0, metadata.st_uid == getuid(), metadata.st_mode & S_IFMT == S_IFREG else {
             close(fd)
             throw BrowserRuntimeError.message("此 Profile 正在执行另一个操作，请稍后重试。")
         }
+        // A process another thread is spawning holds a copy of a lock just released until it
+        // execs, which takes milliseconds; a real concurrent operation holds it far longer.
+        var waited: useconds_t = 0
+        while flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            guard errno == EWOULDBLOCK, waited < Self.lockRetryWindow else {
+                close(fd)
+                throw BrowserRuntimeError.message("此 Profile 正在执行另一个操作，请稍后重试。")
+            }
+            usleep(10_000)
+            waited += 10_000
+        }
         return fd
     }
+
+    /// How long `lockDirectory` waits for a lock that is about to be released, in microseconds.
+    static let lockRetryWindow: useconds_t = 250_000
 }
