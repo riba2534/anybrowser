@@ -55,6 +55,9 @@ extension LaunchCoordinator {
     private func runBatch(_ action: BatchProgress.Action, _ ids: [UUID], applies: @escaping (BrowserProfile) -> Bool,
                           perform: @escaping (BrowserProfile) async throws -> [String]) async throws -> BatchReport {
         guard batch == nil else { throw ProfileError.invalid("另一个批量操作正在进行，请等它完成或取消。") }
+        guard archiving.isEmpty, restoreBaseline == nil else {
+            throw ProfileError.invalid("完整备份或恢复正在进行，请等它完成。")
+        }
         var seen: Set<UUID> = []
         let ids = ids.filter { seen.insert($0).inserted }
         batch = BatchProgress(action: action, completed: 0, total: ids.count, canCancel: true)

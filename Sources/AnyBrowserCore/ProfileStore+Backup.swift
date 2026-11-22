@@ -167,7 +167,8 @@ extension ProfileStore {
         return folder
     }
 
-    nonisolated static func backups(in directory: URL) -> [URL] {
+    /// The database backups in a data directory, also when its database cannot be opened.
+    public nonisolated static func backups(in directory: URL) -> [URL] {
         let folder = directory.appendingPathComponent("Backups", isDirectory: true)
         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
         return names.filter { $0.hasSuffix(".sqlite3") && backupDate(folder.appendingPathComponent($0)) != nil }
