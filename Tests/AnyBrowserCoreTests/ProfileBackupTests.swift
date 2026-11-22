@@ -280,7 +280,9 @@ struct ProfileBackupFlowTests {
         let fixture = try FakeEngineFixture("backup-stopped")
         let store = try ProfileStore(directory: fixture.storage)
         var saved = fixture.profile(port: 17400)
-        saved.proxy = "http://user:secret@127.0.0.1:17499"
+        // Credentials would need the relay helper, which the fake engine lacks; the manifest test
+        // above covers secrets in the package.
+        saved.proxy = "http://127.0.0.1:17499"
         try store.save(saved)
         saved = store.profiles[0]
         try store.savePasskeyBoxAccount(PasskeyBoxAccount(serverURL: "https://passkeys.example", username: "global", password: "pw"))
@@ -321,7 +323,7 @@ struct ProfileBackupFlowTests {
             try ProfileBackup.unpack(file, into: unpacked)
             let manifest = try ProfileBackup.readManifest(in: unpacked, name: "backup.anybrowser")
             #expect(manifest.profiles == [Entry(id: saved.id, name: saved.name, cookies: 0, browserData: true, profile: saved)])
-            #expect(manifest.profiles[0].profile?.proxy == "http://user:secret@127.0.0.1:17499")
+            #expect(manifest.profiles[0].profile?.proxy == "http://127.0.0.1:17499")
             let packed = ProfileBackup.entryFolder(saved.id, in: unpacked).appendingPathComponent("Data")
             #expect(listing(packed) == ["Default", "Default/Local Storage", "Default/Local Storage/leveldb",
                                         "Default/Local Storage/leveldb/000003.log", "cdp.log"])

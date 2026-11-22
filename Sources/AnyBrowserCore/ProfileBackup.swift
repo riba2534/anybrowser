@@ -230,17 +230,11 @@ public enum ProfileBackup {
         }
     }
 
-    /// Stops a browser that a backup or restore started. A headless browser ignores the quit
-    /// request `stop` sends, so it is first told to close over DevTools, which quits it the way the
-    /// menu does and writes cookies set a moment ago to disk; `stop` then waits for it to exit. One
-    /// that does not exit in time is ended, which may lose those cookies; the warning says so.
+    /// Stops a browser that a backup or restore started; `stop` closes a headless one over DevTools,
+    /// which writes cookies set a moment ago to disk. One that does not exit in time is ended, which
+    /// may lose those cookies; the warning says so.
     @MainActor
     private static func stopLaunched(_ id: UUID, runtime: BrowserRuntime) async -> String? {
-        if let endpoint = await runtime.devToolsEndpoint(for: id), let client = try? DevToolsClient(endpoint: endpoint) {
-            // The browser may close the connection before it answers.
-            _ = try? await client.send("Browser.close")
-            client.close()
-        }
         // A second try covers a browser caught half way through exiting.
         for attempt in 0..<2 {
             do {
