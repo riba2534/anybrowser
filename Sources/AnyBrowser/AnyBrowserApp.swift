@@ -7,6 +7,7 @@ import SwiftUI
 @main
 @MainActor
 struct AnyBrowserApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var workbench: Workbench
 
     init() {
