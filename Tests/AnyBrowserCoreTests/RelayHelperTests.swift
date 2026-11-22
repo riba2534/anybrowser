@@ -90,11 +90,16 @@ struct RelayHelperTests {
         let browser = try sleeper()
         defer { browser.terminate() }
         let config = try fixture.writeConfig()
-        let (helper, _) = try launch(["--config", config.path, "--port-file", fixture.portFile.path,
-                                      "--watch-pid", String(browser.processIdentifier)])
+        let (helper, errors) = try launch(["--config", config.path, "--port-file", fixture.portFile.path,
+                                           "--watch-pid", String(browser.processIdentifier)])
         defer { if helper.isRunning { helper.terminate() } }
 
         let port = try await port(in: fixture.portFile)
+        // Failures are logged to standard error, which nobody reads once the app has quit.
+        try errors.fileHandleForReading.close()
+        #expect(await RelayClient.tunnel(port, to: "nowhere.test:443", payload: Data())?.status == 502)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(helper.isRunning)
         #expect(try permissions(fixture.portFile) == 0o600)
         let tunnel = try #require(await RelayClient.tunnel(port, to: "echo.test:7", payload: Data("helper".utf8)))
         #expect(tunnel.text == "echo:helper")

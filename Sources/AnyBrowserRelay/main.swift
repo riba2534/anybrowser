@@ -19,8 +19,15 @@ enum Exit: Int32 {
     case usage = 64, noInput = 66, unavailable = 69, cannotCreate = 73, config = 78
 }
 
+/// One line on standard error. Once the app has quit nobody may read it, and a failed write must not end the
+/// relay: FileHandle would raise an exception for it.
+func log(_ line: String) {
+    let bytes = Array("AnyBrowserRelay: \(line)\n".utf8)
+    _ = write(STDERR_FILENO, bytes, bytes.count)
+}
+
 func fail(_ code: Exit, _ message: String) -> Never {
-    FileHandle.standardError.write(Data("AnyBrowserRelay: \(message)\n".utf8))
+    log(message)
     exit(code.rawValue)
 }
 
@@ -99,17 +106,17 @@ final class FailureLog: @unchecked Sendable {
     private let lock = NSLock()
     private var last = ""
 
-    func write(_ failure: ProxyRelay.Failure, target: String) {
-        let line = "AnyBrowserRelay: \(target.isEmpty ? "" : "\(target) ")\(failure.message)\n"
+    func record(_ failure: ProxyRelay.Failure, target: String) {
+        let line = "\(target.isEmpty ? "" : "\(target) ")\(failure.message)"
         lock.lock()
         defer { lock.unlock() }
         guard line != last else { return }
         last = line
-        FileHandle.standardError.write(Data(line.utf8))
+        log(line)
     }
 }
-let log = FailureLog()
-relay.failureHandler = { log.write($0, target: $1) }
+let failures = FailureLog()
+relay.failureHandler = { failures.record($0, target: $1) }
 
 // Writes to a log pipe the app no longer reads must not end the process.
 signal(SIGPIPE, SIG_IGN)
@@ -178,7 +185,7 @@ Task {
             while let line = readLine() {
                 let words = line.split(separator: " ")
                 guard words.count == 2, words[0] == "watch", let pid = pid_t(words[1]), pid > 0 else {
-                    FileHandle.standardError.write(Data("AnyBrowserRelay: 无法识别的命令：\(line.prefix(80))\n".utf8))
+                    log("无法识别的命令：\(line.prefix(80))")
                     continue
                 }
                 DispatchQueue.main.async { watch(pid) }
