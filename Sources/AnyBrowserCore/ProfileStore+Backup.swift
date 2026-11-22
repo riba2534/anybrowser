@@ -89,9 +89,14 @@ extension ProfileStore {
         let database = root.appendingPathComponent("profiles.sqlite3")
         let unusable = ProfileError.invalid("备份文件「\(backup.lastPathComponent)」不是可用的 AnyBrowser 数据库。")
 
+        // NOFOLLOW only refuses a link as the file itself; a linked folder such as /tmp is resolved first.
+        let backupPath = realpath(backup.deletingLastPathComponent().path, nil).map { folder -> String in
+            defer { free(folder) }
+            return URL(fileURLWithPath: String(cString: folder)).appendingPathComponent(backup.lastPathComponent).path
+        } ?? backup.path
         var source: OpaquePointer?
         defer { sqlite3_close(source) }
-        guard sqlite3_open_v2(backup.path, &source, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK,
+        guard sqlite3_open_v2(backupPath, &source, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK,
               let source, check(source) else { throw unusable }
 
         let folder = try backupFolder(in: root)
@@ -167,7 +172,8 @@ extension ProfileStore {
         return folder
     }
 
-    nonisolated static func backups(in directory: URL) -> [URL] {
+    /// The database backups in a data directory, also when its database cannot be opened.
+    public nonisolated static func backups(in directory: URL) -> [URL] {
         let folder = directory.appendingPathComponent("Backups", isDirectory: true)
         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
         return names.filter { $0.hasSuffix(".sqlite3") && backupDate(folder.appendingPathComponent($0)) != nil }

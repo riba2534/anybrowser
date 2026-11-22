@@ -628,7 +628,7 @@ struct PortProbeTests {
         close(fd)
         // A parallel test inspecting this process's sockets can hold the closed one for a moment.
         var available = false
-        for _ in 0..<20 where !available {
+        for _ in 0..<100 where !available {
             available = ProcessInspection.portAvailable(port)
             if !available { try await Task.sleep(nanoseconds: 50_000_000) }
         }

@@ -372,18 +372,20 @@ struct ProxyTests {
     func preflightSignsIn() async throws {
         let stub = try await ProxyStub.start(credentials: "alice:secret") { _ in nil }
         defer { stub.stop() }
-        #expect(await ProxyProbe.preflight("http://alice:secret@127.0.0.1:\(stub.port)") == nil)
+        // The stubs answer at once; the generous timeouts only keep a loaded machine from reading
+        // a late answer as a slow proxy, which the preflight deliberately stays quiet about.
+        #expect(await ProxyProbe.preflight("http://alice:secret@127.0.0.1:\(stub.port)", timeout: 5) == nil)
         let tunnel = try #require(stub.requests.last)
         #expect(tunnel.method == "CONNECT" && tunnel.target == "ipinfo.io:443")
         #expect(tunnel.authorization == "Basic " + Data("alice:secret".utf8).base64EncodedString())
-        #expect(await ProxyProbe.preflight("127.0.0.1:\(stub.port):alice:wrong")
+        #expect(await ProxyProbe.preflight("127.0.0.1:\(stub.port):alice:wrong", timeout: 5)
             == "代理 http://127.0.0.1:\(stub.port) 拒绝了用户名或密码，浏览器将无法联网。请检查代理地址里的账号密码。")
 
         // SOCKS5 signs in before naming a destination, so a missing one costs nothing.
         let socks = try UpstreamSOCKSStub(username: "carol", password: "pw", route: { _ in nil })
         defer { socks.stop() }
-        #expect(await ProxyProbe.preflight("socks5://carol:pw@127.0.0.1:\(socks.port)") == nil)
-        #expect(await ProxyProbe.preflight("socks5://carol:nope@127.0.0.1:\(socks.port)")?.contains("拒绝了用户名或密码") == true)
+        #expect(await ProxyProbe.preflight("socks5://carol:pw@127.0.0.1:\(socks.port)", timeout: 5) == nil)
+        #expect(await ProxyProbe.preflight("socks5://carol:nope@127.0.0.1:\(socks.port)", timeout: 5)?.contains("拒绝了用户名或密码") == true)
 
         // A proxy that is slow to answer gets no warning within the time given.
         let silent = try SilentStub()

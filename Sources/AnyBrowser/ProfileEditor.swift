@@ -81,6 +81,15 @@ struct ProfileEditor: View {
                     .font(.system(size: 12))
                     .foregroundColor(WorkbenchPalette.danger)
                     .textSelection(.enabled)
+                if workbench.launchLogText(draft.profile.id) != nil {
+                    Button {
+                        workbench.showLaunchLog(draft.profile.id)
+                    } label: {
+                        Label("查看启动日志", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .buttonStyle(WorkbenchButtonStyle(.quiet))
+                    .accessibilityIdentifier("show-launch-log")
+                }
             }
         }
     }

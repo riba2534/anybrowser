@@ -16,6 +16,38 @@ final class Workbench: ObservableObject {
     struct Notice {
         var text: String
         var isError = false
+        /// A follow-up the banner offers.
+        var action: NoticeAction? = nil
+    }
+
+    enum NoticeAction: Equatable {
+        case showLaunchLog(UUID)
+    }
+
+    /// The selected Profile was saved elsewhere, in ways the draft does not show, while it holds edits.
+    struct ExternalChange: Equatable {
+        var id: UUID
+        var fields: Set<ProfileDraft.Field>
+    }
+
+    /// The Profile a sheet or confirmation is about.
+    struct ProfileSheet: Identifiable, Equatable {
+        var id: UUID
+    }
+
+    /// The self-check sheet: running, done or failed.
+    struct SelfCheckRun: Identifiable {
+        enum Phase {
+            case running
+            case finished(SelfCheckReport)
+            case failed(String)
+        }
+
+        var id: UUID
+        var name: String
+        var phase: Phase
+        /// The browser runs an older configuration than the saved one the report compares with.
+        var pendingRestart: Bool
     }
 
     /// A launch waiting for the user to decide what happens to the site data the old fingerprint left.
@@ -31,8 +63,24 @@ final class Workbench: ObservableObject {
     let coordinator: LaunchCoordinator?
     let engineVersion: String?
     let engineError: String?
-    @Published var draft: ProfileDraft?
+    @Published var draft: ProfileDraft? {
+        didSet {
+            // Another Profile, a clone or a new one: edits are now measured against it.
+            if draft?.profile.id != oldValue?.profile.id { resetDraftOrigin() }
+        }
+    }
+    /// What the draft started from; see `hasChanges`.
+    @Published private(set) var draftOrigin: DraftOrigin?
+    /// Set while the user decides between the draft's edits and changes saved elsewhere.
+    @Published private(set) var externalChange: ExternalChange?
     @Published var notice: Notice?
+    /// Running browsers, by pid, that did not quit when asked: they can be force-stopped.
+    @Published private(set) var stopTimeouts: [UUID: Int32] = [:]
+    @Published var pendingForceStop: ProfileSheet?
+    @Published var pendingCancelNew = false
+    @Published var launchLog: ProfileSheet?
+    @Published var selfCheck: SelfCheckRun?
+    @Published var showingSharedExtensions = false
     @Published var pendingDestination: Destination?
     @Published var pendingFingerprintLaunch: FingerprintLaunch?
     @Published var showingPasskeyBox = false
@@ -40,6 +88,10 @@ final class Workbench: ObservableObject {
     @Published var showingBatchCreate = false
     let proxyCenter = ProxyCenter()
     let library = LibraryModel()
+    let extensionShelf: ExtensionShelf
+    let engineFreshness = EngineFreshness()
+    /// The Profile selected before "新建 Profile", to go back to when the new one is cancelled.
+    private var selectionBeforeNew: UUID?
     /// Keeps this process the only AnyBrowser on the data directory for as long as it runs.
     private let instanceLock: InstanceLock?
     private var activationObserver: NSObjectProtocol?
@@ -81,7 +133,9 @@ final class Workbench: ObservableObject {
             engineError = nil
         }
 
+        extensionShelf = ExtensionShelf(storage: openedStore?.directory)
         draft = openedStore?.profiles.first.map(ProfileDraft.init)
+        draftOrigin = draft.map { DraftOrigin(saved: $0.profile) }
         if let openedStore {
             if openedStore.isReadOnly {
                 problems.append("本机 Profile 数据库由更新版本的 AnyBrowser 写入（数据库版本 \(openedStore.openedSchemaVersion)），"
@@ -98,14 +152,29 @@ final class Workbench: ObservableObject {
             notice = Notice(text: problems.joined(separator: "\n"), isError: true)
         }
 
-        var models = [proxyCenter.objectWillChange, library.objectWillChange]
+        var models = [proxyCenter.objectWillChange, library.objectWillChange, extensionShelf.objectWillChange,
+                      engineFreshness.objectWillChange]
         if let openedStore { models.append(openedStore.objectWillChange) }
         if let coordinator {
             models += [coordinator.objectWillChange, coordinator.runtime.objectWillChange,
-                       coordinator.automation.objectWillChange]
+                       coordinator.automation.objectWillChange, coordinator.proxyLibrary.objectWillChange]
         }
         for model in models {
             model.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &subscriptions)
+        }
+        // `profiles` publishes before it changes; look once the change is in.
+        openedStore?.$profiles.receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.followSavedChanges() }
+            .store(in: &subscriptions)
+        AppDelegate.workbench = self
+        Task { [weak self] in await self?.extensionShelf.reload() }
+        // Asked once at launch; the hourly look only sends a request once the day-long answer, or
+        // the hour after a failure, has run out.
+        Task { [weak self] in
+            while let freshness = self?.engineFreshness {
+                await freshness.refresh()
+                try? await Task.sleep(nanoseconds: 3600 * 1_000_000_000)
+            }
         }
         library.coordinator = coordinator
         if let instance, instance.lock != nil {
@@ -127,9 +196,92 @@ final class Workbench: ObservableObject {
     var saved: BrowserProfile? { profiles.first { $0.id == selectedID } }
     var automation: AutomationHost? { coordinator?.automation }
 
+    /// Whether the draft holds edits: a saved Profile's against what the store holds, a new one's
+    /// against the draft as generated, which by itself is no edit.
     var hasChanges: Bool {
         guard let draft else { return false }
-        return saved.map(ProfileDraft.init) != draft
+        guard let origin = draftOrigin, origin.id == draft.profile.id else {
+            return saved.map(ProfileDraft.init) != draft
+        }
+        return origin.hasChanges(draft, saved: saved)
+    }
+
+    var isNewDraft: Bool { draft != nil && saved == nil }
+
+    private func resetDraftOrigin() {
+        externalChange = nil
+        guard let draft else {
+            draftOrigin = nil
+            return
+        }
+        draftOrigin = saved.map { DraftOrigin(saved: $0) } ?? DraftOrigin(new: draft)
+    }
+
+    // MARK: Revert and changes saved elsewhere
+
+    /// Puts the saved configuration back into the editor; a new Profile is cancelled instead.
+    func revertDraft() {
+        guard let saved else { return requestCancelNew() }
+        draft = ProfileDraft(saved)
+        draftOrigin = DraftOrigin(saved: saved)
+        externalChange = nil
+        notice = Notice(text: "已还原为保存的配置。")
+    }
+
+    /// Asks first when the new Profile holds edits.
+    func requestCancelNew() {
+        guard isNewDraft else { return }
+        if hasChanges {
+            pendingCancelNew = true
+        } else {
+            cancelNewDraft()
+        }
+    }
+
+    /// Drops the new Profile and goes back to the one selected before.
+    func cancelNewDraft() {
+        pendingCancelNew = false
+        guard isNewDraft else { return }
+        let back = selectionBeforeNew.flatMap { id in profiles.first { $0.id == id } } ?? profiles.first
+        draft = back.map(ProfileDraft.init)
+        notice = nil
+    }
+
+    /// Keeps the editor in step when the selected Profile is saved elsewhere: by the automation
+    /// API, a batch action or a restore. Without edits the editor shows the new configuration;
+    /// with edits that do not already show the change, the user decides (`externalChange`).
+    private func followSavedChanges() {
+        guard let draft, let origin = draftOrigin, origin.id == draft.profile.id, origin.isSaved else { return }
+        guard let saved else {
+            // Moved to the recycle bin or removed, here or through the automation API. A removal
+            // here that picked another Profile itself never gets this far.
+            let edited = origin.hasChanges(draft, saved: nil)
+            let name = origin.draft.profile.name
+            self.draft = profiles.first.map(ProfileDraft.init)
+            notice = Notice(text: edited ? "「\(name)」已被移除，未保存的修改已丢弃。" : "「\(name)」已被移除。",
+                            isError: edited)
+            return
+        }
+        switch origin.sync(draft, with: saved) {
+        case .unchanged:
+            break
+        case .refreshed(let next), .absorbed(let next):
+            if next != draft { self.draft = next }
+            draftOrigin = DraftOrigin(saved: saved)
+            externalChange = nil
+        case .conflict(_, let unseen):
+            externalChange = ExternalChange(id: saved.id, fields: unseen)
+        }
+    }
+
+    /// "载入外部修改" replaces the draft with the saved Profile; "保留我的修改" keeps the edits on
+    /// top of it, taking the changes made elsewhere in the fields the draft did not edit.
+    func resolveExternalChange(loadingExternal: Bool) {
+        defer { externalChange = nil }
+        guard let draft, let origin = draftOrigin, let saved else { return }
+        self.draft = loadingExternal ? ProfileDraft(saved) : draft.rebased(from: origin.draft, onto: saved).merged
+        draftOrigin = DraftOrigin(saved: saved)
+        if loadingExternal { notice = Notice(text: "已载入外部修改。") }
     }
 
     func state(for id: UUID) -> BrowserRunState {
@@ -168,6 +320,8 @@ final class Workbench: ObservableObject {
     /// launch follows and deletes it before the browser starts; a running one's at the restart.
     @discardableResult
     func save(clearingSiteData: Bool = true) -> Bool {
+        // Saving over a change made elsewhere keeps the edits and what they did not touch.
+        if externalChange != nil { resolveExternalChange(loadingExternal: false) }
         guard let draft, let store else { return false }
         do {
             let value = try draft.validated()
@@ -177,7 +331,10 @@ final class Workbench: ObservableObject {
             } else {
                 try store.save(value)
             }
-            self.draft = ProfileDraft(store.profiles.first(where: { $0.id == value.id }) ?? value)
+            let stored = store.profiles.first(where: { $0.id == value.id }) ?? value
+            self.draft = ProfileDraft(stored)
+            draftOrigin = DraftOrigin(saved: stored)
+            extensionShelf.check(stored)
             if !draft.resetsSiteData {
                 notice = Notice(text: hasPendingRestart(value.id) ? "配置已保存，重启后应用。" : "配置已保存。")
             } else if state(for: value.id).isRunning {
@@ -284,6 +441,11 @@ final class Workbench: ObservableObject {
                 == proxy.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
         current.profile.fingerprint.apply(hint)
         self.draft = current
+        // Filled in for a Profile being created: not an edit of the user's.
+        if var origin = draftOrigin, !origin.isSaved, origin.id == id {
+            origin.draft.profile.fingerprint.apply(hint)
+            draftOrigin = origin
+        }
         if let country, !country.isEmpty {
             notice = Notice(text: "已按代理出口（\(country)）填写语言/时区。")
         }
@@ -335,6 +497,8 @@ final class Workbench: ObservableObject {
     private func launch(_ id: UUID, restart: Bool, fingerprintChange: FingerprintChangeHandling) async {
         guard let coordinator else { return }
         notice = nil
+        stopTimeouts[id] = nil
+        let earlierLog = coordinator.launchLog(for: id)
         do {
             let outcome = restart
                 ? try await coordinator.restart(id, fingerprintChange: fingerprintChange)
@@ -343,8 +507,12 @@ final class Workbench: ObservableObject {
                 notice = Notice(text: outcome.warnings.joined(separator: "\n"), isError: true)
             }
         } catch {
-            show(error)
+            // A launch refused before the browser started leaves the previous launch's log in place.
+            let log = coordinator.launchLog(for: id)
+            notice = Notice(text: error.localizedDescription, isError: true,
+                            action: log == nil || log == earlierLog ? nil : .showLaunchLog(id))
         }
+        if let profile = profiles.first(where: { $0.id == id }) { extensionShelf.check(profile) }
     }
 
     /// Warnings that arrived after the launch went ahead, such as an exit lookup that took longer.
@@ -353,21 +521,102 @@ final class Workbench: ObservableObject {
         notice = Notice(text: "「\(name)」：" + warnings.joined(separator: "\n"), isError: true)
     }
 
-    /// `force` kills a browser that did not quit within the timeout.
+    /// `force` kills a browser that did not quit within the timeout. A browser still there after
+    /// a stop failed can be force-stopped from then on.
     func stop(_ id: UUID, force: Bool = false) async {
         guard let coordinator, !isBusy(id) else { return }
         notice = nil
+        let pid = runningPID(id)
         do {
             try await coordinator.stop(id, force: force)
+            stopTimeouts[id] = nil
         } catch {
-            show(error)
+            guard !force, let pid, runningPID(id) == pid else { return show(error) }
+            stopTimeouts[id] = pid
+            notice = Notice(text: error.localizedDescription + "浏览器没有响应时，可以点击「强制停止」。", isError: true)
         }
+    }
+
+    /// Whether the running browser already failed to stop when asked.
+    func canForceStop(_ id: UUID) -> Bool {
+        guard let pid = runningPID(id) else { return false }
+        return stopTimeouts[id] == pid
+    }
+
+    private func runningPID(_ id: UUID) -> Int32? {
+        if case .running(let pid, _, _) = state(for: id) { return pid }
+        return nil
+    }
+
+    func showLaunchLog(_ id: UUID) {
+        launchLog = ProfileSheet(id: id)
+    }
+
+    /// The browser output of the Profile's latest launch from this AnyBrowser.
+    func launchLogText(_ id: UUID) -> String? {
+        coordinator?.launchLog(for: id)
+    }
+
+    // MARK: Self-check
+
+    /// Runs the self-check in the Profile's browser and shows the report in a sheet.
+    func runSelfCheck(_ id: UUID) async {
+        guard let coordinator, let profile = profiles.first(where: { $0.id == id }), state(for: id).isRunning else { return }
+        selfCheck = SelfCheckRun(id: id, name: profile.name, phase: .running, pendingRestart: hasPendingRestart(id))
+        let phase: SelfCheckRun.Phase
+        if let endpoint = await coordinator.devToolsEndpoint(for: id) {
+            do {
+                phase = .finished(try await SelfCheck.run(endpoint: endpoint, profile: profile,
+                                                          exit: coordinator.lastExit(for: id)?.exit))
+            } catch {
+                phase = .failed(error.localizedDescription)
+            }
+        } else {
+            phase = .failed("浏览器调试端口尚未就绪，请稍后重试。")
+        }
+        // Closed meanwhile, or another check started.
+        guard selfCheck?.id == id, case .running = selfCheck?.phase else { return }
+        selfCheck?.phase = phase
+    }
+
+    // MARK: Consistency
+
+    /// The facts about other Profiles and the engine the consistency hints use.
+    func consistencyContext(for id: UUID) -> ConsistencyContext {
+        var context = coordinator?.consistencyContext(for: id) ?? ConsistencyContext()
+        context.engineMajorsBehindStable = engineMajorsBehind
+        return context
+    }
+
+    /// How far the bundled engine is behind Chrome stable for Mac, once VersionHistory answered.
+    var engineMajorsBehind: Int? {
+        engineFreshness.majorsBehind(engine: engineMajor)
+    }
+
+    var engineMajor: Int {
+        engineVersion.flatMap { $0.split(separator: ".").first.flatMap { Int($0) } } ?? BundledVersions.engineMajor
+    }
+
+    /// The exit the draft's proxy leads to: checked in the editor, or else recorded for the saved
+    /// Profile while the draft keeps its proxy.
+    func knownExit(for draft: ProfileDraft) -> ProxyExit? {
+        let profile = draft.profile
+        if let exit = proxyCenter.exit(for: profile.id, proxy: profile.proxy) { return exit }
+        guard let saved = profiles.first(where: { $0.id == profile.id }),
+              Self.sameProxy(saved.proxy, profile.proxy) else { return nil }
+        return coordinator?.lastExit(for: profile.id)?.exit
+    }
+
+    static func sameProxy(_ one: String, _ other: String) -> Bool {
+        one.trimmingCharacters(in: .whitespacesAndNewlines) == other.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Brings the Profile's browser windows to the front.
     func showWindows(_ id: UUID) {
         guard coordinator?.activate(id) == true else {
-            notice = Notice(text: "无法切换到此 Profile 的浏览器窗口，请确认它正在运行。", isError: true)
+            notice = Notice(text: state(for: id).isRunning
+                ? "macOS 没有把此 Profile 的浏览器窗口切到前面，可以在程序坞或 ⌘-Tab 中切换。"
+                : "此 Profile 没有在运行。", isError: true)
             return
         }
     }
@@ -380,13 +629,15 @@ final class Workbench: ObservableObject {
         do {
             let value = try account.validated()
             try await value.verify()
+            // Cancelled from the sheet while the server answered: nothing is saved.
+            try Task.checkCancellation()
             try store.savePasskeyBoxAccount(value)
             notice = Notice(text: profiles.contains { state(for: $0.id).isRunning }
                 ? "Passkey Box 账号已保存，正在运行的 Profile 重启后生效。"
                 : "Passkey Box 账号已保存，启动 Profile 后自动登录。")
             return nil
         } catch {
-            return error.localizedDescription
+            return Task.isCancelled ? nil : error.localizedDescription
         }
     }
 
@@ -412,6 +663,7 @@ final class Workbench: ObservableObject {
         do {
             switch destination {
             case .new:
+                if saved != nil { selectionBeforeNew = selectedID }
                 draft = try store.map { try ProfileDraft($0.makeDraft()) }
                 alignNewProfileWithProxy()
             case .profile(let id):

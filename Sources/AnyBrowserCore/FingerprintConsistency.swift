@@ -160,9 +160,9 @@ extension BrowserProfile {
         if !context.profilesSharingExit.isEmpty {
             let names = context.profilesSharingExit
             let listed = names.prefix(3).map { "「\($0)」" }.joined(separator: "、")
-            let more = names.count > 3 ? " 等 \(names.count) 个 Profile" : ""
+            let more = names.count > 3 ? "等 \(names.count) 个 Profile " : ""
             issues.append(ConsistencyIssue(id: "exit-shared",
-                                           message: "与 \(listed)\(more)使用同一个出口 IP，网站可以据此把它们关联起来"))
+                                           message: "与\(listed)\(more)使用同一个出口 IP，网站可以据此把它们关联起来"))
         }
 
         guard let exit else { return issues }

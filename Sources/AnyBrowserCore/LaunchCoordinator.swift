@@ -41,6 +41,10 @@ public final class LaunchCoordinator: ObservableObject {
     @Published public internal(set) var regenerating: Set<UUID> = []
     /// The batch action in progress, if any.
     @Published public internal(set) var batch: BatchProgress?
+    /// Profiles a full backup is reading; they cannot be started, stopped or changed meanwhile.
+    @Published public internal(set) var archiving: Set<UUID> = []
+    /// The Profiles that existed when a restore began; every Profile it adds is busy until it ends.
+    @Published public internal(set) var restoreBaseline: Set<UUID>?
 
     /// How many browsers start at the same time, whoever asked; the others wait in turn. Each
     /// launch's readiness timeout only begins once it has a slot.
@@ -95,7 +99,10 @@ public final class LaunchCoordinator: ObservableObject {
     public func state(for id: UUID) -> BrowserRunState { runtime.status(for: id) }
 
     public func isBusy(_ id: UUID) -> Bool {
-        if launches.contains(id) || removing.contains(id) || regenerating.contains(id) { return true }
+        if launches.contains(id) || removing.contains(id) || regenerating.contains(id) || archiving.contains(id) {
+            return true
+        }
+        if let restoreBaseline, !restoreBaseline.contains(id) { return true }
         let state = runtime.status(for: id)
         return state == .starting || state == .stopping
     }

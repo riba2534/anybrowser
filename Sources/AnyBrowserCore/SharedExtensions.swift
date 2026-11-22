@@ -48,7 +48,8 @@ public enum SharedExtensions {
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    /// Copies an unpacked extension folder (with manifest.json at its top) into the library.
+    /// Copies an unpacked extension folder (with manifest.json at its top) into the library. Adding
+    /// one the library already holds returns that entry; see `duplicate(of:at:in:)`.
     @discardableResult
     public static func add(folder source: URL, in storage: URL) throws -> SharedExtension {
         let folder = source.resolvingSymlinksInPath()
@@ -63,7 +64,8 @@ public enum SharedExtensions {
     }
 
     /// Unpacks a CRX3 file into the library. The signature is not checked: the file is one the
-    /// user picked, and the browser loads the result as an unpacked extension either way.
+    /// user picked, and the browser loads the result as an unpacked extension either way. The same
+    /// CRX added again returns the existing entry.
     @discardableResult
     public static func add(crx file: URL, in storage: URL) throws -> SharedExtension {
         let limit = 256 << 20
@@ -172,7 +174,7 @@ public enum SharedExtensions {
     }
 
     /// Fills a hidden staging folder, checks it holds an extension and moves it into the library
-    /// under a free name.
+    /// under a free name; returns the existing entry instead when the library already holds it.
     private static func install(in storage: URL, fallbackName: String,
                                 fill: (URL) throws -> Void) throws -> SharedExtension {
         let root = try ProfileExtensions.prepare(root(in: storage))
@@ -181,6 +183,7 @@ public enum SharedExtensions {
             defer { try? FileManager.default.removeItem(at: staging) }
             try fill(staging)
             let manifest = try Manifest(in: staging)
+            if let existing = try duplicate(of: manifest, at: staging, in: root) { return existing }
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: staging.path)
             let base = folderName(for: manifest.name, fallback: fallbackName)
             for number in 1...1000 {
@@ -196,6 +199,63 @@ public enum SharedExtensions {
             }
             throw ProfileError.invalid("无法把扩展放入扩展库。")
         }
+    }
+
+    /// The entry that already holds the extension in `staging`, which is then not added again: one
+    /// with the same `key`, which gives the same extension ID, or without a key the same name,
+    /// version and files. The same key in another version is refused: both would load under one
+    /// ID, and replacing the files of an entry Profiles may be running is left to the user.
+    private static func duplicate(of manifest: Manifest, at staging: URL, in root: URL) throws -> SharedExtension? {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
+        var digest: Data?
+        for name in names.filter(LaunchOptions.isSharedExtensionName).sorted() {
+            let directory = root.appendingPathComponent(name, isDirectory: true)
+            guard let existing = try? Manifest(in: directory), existing.key == manifest.key else { continue }
+            let entry = SharedExtension(name: name, manifestName: existing.name, version: existing.version,
+                                        directory: directory, isValid: true)
+            if manifest.key != nil {
+                guard existing.version == manifest.version else {
+                    throw ProfileError.invalid("扩展库里已有这个扩展「\(name)」（版本 \(existing.version)）。"
+                        + "要换成版本 \(manifest.version)，请先在扩展库中删除旧版本，再重新添加。")
+                }
+                return entry
+            }
+            guard existing.name == manifest.name, existing.version == manifest.version else { continue }
+            digest = digest ?? contentDigest(of: staging)
+            if digest != nil, contentDigest(of: directory) == digest { return entry }
+        }
+        return nil
+    }
+
+    /// A digest of every file and link under `directory` with its relative path; nil when
+    /// something cannot be read. Finder's .DS_Store files do not count.
+    static func contentDigest(of directory: URL) -> Data? {
+        let base = directory.resolvingSymlinksInPath().path
+        guard let walker = FileManager.default.enumerator(atPath: base) else { return nil }
+        var entries: [(path: String, digest: Data)] = []
+        while let path = walker.nextObject() as? String {
+            guard (path as NSString).lastPathComponent != ".DS_Store" else { continue }
+            let full = base + "/" + path
+            var details = stat()
+            guard lstat(full, &details) == 0 else { return nil }
+            switch details.st_mode & S_IFMT {
+            case S_IFDIR:
+                continue
+            case S_IFLNK:
+                guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: full) else { return nil }
+                entries.append((path, Data(SHA256.hash(data: Data(("link:" + target).utf8)))))
+            case S_IFREG:
+                guard let data = FileManager.default.contents(atPath: full) else { return nil }
+                entries.append((path, Data(SHA256.hash(data: data))))
+            default:
+                return nil
+            }
+        }
+        var hash = SHA256()
+        for entry in entries.sorted(by: { $0.path < $1.path }) {
+            hash.update(data: Data(entry.path.utf8) + Data([0]) + entry.digest)
+        }
+        return Data(hash.finalize())
     }
 
     /// Runs `body` holding the library lock, so changes from other threads or processes wait.
@@ -297,6 +357,8 @@ public enum SharedExtensions {
 private struct Manifest {
     var name: String
     var version: String
+    /// The public key the extension ID comes from, when the manifest has one.
+    var key: String?
 
     init(in directory: URL) throws {
         let invalid = ProfileError.invalid("manifest.json 无效：须为包含 manifest_version、name 和 version 的 JSON 对象。")
@@ -306,6 +368,7 @@ private struct Manifest {
               let version = object["version"] as? String, !version.isEmpty else { throw invalid }
         self.name = Self.localized(name, manifest: object, in: directory)
         self.version = version
+        key = (object["key"] as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// manifest.json itself, not a link to one elsewhere.
