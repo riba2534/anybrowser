@@ -51,7 +51,8 @@ public struct ProxyEndpoint: Equatable, Sendable {
         guard !address.isEmpty else { return nil }
         guard address.utf8.count <= 512 else { throw invalidAddress }
 
-        let uri = address.contains("://") ? address : "http://\(address)"
+        let explicitScheme = address.contains("://")
+        let uri = explicitScheme ? address : "http://\(address)"
         guard let separator = uri.range(of: "://") else { throw invalidAddress }
         var scheme = uri[..<separator.lowerBound].lowercased()
         switch scheme {
@@ -69,9 +70,7 @@ public struct ProxyEndpoint: Equatable, Sendable {
         let fields = authority.split(separator: ":", omittingEmptySubsequences: false)
         let listed = fields.count >= 4 && !fields[0].hasPrefix("[") && !fields[0].contains("@")
             && Int(fields[1]).map { (1...65535).contains($0) } == true
-        // Read as user:password@host:port, such a line would need a password with an unencoded colon,
-        // which no URL is written with; so an @ in it belongs to the user name or password.
-        if listed {
+        func asListed() throws -> ProxyEndpoint {
             guard fields.count == 4 else {
                 throw ProfileError.invalid(
                     "用户名或密码含有冒号时无法按 主机:端口:用户名:密码 识别，请改写成 http://用户名:密码@主机:端口，并把其中的冒号写成 %3A。")
@@ -80,14 +79,29 @@ public struct ProxyEndpoint: Equatable, Sendable {
                                 credentials: try literalCredentials(fields[2], fields[3]),
                                 allowingSOCKSCredentials: allowingSOCKSCredentials)
         }
-        // The last @ ends the credentials: an @ inside them has to be written as %40.
-        guard let at = authority.lastIndex(of: "@") else {
-            return try endpoint(scheme: scheme, authority: authority, credentials: nil,
+        func asURL() throws -> ProxyEndpoint {
+            // The last @ ends the credentials: an @ inside them has to be written as %40.
+            guard let at = authority.lastIndex(of: "@") else {
+                return try endpoint(scheme: scheme, authority: authority, credentials: nil,
+                                    allowingSOCKSCredentials: allowingSOCKSCredentials)
+            }
+            return try endpoint(scheme: scheme, authority: authority[authority.index(after: at)...],
+                                credentials: try credentials(authority[..<at]),
                                 allowingSOCKSCredentials: allowingSOCKSCredentials)
         }
-        return try endpoint(scheme: scheme, authority: authority[authority.index(after: at)...],
-                            credentials: try credentials(authority[..<at]),
-                            allowingSOCKSCredentials: allowingSOCKSCredentials)
+        // A line written with a scheme is a URL, whose password may hold a colon; the provider form
+        // only applies when it is not one. Without a scheme the provider form wins: read as
+        // user:password@host:port it would need a password with an unencoded colon, so an @ in it
+        // belongs to the user name or password.
+        if explicitScheme {
+            do {
+                return try asURL()
+            } catch {
+                guard listed else { throw error }
+                return try asListed()
+            }
+        }
+        return try listed ? asListed() : asURL()
     }
 
     private static var invalidAddress: ProfileError {

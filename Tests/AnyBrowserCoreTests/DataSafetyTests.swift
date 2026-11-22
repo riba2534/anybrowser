@@ -184,6 +184,8 @@ struct DataSafetyTests {
             let exported = try await fixture.coordinator.exportBackup([profile.id], to: file)
             #expect(exported.profiles.first?.browserData == true)
             #expect(!fixture.store.pendingIdentityReset(profile.id))
+            // Cleared for the new identity, so its next launch does not ask to clear again.
+            #expect(fixture.store.lastLaunchFingerprint(profile.id) == regenerated.fingerprint)
             #expect(!fixture.exists(fixture.data(profile, "Default/Network/Cookies")))
             #expect(fixture.exists(fixture.data(profile, "Default/Preferences")))
 

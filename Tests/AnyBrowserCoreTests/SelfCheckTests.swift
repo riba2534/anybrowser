@@ -57,6 +57,27 @@ struct SelfCheckTests {
         #expect(report.item("date-string")?.observed == "Mitteleuropäische Normalzeit · Worker Mitteleuropäische Normalzeit · iframe Mitteleuropäische Normalzeit")
     }
 
+    @Test("A Profile language that reads as this Mac's locale is reported as undecidable, not as a pass")
+    func hostLocaleIsUndecidable() throws {
+        var chinese = try profile()
+        chinese.fingerprint.language = "zh-SG"
+        var seen = observation()
+        seen.main.locale = "zh-CN"
+        seen.worker?.locale = "zh-CN"
+        seen.frame?.locale = "zh-CN"
+        let onChineseMac = try #require(SelfCheck.report(for: chinese, exit: nil, observation: seen,
+                                                         hostLanguages: ["zh-Hans-CN"]).item("locale"))
+        #expect(onChineseMac.status == .info)
+        #expect(onChineseMac.note?.contains("无法据此判断") == true)
+        let onEnglishMac = try #require(SelfCheck.report(for: chinese, exit: nil, observation: seen,
+                                                         hostLanguages: ["en-US"]).item("locale"))
+        #expect(onEnglishMac.status == .pass && onEnglishMac.note == nil)
+        // A German Profile falling back to this Chinese Mac still fails.
+        let german = try #require(SelfCheck.report(for: try profile(), exit: nil, observation: seen,
+                                                   hostLanguages: ["zh-Hans-CN"]).item("locale"))
+        #expect(german.status == .fail)
+    }
+
     @Test("Each kind of leak fails its own item")
     func leaksFail() throws {
         var marked = observation()

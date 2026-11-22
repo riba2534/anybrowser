@@ -58,6 +58,10 @@ extension LaunchCoordinator {
         // Checked just above with nothing in between, so this is the on-disk clearing.
         try await runtime.clearSiteData(for: id)
         try store.setPendingIdentityReset(id, false)
+        // The site data now belongs to the new fingerprint, so its next launch has nothing to ask.
+        if let fingerprint = store.profiles.first(where: { $0.id == id })?.fingerprint {
+            store.recordLaunchFingerprint(id, fingerprint)
+        }
         return true
     }
 }

@@ -179,8 +179,10 @@ public enum SelfCheck {
 
     // MARK: Comparison
 
+    /// `hostLanguages` are this Mac's preferred languages, which a browser that lost
+    /// `-AppleLanguages` falls back to.
     static func report(for profile: BrowserProfile, exit: ProxyExit?, observation: SelfCheckObservation,
-                       checkedAt: Date = Date()) -> SelfCheckReport {
+                       checkedAt: Date = Date(), hostLanguages: [String] = Locale.preferredLanguages) -> SelfCheckReport {
         let fingerprint = profile.fingerprint
         let seen = observation.main
         let hints = observation.clientHints
@@ -189,7 +191,7 @@ public enum SelfCheck {
         func add(_ id: String, _ title: String, expected: String?, observed: String, _ status: SelfCheckReport.Status,
                  note: String? = nil) {
             items.append(.init(id: id, title: title, expected: expected, observed: observed, status: status,
-                               note: status == .fail ? note : nil))
+                               note: status == .pass ? nil : note))
         }
         func judge(_ ok: Bool) -> SelfCheckReport.Status { ok ? .pass : .fail }
 
@@ -295,13 +297,19 @@ public enum SelfCheck {
                       && observation.worker.map { $0.languages == expected } != false))
             let mapped = engineLocale(for: language)
             let localeOK = seen.locale == language || seen.locale == mapped
+            // When the Profile's language reads as the same locale as this Mac's, a browser that lost
+            // its language parameter looks exactly like one that kept it.
+            let indistinguishable = localeOK && mapped != nil && mapped == engineLocale(preferences: hostLanguages)
+            let realmsAgree = realms.allSatisfy { $0.1 == seen.locale }
             // A restart from inside the browser (chrome://restart, the settings page) rebuilds argv
             // without `-AppleLanguages`, so ICU falls back to this Mac's languages.
             add("locale", "Intl 默认语言",
                 expected: mapped.map { $0 == language ? language : "\(language)（Chromium 读作 \($0)）" } ?? language,
                 observed: ([seen.locale] + realms.map { "\($0.0) \($0.1)" }).joined(separator: " · "),
-                judge(localeOK && realms.allSatisfy { $0.1 == seen.locale }),
-                note: localeOK ? nil : "语言与 Profile 不一致：可能是浏览器自行重启过，请从 AnyBrowser 重启此 Profile")
+                !(localeOK && realmsAgree) ? .fail : indistinguishable ? .info : .pass,
+                note: !localeOK ? "语言与 Profile 不一致：可能是浏览器自行重启过，请从 AnyBrowser 重启此 Profile"
+                    : realmsAgree && indistinguishable
+                        ? "Profile 语言和本机语言在浏览器里都读作 \(mapped ?? language)，无法据此判断语言参数是否仍然生效" : nil)
             let zoneName = Self.zoneName(seen.dateString)
             add("date-string", "Date 字符串的时区名", expected: observation.expectedZoneName,
                 observed: ([zoneName ?? seen.dateString] + realms.map { "\($0.0) \(Self.zoneName($0.2) ?? $0.2)" })
@@ -372,7 +380,13 @@ public enum SelfCheck {
     /// here: en-AU and en-IN become en-GB, en-CA en-US, zh-MO zh-HK, pt-AO pt-PT, es-AR es-419,
     /// de-AT de, a language without a localization en. ICU then takes `es` as es-ES and `es-419` as es-MX.
     static func engineLocale(for language: String) -> String? {
-        guard let picked = Bundle.preferredLocalizations(from: engineLocalizations, forPreferences: [language]).first else {
+        engineLocale(preferences: [language])
+    }
+
+    /// The Intl locale for a list of preferred languages, as Cocoa picks among the engine's.
+    static func engineLocale(preferences: [String]) -> String? {
+        guard !preferences.isEmpty,
+              let picked = Bundle.preferredLocalizations(from: engineLocalizations, forPreferences: preferences).first else {
             return nil
         }
         switch picked {

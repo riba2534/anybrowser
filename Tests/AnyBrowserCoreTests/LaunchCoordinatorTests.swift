@@ -406,6 +406,8 @@ struct LaunchCoordinatorTests {
             try FileManager.default.removeItem(atPath: lock)
             #expect(try await fixture.coordinator.clearPendingSiteData(profile.id))
             #expect(!fixture.store.pendingIdentityReset(profile.id))
+            // The data left now belongs to the new identity, so the next launch has nothing to ask.
+            #expect(fixture.store.lastLaunchFingerprint(profile.id) == (try fixture.saved(profile)).fingerprint)
             #expect(!fixture.exists(fixture.data(profile, "Default/Network/Cookies")))
             #expect(!fixture.exists(fixture.runtime.cacheDirectory(for: profile.id)))
             #expect(fixture.exists(fixture.data(profile, "Default/Preferences")))

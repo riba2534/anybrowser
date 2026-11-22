@@ -147,8 +147,10 @@ public enum ProfileBackup {
                 do {
                     try await runtime.clearSiteData(for: id)
                     cleared = true
-                    // A mark that stays only makes the next launch delete the site data once more.
+                    // A mark that stays only makes the next launch delete the site data once more, and
+                    // the data now matches the new fingerprint, so the next launch must not ask again.
                     try? store.setPendingIdentityReset(id, false)
+                    store.recordLaunchFingerprint(id, profile.fingerprint)
                 } catch {
                     problem = "未能清除旧身份的网站数据，没有备份 Cookie 和浏览器资料：\(error.localizedDescription)"
                 }

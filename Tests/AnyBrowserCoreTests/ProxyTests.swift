@@ -60,6 +60,12 @@ struct ProxyTests {
         let socksListed = try ProxyEndpoint.parse("socks5://10.0.0.2:1080:alice:secret", allowingSOCKSCredentials: true)
         #expect(socksListed == ProxyEndpoint(scheme: "socks5", host: "10.0.0.2", port: 1080, username: "alice", password: "secret"))
         // An @ in such a line belongs to the credentials, even where user:password@host:port would also parse.
+        // With a scheme the line is a URL, whose password may hold a colon; without a URL reading the
+        // provider form still applies.
+        #expect(try ProxyEndpoint.parse("http://user:123:abc@host.com:8080")
+            == ProxyEndpoint(scheme: "http", host: "host.com", port: 8080, username: "user", password: "123:abc"))
+        #expect(try ProxyEndpoint.parse("socks5://gate.example.com:7000:alice:pw")
+            == ProxyEndpoint(scheme: "socks5", host: "gate.example.com", port: 7000, username: "alice", password: "pw"))
         #expect(try ProxyEndpoint.parse("gate.example.com:7000:alice@example.org:5555")
             == ProxyEndpoint(scheme: "http", host: "gate.example.com", port: 7000, username: "alice@example.org", password: "5555"))
         #expect(try ProxyEndpoint.parse("1.2.3.4:8080:user@x.y:80")
