@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import Foundation
 import SQLite3
 
@@ -30,14 +31,56 @@ public struct ProxyEntry: Identifiable, Equatable, Sendable {
     public var endpoint: ProxyEndpoint? { try? ProxyEndpoint.parse(url, allowingSOCKSCredentials: true) }
 }
 
-/// The last exit seen for a Profile, kept across launches of the app.
+/// The last exit seen for a Profile, kept across launches of the app. It holds only while the
+/// Profile keeps the proxy it was seen through.
 public struct ProfileExitRecord: Equatable, Sendable {
     public var exit: ProxyExit
     public var checkedAt: Date
+    /// `key(for:)` of the proxy the exit was seen through; nil when unknown, which holds for no proxy.
+    public var proxy: String?
 
-    public init(exit: ProxyExit, checkedAt: Date) {
+    public init(exit: ProxyExit, checkedAt: Date, proxy: String? = nil) {
         self.exit = exit
         self.checkedAt = checkedAt
+        self.proxy = proxy
+    }
+
+    /// Whether the exit was seen through `proxy`, a Profile's proxy address however it is written.
+    public func applies(to proxy: String) -> Bool {
+        self.proxy != nil && self.proxy == Self.key(for: proxy)
+    }
+
+    /// What a record keeps of a proxy address: the SHA-256 of the normalized address, credentials
+    /// included since providers pick the exit by user name, without storing the password again. An
+    /// empty address (no proxy) has a key too; nil for one that does not parse.
+    public static func key(for proxy: String) -> String? {
+        guard let address = try? ProxyEndpoint.parse(proxy, allowingSOCKSCredentials: true)?.url ?? "" else { return nil }
+        return SHA256.hash(data: Data(address.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// A `profile_exits.exit` value: the exit's JSON, with the key of the proxy it was seen through
+/// beside its fields. Rows written before the key was kept read back without one.
+private struct StoredExit: Codable {
+    var exit: ProxyExit
+    var proxy: String?
+
+    private enum Keys: String, CodingKey { case proxy }
+
+    init(exit: ProxyExit, proxy: String?) {
+        self.exit = exit
+        self.proxy = proxy
+    }
+
+    init(from decoder: Decoder) throws {
+        exit = try ProxyExit(from: decoder)
+        proxy = try decoder.container(keyedBy: Keys.self).decodeIfPresent(String.self, forKey: .proxy)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        try exit.encode(to: encoder)
+        var container = encoder.container(keyedBy: Keys.self)
+        try container.encodeIfPresent(proxy, forKey: .proxy)
     }
 }
 
@@ -63,8 +106,9 @@ public final class ProxyLibrary: ObservableObject {
         }
         Self.rows(in: store, "SELECT id, exit, checked_at FROM profile_exits") { row in
             if let text = sqlite3_column_text(row, 0), let id = UUID(uuidString: String(cString: text)),
-               let exit = Self.exit(row, column: 1) {
-                profileExits[id] = ProfileExitRecord(exit: exit, checkedAt: Date(timeIntervalSince1970: sqlite3_column_double(row, 2)))
+               let stored = Self.decoded(StoredExit.self, row, column: 1) {
+                let checked = Date(timeIntervalSince1970: sqlite3_column_double(row, 2))
+                profileExits[id] = ProfileExitRecord(exit: stored.exit, checkedAt: checked, proxy: stored.proxy)
             }
         }
     }
@@ -167,12 +211,18 @@ public final class ProxyLibrary: ObservableObject {
         return entries.first { $0.url == endpoint.url }
     }
 
-    public func lastExit(forProfile id: UUID) -> (exit: ProxyExit, checkedAt: Date)? {
-        profileExits[id].map { ($0.exit, $0.checkedAt) }
+    /// The exit last seen for a Profile through `proxy`, by default the proxy the Profile has now:
+    /// one seen through another proxy says nothing about this one.
+    public func lastExit(forProfile id: UUID, proxy: String? = nil) -> (exit: ProxyExit, checkedAt: Date)? {
+        guard let record = profileExits[id], let proxy = proxy ?? currentProxy(of: id),
+              record.applies(to: proxy) else { return nil }
+        return (record.exit, record.checkedAt)
     }
 
-    public func recordExit(_ exit: ProxyExit, forProfile id: UUID, at date: Date = Date()) throws {
-        let payload = try JSONEncoder().encode(exit)
+    /// Records the exit seen for a Profile through `proxy`, by default the proxy it has now.
+    public func recordExit(_ exit: ProxyExit, forProfile id: UUID, proxy: String? = nil, at date: Date = Date()) throws {
+        let key = (proxy ?? currentProxy(of: id)).flatMap(ProfileExitRecord.key(for:))
+        let payload = try JSONEncoder().encode(StoredExit(exit: exit, proxy: key))
         try run("""
             INSERT INTO profile_exits(id, exit, checked_at) VALUES(?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET exit=excluded.exit, checked_at=excluded.checked_at
@@ -181,7 +231,12 @@ public final class ProxyLibrary: ObservableObject {
                   sqlite3_bind_double(write, 3, Self.seconds(date)) == SQLITE_OK else { return SQLITE_ERROR }
             return payload.withUnsafeBytes { sqlite3_bind_blob(write, 2, $0.baseAddress, Int32($0.count), sqliteTransient) }
         }
-        profileExits[id] = ProfileExitRecord(exit: exit, checkedAt: Self.stored(date))
+        profileExits[id] = ProfileExitRecord(exit: exit, checkedAt: Self.stored(date), proxy: key)
+    }
+
+    /// The proxy address of a Profile of the store, in the recycle bin or not.
+    private func currentProxy(of id: UUID) -> String? {
+        (store.profiles.first { $0.id == id } ?? store.trashed.first { $0.id == id }?.profile)?.proxy
     }
 
     /// Drops what is known about a Profile's exit, for instance once the Profile is gone.
@@ -191,10 +246,14 @@ public final class ProxyLibrary: ObservableObject {
     }
 
     /// Other Profiles of the store whose last seen exit IP equals this Profile's, in store order.
-    /// Records left by Profiles that no longer exist are ignored.
+    /// Only exits seen through each Profile's present proxy count, and records left by Profiles
+    /// that no longer exist are ignored.
     public func profilesSharingExit(with id: UUID) -> [UUID] {
-        guard let ip = profileExits[id]?.exit.ip else { return [] }
-        return store.profiles.map(\.id).filter { $0 != id && profileExits[$0]?.exit.ip == ip }
+        guard let ip = lastExit(forProfile: id)?.exit.ip else { return [] }
+        return store.profiles.filter { profile in
+            guard profile.id != id, let record = profileExits[profile.id], record.exit.ip == ip else { return false }
+            return record.applies(to: profile.proxy)
+        }.map(\.id)
     }
 
     /// Times are kept to the millisecond, so that a value read back from the database equals the one
@@ -234,12 +293,12 @@ public final class ProxyLibrary: ObservableObject {
         return ProxyEntry(id: id, url: url, label: text(2) ?? "",
                           tags: (text(3) ?? "").split(separator: ",").map(String.init), note: text(4) ?? "",
                           createdAt: Date(timeIntervalSince1970: sqlite3_column_double(row, 5)),
-                          lastExit: exit(row, column: 6), lastCheckedAt: checked)
+                          lastExit: decoded(ProxyExit.self, row, column: 6), lastCheckedAt: checked)
     }
 
-    private static func exit(_ row: OpaquePointer, column: Int32) -> ProxyExit? {
+    private static func decoded<Value: Decodable>(_ type: Value.Type, _ row: OpaquePointer, column: Int32) -> Value? {
         guard let bytes = sqlite3_column_blob(row, column) else { return nil }
-        return try? JSONDecoder().decode(ProxyExit.self, from: Data(bytes: bytes, count: Int(sqlite3_column_bytes(row, column))))
+        return try? JSONDecoder().decode(type, from: Data(bytes: bytes, count: Int(sqlite3_column_bytes(row, column))))
     }
 
     private func write(_ entry: ProxyEntry) throws {
@@ -263,14 +322,17 @@ public final class ProxyLibrary: ObservableObject {
         }
     }
 
-    /// Prepares `sql`, lets `bind` fill in its parameters and runs it to completion.
+    /// Prepares `sql`, lets `bind` fill in its parameters and runs it to completion. Like the store's
+    /// own writes, it refuses a database a newer AnyBrowser wrote.
     private func run(_ sql: String, bind: (OpaquePointer) -> Int32) throws {
+        try store.requireWritable()
         let statement = try store.statement(sql)
         defer { sqlite3_finalize(statement) }
         guard bind(statement) == SQLITE_OK, sqlite3_step(statement) == SQLITE_DONE else { throw store.databaseError() }
     }
 
     private func transaction(_ body: () throws -> Void) throws {
+        try store.requireWritable()
         guard sqlite3_exec(store.database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw store.databaseError() }
         do {
             try body()

@@ -1,8 +1,8 @@
 import Foundation
 
 /// What the sidebar shows, worked out again only when one of its inputs changes: the Profiles,
-/// the search, the sort, the launch times or the recorded exits. The window redraws on every
-/// keystroke in the editor, which changes none of them.
+/// the search, the sort, the launch times, the recorded exits or the recycle bin. The window redraws
+/// on every keystroke in the editor, which changes none of them.
 @MainActor
 public final class LibraryIndex {
     public struct Inputs: Equatable {
@@ -11,14 +11,16 @@ public final class LibraryIndex {
         public var sort: ProfileLibrary.Sort
         public var lastLaunched: [UUID: Date]
         public var exits: [UUID: ProfileExitRecord]
+        public var trashed: [TrashedProfile]
 
         public init(profiles: [BrowserProfile], query: String, sort: ProfileLibrary.Sort,
-                    lastLaunched: [UUID: Date], exits: [UUID: ProfileExitRecord] = [:]) {
+                    lastLaunched: [UUID: Date], exits: [UUID: ProfileExitRecord] = [:], trashed: [TrashedProfile] = []) {
             self.profiles = profiles
             self.query = query
             self.sort = sort
             self.lastLaunched = lastLaunched
             self.exits = exits
+            self.trashed = trashed
         }
     }
 
@@ -29,11 +31,14 @@ public final class LibraryIndex {
     public private(set) var groups: [String] = []
     /// Tags in use, each once whatever its case, in display order.
     public private(set) var tags: [String] = []
+    /// Each Profile's recorded exit, while it keeps the proxy the exit was seen through.
+    public private(set) var exits: [UUID: ProfileExitRecord] = [:]
     /// For each Profile whose last exit IP other Profiles share, those Profiles in store order.
     public private(set) var sharedExits: [UUID: [UUID]] = [:]
     /// Each Profile's name, for naming the ones in `sharedExits`.
     public private(set) var names: [UUID: String] = [:]
-    /// The Profiles using each proxy, as `ProxyAssignment.users(of:)` lists them.
+    /// The Profiles using each proxy, as `ProxyAssignment.users(of:)` lists them, those in the
+    /// recycle bin after the others: restored, they take their proxy back.
     public private(set) var proxyUsers: [String: [UUID]] = [:]
     /// How many times the sections were worked out, for tests.
     public private(set) var computations = 0
@@ -55,10 +60,13 @@ public final class LibraryIndex {
             groups = ProfileLibrary.groups(inputs.profiles)
             tags = Self.tags(inputs.profiles)
             names = Dictionary(inputs.profiles.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
-            proxyUsers = ProxyAssignment.users(of: inputs.profiles)
+        }
+        if previous?.profiles != inputs.profiles || previous?.trashed != inputs.trashed {
+            proxyUsers = ProxyAssignment.users(of: inputs.profiles + inputs.trashed.map(\.profile))
         }
         if previous?.profiles != inputs.profiles || previous?.exits != inputs.exits {
-            sharedExits = Self.sharedExits(inputs.exits, among: inputs.profiles.map(\.id))
+            exits = Self.currentExits(inputs.exits, of: inputs.profiles)
+            sharedExits = Self.sharedExits(exits, among: inputs.profiles.map(\.id))
         }
     }
 
@@ -70,6 +78,16 @@ public final class LibraryIndex {
         var result: [String] = []
         for tag in lists.joined() where seen.insert(tag.lowercased()).inserted { result.append(tag) }
         return result.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    /// The records in `exits` of Profiles in `profiles` that were made through the proxy the
+    /// Profile has now, as `ProxyLibrary.lastExit(forProfile:)` takes them.
+    public static func currentExits(_ exits: [UUID: ProfileExitRecord], of profiles: [BrowserProfile]) -> [UUID: ProfileExitRecord] {
+        var current: [UUID: ProfileExitRecord] = [:]
+        for profile in profiles {
+            if let record = exits[profile.id], record.applies(to: profile.proxy) { current[profile.id] = record }
+        }
+        return current
     }
 
     /// Profiles grouped by the IP of their last exit, for each Profile in `ids` that shares it.

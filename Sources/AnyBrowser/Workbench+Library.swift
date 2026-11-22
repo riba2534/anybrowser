@@ -91,7 +91,7 @@ extension Workbench {
         return library.index.visibleIDs
     }
 
-    /// The saved Profiles using each proxy, by normalized address.
+    /// The saved Profiles using each proxy, by normalized address, those in the recycle bin included.
     var proxyUsers: [String: [UUID]] {
         refreshIndex()
         return library.index.proxyUsers
@@ -99,7 +99,8 @@ extension Workbench {
 
     private func refreshIndex() {
         library.index.update(.init(profiles: profiles, query: library.query, sort: library.sort,
-                                   lastLaunched: store?.lastLaunched ?? [:], exits: proxyLibrary?.profileExits ?? [:]))
+                                   lastLaunched: store?.lastLaunched ?? [:], exits: proxyLibrary?.profileExits ?? [:],
+                                   trashed: store?.trashed ?? []))
     }
 
     /// Saved Profiles picked for batch actions, in creation order.
@@ -113,8 +114,8 @@ extension Workbench {
     /// The country of the Profile's last exit, and the names of the other Profiles that left
     /// through the same IP.
     func exitSummary(for id: UUID) -> (country: String, ip: String, sharedWith: [String])? {
-        guard let record = proxyLibrary?.profileExits[id] else { return nil }
         refreshIndex()
+        guard let record = library.index.exits[id] else { return nil }
         let names = (library.index.sharedExits[id] ?? []).compactMap { library.index.names[$0] }
         return (record.exit.countryCode, record.exit.ip, names)
     }
