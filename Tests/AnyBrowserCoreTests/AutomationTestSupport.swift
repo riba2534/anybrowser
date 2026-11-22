@@ -41,7 +41,7 @@ func automationRequest(_ port: Int, _ method: String, _ path: String, json body:
 }
 
 func automationSend(_ port: Int, _ chunks: [Data]) async -> RawClient.Reply {
-    await Task.detached { RawClient.exchange(port: port, chunks: chunks) }.value
+    await onThread { RawClient.exchange(port: port, chunks: chunks) }
 }
 
 /// An automation backend for the HTTP layer: Profiles, the recycle bin and the proxy library are
@@ -234,7 +234,7 @@ enum RawClient {
     }
 
     static func connects(to host: String, port: Int) async -> Bool {
-        await Task.detached {
+        await onThread {
             var hints = addrinfo()
             hints.ai_flags = AI_NUMERICHOST
             hints.ai_socktype = SOCK_STREAM
@@ -245,7 +245,7 @@ enum RawClient {
             guard fd >= 0 else { return false }
             defer { close(fd) }
             return connect(fd, info.pointee.ai_addr, info.pointee.ai_addrlen) == 0
-        }.value
+        }
     }
 
     /// IPv4 addresses of this Mac other than loopback; the API must not answer on any of them.

@@ -11,7 +11,9 @@ import Testing
 /// The AnyBrowserRelay executable, built next to the test bundle.
 let relayHelperPath = builtProduct(RelayHelper.executableName)
 
-/// Runs blocking socket work on a thread of its own instead of the cooperative pool.
+/// Runs blocking work (sockets, child processes) on a thread of its own instead of the cooperative pool.
+/// Blocked there, a few waits take every thread of a small machine (the hosted runner has three),
+/// and the async work they wait for, such as a test server answering, can no longer run.
 func onThread<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
     await withCheckedContinuation { continuation in
         Thread.detachNewThread { continuation.resume(returning: body()) }

@@ -17,7 +17,7 @@ private struct ControlRun: Sendable {
     /// Runs off the main actor, which has to stay free to answer the API.
     static func run(_ arguments: [String], environment: [String: String], input: Data? = nil) async -> ControlRun {
         guard let path = controlPath else { return ControlRun(errors: "anybrowserctl is not built") }
-        return await Task.detached {
+        return await onThread {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: path)
             process.arguments = arguments
@@ -42,7 +42,7 @@ private struct ControlRun: Sendable {
             process.waitUntilExit()
             return ControlRun(status: process.terminationStatus, output: String(decoding: printed, as: UTF8.self),
                               errors: String(decoding: reported, as: UTF8.self))
-        }.value
+        }
     }
 }
 

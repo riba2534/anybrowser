@@ -53,7 +53,10 @@ struct IsolationProbeTests {
     private func expectPassed(_ report: SelfCheckReport, _ ids: [String], _ note: String) {
         for id in ids {
             let item = report.item(id)
-            #expect(item?.status == .pass, "\(note) \(id): \(String(describing: item))")
+            // A Profile language that reads as this Mac's own locale cannot be told from a lost
+            // -AppleLanguages, so the self-check reports it as info rather than a pass.
+            let undecidable = id == "locale" && item?.status == .info
+            #expect(item?.status == .pass || undecidable, "\(note) \(id): \(String(describing: item))")
         }
     }
 
