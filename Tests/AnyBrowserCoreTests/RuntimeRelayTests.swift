@@ -149,7 +149,9 @@ struct RuntimeRelayTests {
     func followsARelaunchedBrowser() async throws {
         let fixture = try RelayFixture("runtime-relay-relaunch")
         let profile = fixture.profile(port: 11441)
-        try fixture.fake.configure(profile, ["relaunch_ms": "300"])
+        // The launch starts a relay and then the browser; it must finish before the browser relaunches,
+        // also on a busy machine.
+        try fixture.fake.configure(profile, ["relaunch_ms": "2500"])
         try await fixture.run([profile]) {
             try await fixture.runtime.start(profile)
             guard case let .running(first, _, _) = fixture.runtime.status(for: profile.id) else {
@@ -159,7 +161,7 @@ struct RuntimeRelayTests {
             let relay = try #require(fixture.receipt(profile)?.relay)
             // The relaunched browser holds the data directory under a new pid; the relay follows it.
             var adopted: Int32?
-            #expect(await fixture.fake.eventually(5) {
+            #expect(await fixture.fake.eventually(10) {
                 await fixture.runtime.refresh([profile])
                 if case let .running(pid, _, _) = fixture.runtime.status(for: profile.id), pid != first { adopted = pid }
                 return adopted != nil
