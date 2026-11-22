@@ -17,6 +17,10 @@ import Foundation
 /// data directory is not copied, because Chromium is writing to its databases. Its entry says so
 /// in `warnings`; stopping it first gives a complete backup.
 ///
+/// A Profile saved with a new identity whose old site data has not been deleted yet
+/// (`ProfileStore.pendingIdentityReset`) has it deleted first when it is stopped. While its
+/// browser still runs with that data, it is backed up without cookies and data directory.
+///
 /// The file is not encrypted. It holds proxy passwords, Passkey Box accounts and cookies in clear
 /// and is written readable by the current user only.
 ///
@@ -131,6 +135,32 @@ public enum ProfileBackup {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         var cookies = Data("[]\n".utf8)
+        // A new identity was saved and the old one's site data is still there. A stopped Profile
+        // has it deleted now, as its next launch would; otherwise it stays out of the backup, which
+        // would bring it back under the new identity.
+        if store.pendingIdentityReset(id) {
+            var problem = "浏览器还在用旧身份的网站数据（重启后才清除），没有备份 Cookie 和浏览器资料。"
+            var cleared = false
+            switch runtime.status(for: id) {
+            case .stopped, .failed:
+                report("正在清除「\(profile.name)」旧身份的网站数据")
+                do {
+                    try await runtime.clearSiteData(for: id)
+                    cleared = true
+                    // A mark that stays only makes the next launch delete the site data once more.
+                    try? store.setPendingIdentityReset(id, false)
+                } catch {
+                    problem = "未能清除旧身份的网站数据，没有备份 Cookie 和浏览器资料：\(error.localizedDescription)"
+                }
+            case .running, .starting, .stopping:
+                break
+            }
+            guard cleared else {
+                result.warnings.append(problem)
+                try cookies.write(to: folder.appendingPathComponent("Cookies.json"))
+                return result
+            }
+        }
         var launched = false
         switch runtime.status(for: id) {
         case .stopped, .failed:
@@ -334,6 +364,7 @@ public enum ProfileBackup {
                     try await Task.detached { try place(data, at: target) }.value
                     result.browserData = true
                 }
+                profile = try avoidingTaken(profile, store: store, planned: plans)
                 profile = try store.saveAll([profile])[0]
             } catch {
                 // The directory was only just put there, for a Profile that is not saved.
@@ -366,6 +397,22 @@ public enum ProfileBackup {
         progress(Progress(completed: plans.count, total: plans.count, profile: nil, message: "恢复完成"))
         return RestoreResult(createdAt: manifest.createdAt, appVersion: manifest.appVersion,
                              engineVersion: manifest.engineVersion, profiles: results, warnings: warnings)
+    }
+
+    /// `profile` with a new port or seed for one taken here since `plan` ran: the automation API
+    /// may create a Profile while a restore runs. What `planned` gives the other entries is avoided.
+    @MainActor
+    private static func avoidingTaken(_ profile: BrowserProfile, store: ProfileStore, planned: [Planned]) throws -> BrowserProfile {
+        var profile = profile
+        let others = planned.compactMap(\.profile).filter { $0.id != profile.id }
+        if store.takenPorts.contains(profile.port) {
+            profile.port = try ProfileLibrary.freePort(excluding: store.takenPorts.union(others.map(\.port)))
+        }
+        if store.takenSeeds.contains(profile.fingerprint.seed) {
+            profile.fingerprint.seed = FingerprintSettings.newSeed(excluding: store.takenSeeds.union(others.map(\.fingerprint.seed)),
+                                                                   sameHardwareAs: profile.fingerprint.seed)
+        }
+        return profile
     }
 
     /// Sets the cookies in the restored Profile's browser, started without windows. This is what
@@ -448,7 +495,7 @@ public enum ProfileBackup {
                 profile.port = port
             }
             if seeds.contains(profile.fingerprint.seed) {
-                profile.fingerprint.seed = FingerprintSettings.newSeed(excluding: seeds)
+                profile.fingerprint.seed = FingerprintSettings.newSeed(excluding: seeds, sameHardwareAs: profile.fingerprint.seed)
             }
             ids[profile.id] = "备份中有两个 ID 相同的 Profile。"
             ports.insert(profile.port)

@@ -340,7 +340,7 @@ struct DatabaseBackupsSheet: View {
             Button("恢复并重新启动 AnyBrowser", role: .destructive) { restore(backup) }
             Button("取消", role: .cancel) {}
         } message: { backup in
-            Text("AnyBrowser 会退出，用 \(Self.date.string(from: backup.createdAt)) 的备份替换当前的 Profile 数据库，再重新打开。当前数据库先另存为一份备份，可以再恢复回来。这份备份之后新建或修改的配置会丢失；浏览器资料不受影响。")
+            Text("AnyBrowser 会退出，用 \(Self.date.string(from: backup.createdAt)) 的备份替换当前的 Profile 数据库，再重新打开。当前数据库先另存为一份备份，可以再恢复回来。这份备份之后新建或修改的配置会丢失；回收站里的 Profile 从恢复时起重新保留 30 天，浏览器资料不受影响。")
         }
     }
 

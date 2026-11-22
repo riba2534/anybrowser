@@ -42,4 +42,22 @@ struct SeedHardwareTests {
             }
         }
     }
+
+    @Test("Restored entries whose seed is taken keep a real machine", arguments: [BrowserPlatform.macOS, .windows])
+    func restoreKeepsMachine(platform: BrowserPlatform) throws {
+        for seed in [4244, 4243, 105, 1000, 44445, 33334] {
+            var fingerprint = IdentitySampler.sample(seed: seed, constraints: .init(platforms: [platform]))
+            fingerprint.seed = seed
+            let profile = try BrowserProfile(name: "Source", port: 9222, fingerprint: fingerprint, proxy: "").validated()
+            guard hardware.exists(platform: platform, seed: seed, cpuCount: profile.fingerprint.cpuCount) else { continue }
+            let entry = ProfileBackup.Entry(id: profile.id, name: profile.name, cookies: 0, browserData: false, profile: profile)
+            for _ in 0..<10 {
+                let restored = try #require(ProfileBackup.plan([entry], identity: .renew, takenIDs: [:],
+                                                               takenPorts: [], takenSeeds: [seed]).first?.profile)
+                #expect(restored.fingerprint.seed != seed)
+                #expect(hardware.exists(platform: platform, seed: restored.fingerprint.seed, cpuCount: restored.fingerprint.cpuCount))
+                #expect(sameMachine(restored.fingerprint.seed, seed))
+            }
+        }
+    }
 }

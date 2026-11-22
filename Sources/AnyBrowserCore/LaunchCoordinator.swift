@@ -144,8 +144,9 @@ public final class LaunchCoordinator: ObservableObject {
         if launched.fingerprint != stored.fingerprint || launched.proxy != stored.proxy || startedOptions != storedOptions {
             return true
         }
-        // A different account takes effect on restart; clearing the account does not sign the extension out.
-        guard let account else { return false }
+        // A different account takes effect on restart; clearing the account does not sign the extension
+        // out, and without Passkey Box no account matters.
+        guard stored.launch.loadPasskeyBox, let account else { return false }
         return launched.passkeyBox != account
     }
 
@@ -185,6 +186,11 @@ public final class LaunchCoordinator: ObservableObject {
                 preflight: PreflightCache?) async throws -> LaunchOutcome {
         guard let requested = profile(id) else { throw ProfileError.invalid("找不到这个 Profile。") }
         guard !isBusy(id) else { throw ProfileError.invalid("「\(requested.name)」正在执行另一个操作。") }
+        // A newer version's database cannot record that the old identity's data is gone, so every
+        // launch would delete it again, including what the new identity stored since.
+        guard !(store.isReadOnly && store.pendingIdentityReset(id)) else {
+            throw ProfileError.invalid("「\(requested.name)」换了新身份，启动前要清除旧身份的网站数据，但当前数据库由更新版本的 AnyBrowser 写入，无法记下已经清除。请用那个版本启动它。")
+        }
         launches.insert(id)
         defer { launches.remove(id) }
         // Runs beside the launch and never holds it up.
@@ -386,17 +392,18 @@ extension LaunchCoordinator: AutomationBackend {
     }
 }
 
-/// One proxy check per proxy server for a group of launches, such as a batch: Profiles created
-/// together usually share their proxy, and one that is down would otherwise make each wait.
+/// One proxy check per proxy for a group of launches, such as a batch: Profiles created together
+/// usually share their proxy, and one that is down would otherwise make each wait. The check signs
+/// in, so Profiles on the same server with different credentials are checked apart.
 @MainActor
 final class PreflightCache {
     private var checks: [String: Task<String?, Never>] = [:]
 
     func warning(for proxy: String, check: @escaping (String) async -> String?) async -> String? {
         guard let endpoint = try? ProxyEndpoint.parse(proxy) else { return nil }
-        if let running = checks[endpoint.server] { return await running.value }
+        if let running = checks[endpoint.url] { return await running.value }
         let task = Task { await check(proxy) }
-        checks[endpoint.server] = task
+        checks[endpoint.url] = task
         return await task.value
     }
 }

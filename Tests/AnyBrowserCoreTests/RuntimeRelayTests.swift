@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 import Testing
 
-// The fake engine listens on ports 11440–11446 here; the relay helper is the AnyBrowserRelay
+// The fake engine listens on ports 11440–11448 here; the relay helper is the AnyBrowserRelay
 // product built beside the tests.
 
 /// A fake-engine runtime whose engine has the relay helper.
@@ -169,6 +169,42 @@ struct RuntimeRelayTests {
             kill(relay.pid, SIGKILL)
             #expect(await fixture.fake.eventually { !isAlive(relay.pid) })
             #expect(fixture.runtime.matchesRunningConfiguration(profile) == false)
+        }
+    }
+
+    @Test("Stopping between a relaunching browser's two processes leaves the relay to the one that comes back")
+    func stopInRelaunchGap() async throws {
+        let fixture = try RelayFixture("runtime-relay-restart-gap")
+        let profile = fixture.profile(port: 11448)
+        try fixture.fake.configure(profile, [:])
+        try await fixture.run([profile]) {
+            try await fixture.runtime.start(profile)
+            guard case let .running(first, _, _) = fixture.runtime.status(for: profile.id) else {
+                Issue.record("Not running: \(fixture.runtime.status(for: profile.id))")
+                return
+            }
+            let relay = try #require(fixture.receipt(profile)?.relay)
+            let arguments = try #require(ProcessInspection.arguments(first))
+            // chrome://restart: the first process is gone and the next one does not hold the lock yet.
+            kill(first, SIGKILL)
+            #expect(await fixture.fake.eventually { !isAlive(first) })
+            try await fixture.runtime.stop(profile.id)
+            #expect(fixture.runtime.status(for: profile.id) == .stopped)
+            #expect(isAlive(relay.pid))
+
+            let next = Process()
+            next.executableURL = fixture.fake.engine.executable
+            next.arguments = Array(arguments.dropFirst())
+            try next.run()
+            #expect(await fixture.fake.eventually(5) {
+                await fixture.runtime.refresh([profile])
+                if case let .running(pid, _, true) = fixture.runtime.status(for: profile.id) { return pid == next.processIdentifier }
+                return false
+            })
+            try await Task.sleep(nanoseconds: UInt64(fixture.runtime.relayRelaunchGrace * 1_000_000_000) + 500_000_000)
+            #expect(isAlive(relay.pid))
+            #expect(fixture.runtime.matchesRunningConfiguration(profile) == true)
+            #expect(await RelayClient.tunnel(relay.port, to: "echo.test:7", payload: Data("back".utf8))?.text == "echo:back")
         }
     }
 

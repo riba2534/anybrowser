@@ -389,8 +389,9 @@ public final class BrowserRuntime: ObservableObject {
             if profileInUse(directory) {
                 throw BrowserRuntimeError.message("无法确认该浏览器进程的归属，请从浏览器窗口退出。")
             }
-            // The browser is gone already; its relay may still wait for it to come back.
-            await endRelay(saved?.relay, directory: directory)
+            // The browser is gone already. Its relay stays: a browser relaunching itself
+            // (chrome://restart) holds no lock for a moment and comes back through it. The relay
+            // exits by itself when no browser does.
             states[id] = .stopped
             return
         }
@@ -547,8 +548,8 @@ public final class BrowserRuntime: ObservableObject {
     ]
 
     /// Launch-only switches as given, once each is known to be a `--` switch that leaves the
-    /// Profile's ownership checks intact. A positional argument would open as a tab, and a bare
-    /// `--` would hide every later argument from those checks.
+    /// Profile's ownership checks and fingerprint intact. A positional argument would open as a
+    /// tab, and a bare `--` would hide every later argument from those checks.
     static func checkedArguments(_ arguments: [String]) throws -> [String] {
         guard arguments.count <= 64 else { throw ProfileError.invalid("单次启动参数最多 64 个。") }
         for argument in arguments {
@@ -559,6 +560,10 @@ public final class BrowserRuntime: ObservableObject {
             }
             guard !ownershipSwitches.contains(name) else {
                 throw ProfileError.invalid("启动参数不能包含 \(name)。")
+            }
+            // The last value wins in Chromium, and the identity shim is computed from the Profile's seed.
+            guard name != "--fingerprint", !name.hasPrefix("--fingerprint-") else {
+                throw ProfileError.invalid("启动参数不能包含 \(name)，指纹请在 Profile 里修改。")
             }
         }
         return arguments

@@ -34,7 +34,9 @@ extension LaunchCoordinator {
         try store.trash(id)
     }
 
+    /// Takes a Profile out of the recycle bin, unless a purge is deleting its data right now.
     public func restore(_ id: UUID) throws {
+        guard !isBusy(id) else { throw ProfileError.invalid("该 Profile 正在执行另一个操作，请稍后再恢复。") }
         try store.restore(id)
     }
 
