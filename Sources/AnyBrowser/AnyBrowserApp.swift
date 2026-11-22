@@ -77,7 +77,13 @@ enum SingleInstance {
     /// Locks the data directory. When another AnyBrowser holds it, asks that one to come forward
     /// and exits. Nil when the directory cannot be located; opening the database reports why.
     static func claim() -> Claim? {
-        guard let directory = try? ProfileStore.defaultDirectory() else { return nil }
+        guard let located = try? ProfileStore.defaultDirectory(),
+              (try? FileManager.default.createDirectory(at: located, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])) != nil,
+              let resolved = realpath(located.path, nil) else { return nil }
+        // The lock wants the real path, as the database does: a folder in the path may be a link.
+        let directory = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+        free(resolved)
         do {
             return Claim(directory: directory, lock: try ProfileStore.acquireInstanceLock(in: directory))
         } catch {
