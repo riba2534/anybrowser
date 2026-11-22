@@ -207,37 +207,14 @@ enum RawClient {
     }
 
     static func exchange(port: Int, chunks: [Data]) -> Reply {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        let fd = Sockets.connect(to: port, timeout: 30)
         guard fd >= 0 else { return Reply() }
         defer { close(fd) }
-        var one: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
-        var timeout = timeval(tv_sec: 30, tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        var address = sockaddr_in()
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = UInt16(port).bigEndian
-        address.sin_addr.s_addr = UInt32(INADDR_LOOPBACK).bigEndian
-        let connected = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
-        }
-        guard connected == 0 else { return Reply() }
         for (index, chunk) in chunks.enumerated() {
             if index > 0 { usleep(100_000) }
-            var offset = 0
-            while offset < chunk.count {
-                let written = chunk.withUnsafeBytes { write(fd, $0.baseAddress! + offset, chunk.count - offset) }
-                if written <= 0 { break }
-                offset += written
-            }
+            Sockets.write(fd, chunk)
         }
-        var received = Data()
-        var buffer = [UInt8](repeating: 0, count: 65_536)
-        while true {
-            let count = read(fd, &buffer, buffer.count)
-            if count <= 0 { break }
-            received.append(contentsOf: buffer[0..<count])
-        }
+        let received = Sockets.readAll(fd)
         guard let split = received.range(of: Data("\r\n\r\n".utf8)),
               let head = String(data: received[..<split.lowerBound], encoding: .utf8) else { return Reply() }
         var lines = head.components(separatedBy: "\r\n")

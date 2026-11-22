@@ -9,13 +9,7 @@ import Testing
 // independent of the relay's Network.framework code, so a relay bug cannot hide behind a stub sharing it.
 
 /// The AnyBrowserRelay executable, built next to the test bundle.
-let relayHelperPath: String? = {
-    let bundle = Bundle(for: RelayHelperMarker.self).bundleURL
-    let candidate = bundle.deletingLastPathComponent().appendingPathComponent(RelayHelper.executableName).path
-    return FileManager.default.isExecutableFile(atPath: candidate) ? candidate : nil
-}()
-
-private final class RelayHelperMarker {}
+let relayHelperPath = builtProduct(RelayHelper.executableName)
 
 /// Runs blocking socket work on a thread of its own instead of the cooperative pool.
 func onThread<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {

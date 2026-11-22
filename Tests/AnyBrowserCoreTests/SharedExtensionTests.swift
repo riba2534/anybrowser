@@ -1,5 +1,4 @@
 @testable import AnyBrowserCore
-import CryptoKit
 import Darwin
 import Foundation
 import Testing
@@ -134,7 +133,7 @@ struct SharedExtensionTests {
         """
         let file = try makeCRX(at: root.appendingPathComponent("wallet.crx"), in: root, manifest: manifest,
                                files: ["background.js": "worker", "_metadata/verified_contents.json": "[]"],
-                               keys: [decoy, key], crxID: Self.crxID(key))
+                               keys: [decoy, key], crxID: crxID(key))
 
         let added = try SharedExtensions.add(crx: file, in: storage)
         #expect(added.name == "Store Wallet")
@@ -151,7 +150,7 @@ struct SharedExtensionTests {
         // A manifest with its own key keeps it; without a matching CRX ID no key is added.
         let own = try makeCRX(at: root.appendingPathComponent("own.crx"), in: root,
                               manifest: #"{"manifest_version":3,"name":"Own","version":"1","key":"AAAA"}"#,
-                              keys: [key], crxID: Self.crxID(key))
+                              keys: [key], crxID: crxID(key))
         let ownManifest = try Data(contentsOf: try SharedExtensions.add(crx: own, in: storage).directory.appendingPathComponent("manifest.json"))
         #expect(String(decoding: ownManifest, as: UTF8.self) == #"{"manifest_version":3,"name":"Own","version":"1","key":"AAAA"}"#)
         let unmatched = try makeCRX(at: root.appendingPathComponent("unmatched.crx"), in: root,
@@ -310,7 +309,7 @@ struct SharedExtensionTests {
         let key = Data((0..<294).map { UInt8($0 % 241) })
         let crx = try makeCRX(at: root.appendingPathComponent("store.crx"), in: root,
                               manifest: #"{"manifest_version":3,"name":"Shared CRX","version":"1","background":{"service_worker":"crx-worker.js"}}"#,
-                              files: ["crx-worker.js": ""], keys: [key], crxID: Self.crxID(key))
+                              files: ["crx-worker.js": ""], keys: [key], crxID: crxID(key))
         let folder = try makeExtension(at: root.appendingPathComponent("Folder"),
                                        manifest: #"{"manifest_version":3,"name":"Shared Folder","version":"1","background":{"service_worker":"folder-worker.js"}}"#,
                                        files: ["folder-worker.js": ""])
@@ -351,76 +350,8 @@ struct SharedExtensionTests {
         return (root, storage)
     }
 
-    private func makeExtension(at directory: URL, manifest: String?, files: [String: String] = [:]) throws -> URL {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var files = files
-        if let manifest { files["manifest.json"] = manifest }
-        for (path, contents) in files {
-            let url = directory.appendingPathComponent(path)
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data(contents.utf8).write(to: url)
-        }
-        return directory
-    }
-
-    /// A CRX3 file: magic, version, header length, a CrxFileHeader with one RSA proof per key and
-    /// the CRX ID, then a ZIP of the extension.
-    private func makeCRX(at file: URL, in root: URL, manifest: String?, files: [String: String] = [:],
-                         keys: [Data], crxID: Data?) throws -> URL {
-        let source = try makeExtension(at: root.appendingPathComponent("crx-\(UUID().uuidString)"), manifest: manifest, files: files)
-        let zip = root.appendingPathComponent("crx-\(UUID().uuidString).zip")
-        let ditto = Process()
-        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        ditto.arguments = ["-c", "-k", source.path, zip.path]
-        try ditto.run()
-        ditto.waitUntilExit()
-        try #require(ditto.terminationStatus == 0)
-
-        var header = Data()
-        for key in keys {
-            header += field(2, field(1, key) + field(2, Data(repeating: 1, count: 256)))
-        }
-        header += varint(5 << 3) + varint(300) // An unknown varint field is skipped.
-        if let crxID { header += field(10000, field(1, crxID)) }
-        try (Data("Cr24".utf8) + le32(3) + le32(UInt32(header.count)) + header + Data(contentsOf: zip)).write(to: file)
-        return file
-    }
-
-    private func field(_ number: UInt64, _ value: Data) -> Data {
-        varint(number << 3 | 2) + varint(UInt64(value.count)) + value
-    }
-
-    private func varint(_ value: UInt64) -> Data {
-        var value = value
-        var bytes = Data()
-        repeat {
-            bytes.append(UInt8(value & 0x7F) | (value > 0x7F ? 0x80 : 0))
-            value >>= 7
-        } while value != 0
-        return bytes
-    }
-
-    private static func crxID(_ key: Data) -> Data { Data(SHA256.hash(data: key).prefix(16)) }
-
     /// Chromium's extension ID for a public key: the CRX ID written with the letters a–p.
     private static func extensionID(_ key: Data) -> String {
         crxID(key).map { String([Character(UnicodeScalar(97 + $0 >> 4)), Character(UnicodeScalar(97 + $0 & 15))]) }.joined()
     }
-
-    private func hidden(in directory: URL) throws -> [String] {
-        try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix(".") }
-    }
-
-    private func expectFailure(containing text: String, _ body: () throws -> Void) throws {
-        do {
-            try body()
-            Issue.record("Expected a failure containing \(text)")
-        } catch let ProfileError.invalid(message) {
-            #expect(message.contains(text), "\(message)")
-        }
-    }
-}
-
-private func le32(_ value: UInt32) -> Data {
-    Data((0..<4).map { UInt8(truncatingIfNeeded: value >> (8 * $0)) })
 }

@@ -78,18 +78,12 @@ struct CoordinatorFixture {
     }
 
     func run(_ profiles: [BrowserProfile], runtimes: [BrowserRuntime] = [], _ body: () async throws -> Void) async throws {
-        do {
-            try await body()
-        } catch {
-            await finish(profiles, runtimes: runtimes)
-            throw error
-        }
-        await finish(profiles, runtimes: runtimes)
+        try await runThenCleanUp(body) { await finish(profiles, runtimes: runtimes) }
     }
 
     private func finish(_ profiles: [BrowserProfile], runtimes: [BrowserRuntime]) async {
         coordinator.stopMonitoring()
-        _ = await coordinator.automation.save(AutomationConfiguration(enabled: false, token: String(repeating: "5a", count: 32)))
+        _ = await coordinator.automation.save(AutomationConfiguration(enabled: false, token: automationTestToken))
         await fake.cleanUp(profiles, runtimes: runtimes)
     }
 }
@@ -112,17 +106,10 @@ func peak(_ count: @escaping @MainActor () -> Int, during body: () async throws 
 
 /// Whether something accepts TCP connections on 127.0.0.1:`port`.
 func listening(_ port: Int) -> Bool {
-    let socket = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+    let socket = Sockets.connect(to: port)
     guard socket >= 0 else { return false }
-    defer { close(socket) }
-    var address = sockaddr_in()
-    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-    address.sin_family = sa_family_t(AF_INET)
-    address.sin_port = in_port_t(UInt16(port).bigEndian)
-    address.sin_addr.s_addr = inet_addr("127.0.0.1")
-    return withUnsafePointer(to: &address) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(socket, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0 }
-    }
+    close(socket)
+    return true
 }
 
 private func managedAccount(_ fixture: CoordinatorFixture, _ profile: BrowserProfile) throws -> String? {
@@ -131,8 +118,6 @@ private func managedAccount(_ fixture: CoordinatorFixture, _ profile: BrowserPro
     let json = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: String]
     return json?["username"]
 }
-
-private let token = String(repeating: "5a", count: 32)
 
 @Suite("Launch coordinator", .serialized)
 @MainActor
@@ -603,10 +588,10 @@ struct LaunchCoordinatorTests {
             #expect(coordinator.holdsActivity)
             try await coordinator.stop(profile.id)
             #expect(!coordinator.holdsActivity)
-            #expect(await coordinator.automation.save(AutomationConfiguration(enabled: true, port: testPort(9460), token: token)) == nil)
+            #expect(await coordinator.automation.save(AutomationConfiguration(enabled: true, port: testPort(9460), token: automationTestToken)) == nil)
             #expect(coordinator.automation.status == .listening(testPort(9460)))
             #expect(coordinator.holdsActivity)
-            #expect(await coordinator.automation.save(AutomationConfiguration(enabled: false, port: testPort(9460), token: token)) == nil)
+            #expect(await coordinator.automation.save(AutomationConfiguration(enabled: false, port: testPort(9460), token: automationTestToken)) == nil)
             #expect(!coordinator.holdsActivity)
         }
     }
@@ -617,18 +602,18 @@ struct LaunchCoordinatorTests {
         let host = fixture.coordinator.automation
         let (first, overtaken, latest) = (testPort(9461), testPort(9462), testPort(9463))
         try await fixture.run([]) {
-            #expect(await host.save(AutomationConfiguration(enabled: true, port: first, token: token)) == nil)
+            #expect(await host.save(AutomationConfiguration(enabled: true, port: first, token: automationTestToken)) == nil)
             #expect(host.status == .listening(first))
             // The second change starts while the first still waits for the old server to stop.
-            let older = Task { await host.save(AutomationConfiguration(enabled: true, port: overtaken, token: token)) }
-            let newer = Task { await host.save(AutomationConfiguration(enabled: true, port: latest, token: token)) }
+            let older = Task { await host.save(AutomationConfiguration(enabled: true, port: overtaken, token: automationTestToken)) }
+            let newer = Task { await host.save(AutomationConfiguration(enabled: true, port: latest, token: automationTestToken)) }
             _ = await (older.value, newer.value)
             #expect(host.status == .listening(latest))
             #expect(host.configuration?.port == latest)
             #expect(listening(latest))
             #expect(!listening(overtaken) && !listening(first))
 
-            #expect(await host.save(AutomationConfiguration(enabled: false, port: latest, token: token)) == nil)
+            #expect(await host.save(AutomationConfiguration(enabled: false, port: latest, token: automationTestToken)) == nil)
             #expect(host.status == .stopped)
             #expect(!listening(latest) && !listening(overtaken) && !listening(first))
         }

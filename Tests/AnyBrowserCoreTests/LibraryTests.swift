@@ -4,41 +4,6 @@ import Foundation
 import SQLite3
 import Testing
 
-private func execute(_ sql: String, in directory: URL, binding values: [Any] = []) throws {
-    var database: OpaquePointer?
-    guard sqlite3_open(directory.appendingPathComponent("profiles.sqlite3").path, &database) == SQLITE_OK else {
-        throw ProfileError.invalid("open")
-    }
-    defer { sqlite3_close(database) }
-    var statement: OpaquePointer?
-    guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else { throw ProfileError.invalid("prepare") }
-    defer { sqlite3_finalize(statement) }
-    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    for (offset, value) in values.enumerated() {
-        let index = Int32(offset + 1)
-        switch value {
-        case let text as String: sqlite3_bind_text(statement, index, text, -1, transient)
-        case let number as Int: sqlite3_bind_int64(statement, index, Int64(number))
-        case let data as Data: _ = data.withUnsafeBytes { sqlite3_bind_blob(statement, index, $0.baseAddress, Int32($0.count), transient) }
-        default: throw ProfileError.invalid("bind")
-        }
-    }
-    guard sqlite3_step(statement) == SQLITE_DONE else { throw ProfileError.invalid("step") }
-}
-
-private func rowCount(_ table: String, in directory: URL) throws -> Int {
-    var database: OpaquePointer?
-    guard sqlite3_open(directory.appendingPathComponent("profiles.sqlite3").path, &database) == SQLITE_OK else {
-        throw ProfileError.invalid("open")
-    }
-    defer { sqlite3_close(database) }
-    var statement: OpaquePointer?
-    guard sqlite3_prepare_v2(database, "SELECT COUNT(*) FROM \(table)", -1, &statement, nil) == SQLITE_OK,
-          sqlite3_step(statement) == SQLITE_ROW else { throw ProfileError.invalid("count") }
-    defer { sqlite3_finalize(statement) }
-    return Int(sqlite3_column_int64(statement, 0))
-}
-
 private func message(_ error: Error?) -> String { error?.localizedDescription ?? "" }
 
 @MainActor

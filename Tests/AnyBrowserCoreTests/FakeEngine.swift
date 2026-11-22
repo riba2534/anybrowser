@@ -394,6 +394,11 @@ struct FakeEngineFixture {
         }
     }
 
+    /// Runs `body`, then ends whatever the fixture started, also when `body` throws.
+    func run(_ profiles: [BrowserProfile], runtimes: [BrowserRuntime] = [], _ body: () async throws -> Void) async throws {
+        try await runThenCleanUp(body) { await cleanUp(profiles, runtimes: runtimes) }
+    }
+
     /// Ends every process still holding one of the fixture's directories, then deletes them.
     func cleanUp(_ profiles: [BrowserProfile], runtimes: [BrowserRuntime] = []) async {
         for profile in profiles {
@@ -422,3 +427,15 @@ struct FakeEngineFixture {
 }
 
 func isAlive(_ pid: Int32) -> Bool { ProcessStamp.read(pid) != nil }
+
+/// Runs `body`, then `cleanUp`, also when `body` throws.
+@MainActor
+func runThenCleanUp(_ body: () async throws -> Void, cleanUp: () async -> Void) async throws {
+    do {
+        try await body()
+    } catch {
+        await cleanUp()
+        throw error
+    }
+    await cleanUp()
+}
