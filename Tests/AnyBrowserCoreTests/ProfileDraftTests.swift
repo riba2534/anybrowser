@@ -119,6 +119,27 @@ struct ProfileDraftTests {
         #expect(kept.profile.proxy == "127.0.0.1:1111")
     }
 
+    @Test("The preview follows the typed seed and CPU count, and the recorded memory follows the seed")
+    func preview() throws {
+        let table = EngineHardwareTable.bundled
+        let seed = try #require((1...500).first { table.deviceMemory(seed: $0) != table.deviceMemory(seed: 4242) })
+        var draft = ProfileDraft(saved { $0.fingerprint.deviceMemory = table.deviceMemory(seed: 4242) })
+        draft.seedText = String(seed)
+        draft.cpuText = "12"
+        #expect(draft.preview.fingerprint.seed == seed)
+        #expect(draft.preview.fingerprint.cpuCount == 12)
+        #expect(draft.preview.fingerprint.deviceMemory == table.deviceMemory(seed: seed))
+        #expect(try draft.validated().fingerprint.deviceMemory == table.deviceMemory(seed: seed))
+        // Half-typed values leave the saved ones in place; no recorded memory stays unrecorded.
+        draft.seedText = "12a"
+        draft.cpuText = "999"
+        #expect(draft.preview.fingerprint.seed == 4242)
+        #expect(draft.preview.fingerprint.cpuCount == nil)
+        var unrecorded = ProfileDraft(saved())
+        unrecorded.seedText = String(seed)
+        #expect(unrecorded.preview.fingerprint.deviceMemory == nil)
+    }
+
     @Test("Validation reads the typed numbers")
     func validation() throws {
         var draft = ProfileDraft(saved())

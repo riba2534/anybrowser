@@ -15,6 +15,14 @@ struct IdentityCard: View {
     var body: some View {
         WorkbenchCard {
             CardHeading(title: "Passkey Box 身份", icon: "key")
+            if !draft.profile.launch.loadPasskeyBox {
+                Label("这个 Profile 不加载 Passkey Box（在「启动选项」里关闭了），这里的账号不会使用。",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 12))
+                    .foregroundColor(WorkbenchPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("identity-passkey-box-off")
+            }
             EditorPicker(title: "登录账号", identifier: "identity-mode", selection: ownAccount,
                          choices: [(false, "使用 AnyBrowser 账号"), (true, "此 Profile 单独使用账号")])
             if draft.profile.passkeyBox == nil {
@@ -22,9 +30,13 @@ struct IdentityCard: View {
             } else {
                 ownAccountFields
             }
-            Text("账号在保存并重启 Profile 后生效。")
+            Text(draft.profile.passkeyBox == nil
+                 ? "AnyBrowser 账号里的通行密钥对所有使用它的 Profile 可见，但自动登录只使用本 Profile 注册或用过的那个；其他情况页面上会出现选择框。需要彻底分开时，给这个 Profile 单独设置账号。账号在保存并重启 Profile 后生效。"
+                 : "这个 Profile 用自己的账号登录，使用其他账号的 Profile 看不到其中的通行密钥。账号在保存并重启 Profile 后生效。")
                 .font(.system(size: 12))
                 .foregroundColor(WorkbenchPalette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("identity-scope")
         }
         .onChange(of: draft.profile.passkeyBox) { _ in verification = nil }
     }

@@ -2,7 +2,7 @@ import AnyBrowserCore
 import AppKit
 import SwiftUI
 
-/// Start pages, window placement and extra extensions.
+/// Start pages, session restore, window placement, Passkey Box and extensions.
 struct LaunchOptionsCard: View {
     @Binding var draft: ProfileDraft
     @ObservedObject var workbench: Workbench
@@ -14,10 +14,20 @@ struct LaunchOptionsCard: View {
         _window = State(initialValue: WindowText(draft.wrappedValue.profile.launch.window))
     }
 
+    private var shelf: ExtensionShelf { workbench.extensionShelf }
+
     var body: some View {
         WorkbenchCard {
             CardHeading(title: "启动选项", icon: "play.rectangle")
             startPages
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("恢复上次会话", isOn: $draft.profile.launch.restoreSession)
+                    .toggleStyle(.checkbox)
+                    .accessibilityIdentifier("launch-restore-session")
+                Text("启动时重新打开上次退出时的标签页，启动网址照常打开。")
+                    .font(.system(size: 12))
+                    .foregroundColor(WorkbenchPalette.muted)
+            }
             LazyVGrid(columns: EditorInput.columns, alignment: .leading, spacing: 12) {
                 EditorInput("窗口宽度", placeholder: "默认", value: $window.width,
                             identifier: "launch-window-width", numeric: true)
@@ -29,11 +39,19 @@ struct LaunchOptionsCard: View {
                             identifier: "launch-window-y", numeric: true)
             }
             Divider()
+            passkeyBox
+            Divider()
+            sharedExtensions
+            Divider()
             extensions
-            Text("保存并重启 Profile 后生效。")
+            Text("除启动网址外，修改在保存并重启 Profile 后生效。")
                 .font(.system(size: 12))
                 .foregroundColor(WorkbenchPalette.muted)
         }
+        // Folder checks never run in `body`: they may block on a slow or disconnected volume.
+        .onAppear { shelf.check(draft.profile) }
+        .onChange(of: draft.profile.launch.extensionDirectories) { _ in shelf.check(draft.profile) }
+        .onChange(of: draft.profile.launch.sharedExtensions) { _ in shelf.check(draft.profile) }
         .onChange(of: window) { text in
             if draft.profile.launch.window != text.layout { draft.profile.launch.window = text.layout }
         }
@@ -76,18 +94,115 @@ struct LaunchOptionsCard: View {
                 }
                 .accessibilityLabel("启动网址")
                 .accessibilityIdentifier("launch-start-urls")
-            Text("只支持 http 和 https，最多 \(LaunchOptions.maximumStartURLs) 个。留空打开浏览器默认页面。")
+            Text("只支持 http 和 https，最多 \(LaunchOptions.maximumStartURLs) 个。留空打开浏览器默认页面。修改后不需要重启，下次启动时打开。")
                 .font(.system(size: 12))
                 .foregroundColor(WorkbenchPalette.muted)
         }
     }
 
-    private var extensions: some View {
-        let directories = draft.profile.launch.extensionDirectories
-        let unavailable = Set(draft.profile.launch.unavailableExtensionDirectories())
+    private var passkeyBox: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("加载 Passkey Box", isOn: $draft.profile.launch.loadPasskeyBox)
+                .toggleStyle(.checkbox)
+                .font(.system(size: 12, weight: .medium))
+                .accessibilityIdentifier("launch-load-passkey-box")
+            Text(draft.profile.launch.loadPasskeyBox
+                 ? "内置的 Passkey Box 扩展用于网站的通行密钥注册和登录。不用通行密钥的 Profile 可以关闭。"
+                 : "不加载 Passkey Box：网页里没有它改写的 WebAuthn 接口；下次启动时删除这个 Profile 的扩展副本和其中的账号配置。")
+                .font(.system(size: 12))
+                .foregroundColor(WorkbenchPalette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Extensions from the shared library this Profile loads, in the order they were ticked.
+    private var sharedExtensions: some View {
+        let picked = draft.profile.launch.sharedExtensions
+        let missing = shelf.missing(for: draft.profile.launch, id: draft.profile.id)?.missingShared ?? []
+        let listed = Set(shelf.entries.map(\.name))
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("额外扩展")
+                Text("共享扩展")
+                    .font(.system(size: 12, weight: .medium))
+                Spacer(minLength: 0)
+                Button {
+                    workbench.showingSharedExtensions = true
+                } label: {
+                    Label("管理共享扩展…", systemImage: "puzzlepiece.extension")
+                }
+                .buttonStyle(WorkbenchButtonStyle(.neutral))
+                .disabled(shelf.storage == nil)
+                .accessibilityIdentifier("launch-manage-shared-extensions")
+            }
+            if shelf.entries.isEmpty && picked.isEmpty {
+                Text(shelf.loaded ? "扩展库是空的。在「管理共享扩展…」里添加扩展后，可以在这里勾选。" : "正在读取扩展库…")
+                    .font(.system(size: 12))
+                    .foregroundColor(WorkbenchPalette.muted)
+            }
+            LazyVGrid(columns: EditorInput.columns, alignment: .leading, spacing: 8) {
+                ForEach(shelf.entries) { entry in
+                    Toggle(isOn: sharedBinding(entry.name)) {
+                        HStack(spacing: 4) {
+                            Text(entry.name)
+                                .lineLimit(1)
+                            if let order = picked.firstIndex(of: entry.name), picked.count > 1 {
+                                Text(verbatim: "#\(order + 1)")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(WorkbenchPalette.muted)
+                            }
+                            if !entry.isValid || missing.contains(entry.name) {
+                                Text("无效")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(WorkbenchPalette.danger)
+                            }
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                    .help(entry.manifestName.isEmpty ? entry.name : "\(entry.manifestName) \(entry.version)")
+                    .accessibilityIdentifier("launch-shared-\(entry.name)")
+                }
+            }
+            // Ticked, but gone from the library: the Profile does not start until it is unticked or added again.
+            ForEach(picked.filter { shelf.loaded && !listed.contains($0) }, id: \.self) { name in
+                HStack(spacing: 8) {
+                    Text(name)
+                        .font(.system(size: 12))
+                        .foregroundColor(WorkbenchPalette.danger)
+                    Text("已不在扩展库中")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(WorkbenchPalette.danger)
+                    Spacer(minLength: 0)
+                    Button("取消勾选") { draft.profile.launch.sharedExtensions.removeAll { $0 == name } }
+                        .buttonStyle(WorkbenchButtonStyle(.quiet))
+                }
+            }
+            if !picked.isEmpty {
+                Text("按勾选的顺序加载，在 Passkey Box 之后、下面的扩展目录之前。扩展数据保存在这个 Profile 自己的浏览器资料里。")
+                    .font(.system(size: 12))
+                    .foregroundColor(WorkbenchPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func sharedBinding(_ name: String) -> Binding<Bool> {
+        Binding {
+            draft.profile.launch.sharedExtensions.contains(name)
+        } set: { isOn in
+            if isOn {
+                if !draft.profile.launch.sharedExtensions.contains(name) { draft.profile.launch.sharedExtensions.append(name) }
+            } else {
+                draft.profile.launch.sharedExtensions.removeAll { $0 == name }
+            }
+        }
+    }
+
+    private var extensions: some View {
+        let directories = draft.profile.launch.extensionDirectories
+        let unavailable = shelf.missing(for: draft.profile.launch, id: draft.profile.id)?.missingDirectories ?? []
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("扩展目录")
                     .font(.system(size: 12, weight: .medium))
                 Spacer(minLength: 0)
                 Button {
@@ -128,8 +243,8 @@ struct LaunchOptionsCard: View {
                 }
             }
             Text(directories.isEmpty
-                 ? "可加载未打包的扩展目录（含 manifest.json），最多 \(LaunchOptions.maximumExtensionDirectories) 个。Passkey Box 始终加载。"
-                 : "按列表顺序在 Passkey Box 之后加载。")
+                 ? "可加载这个 Profile 自己的未打包扩展目录（含 manifest.json），最多 \(LaunchOptions.maximumExtensionDirectories) 个。多个 Profile 共用的扩展可以放进共享扩展库。"
+                 : "按列表顺序在共享扩展之后加载；与共享扩展是同一个扩展时以这里的目录为准。")
                 .font(.system(size: 12))
                 .foregroundColor(WorkbenchPalette.muted)
         }

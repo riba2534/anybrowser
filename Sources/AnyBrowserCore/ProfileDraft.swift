@@ -35,6 +35,7 @@ public struct ProfileDraft: Equatable, Sendable {
         }
         value.port = port
         value.fingerprint.seed = seed
+        value.fingerprint.followSeed()
         let cpu = cpuText.trimmingCharacters(in: .whitespaces)
         if cpu.isEmpty {
             value.fingerprint.cpuCount = nil
@@ -53,6 +54,28 @@ public struct ProfileDraft: Equatable, Sendable {
             return profile.fingerprint.seed
         }
         return seed
+    }
+
+    /// The Profile with the typed seed and CPU count, where they are valid, so that hints and the
+    /// summary follow typing instead of waiting for a save.
+    public var preview: BrowserProfile {
+        var value = profile
+        value.fingerprint.seed = effectiveSeed
+        value.fingerprint.followSeed()
+        let cpu = cpuText.trimmingCharacters(in: .whitespaces)
+        if cpu.isEmpty {
+            value.fingerprint.cpuCount = nil
+        } else if let count = Int(cpu), (1...256).contains(count) {
+            value.fingerprint.cpuCount = count
+        }
+        return value
+    }
+}
+
+extension FingerprintSettings {
+    /// A recorded memory value follows the seed, as the engine reports it.
+    fileprivate mutating func followSeed() {
+        if deviceMemory != nil { deviceMemory = EngineHardwareTable.bundled.deviceMemory(seed: seed) }
     }
 }
 
