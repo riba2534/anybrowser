@@ -59,6 +59,8 @@ struct ProxyAssignmentTests {
             profile("E", port: 9226, proxy: "gate.example.com:7777:other:pass"),
         ]
         #expect(ProxyAssignment.usage(of: pool, by: profiles) == [pool[0].id: 2, pool[1].id: 1])
+        let users = ProxyAssignment.users(of: profiles)
+        #expect(ProxyAssignment.usage(of: pool, users: users, excluding: [profiles[0].id, profiles[2].id]) == [pool[0].id: 1])
     }
 
     @Test("In order, proxies no Profile uses come first, and the library wraps around")
@@ -215,6 +217,7 @@ struct LibraryIndexTests {
         inputs.exits = [profiles[0].id: record("9.9.9.9"), profiles[1].id: record("9.9.9.9")]
         index.update(inputs)
         #expect(index.sharedExits[profiles[0].id] == [profiles[1].id])
+        #expect(index.names[profiles[1].id] == "B")
     }
 
     @Test("⇧-click ranges and arrow steps follow the rows as shown")

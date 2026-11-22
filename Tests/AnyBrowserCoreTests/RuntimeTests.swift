@@ -25,19 +25,6 @@ private final class PortPool: @unchecked Sendable {
 
 func freeTestPort() -> Int { PortPool.shared.take() }
 
-/// Runs `body`, then ends whatever the fixture started, also when `body` throws.
-@MainActor
-private func run(_ fixture: FakeEngineFixture, _ profiles: [BrowserProfile], runtimes: [BrowserRuntime] = [],
-                 _ body: () async throws -> Void) async throws {
-    do {
-        try await body()
-    } catch {
-        await fixture.cleanUp(profiles, runtimes: runtimes)
-        throw error
-    }
-    await fixture.cleanUp(profiles, runtimes: runtimes)
-}
-
 private func method(_ command: [String: Any]) -> String { command["method"] as? String ?? "" }
 private func parameters(_ command: [String: Any]) -> [String: Any] { command["params"] as? [String: Any] ?? [:] }
 
@@ -58,7 +45,7 @@ struct RuntimeLaunchTests {
         var profile = fixture.profile(port: freeTestPort())
         profile.launch.startURLs = ["https://first.example/", "https://second.example/", "https://third.example/"]
         try fixture.configure(profile, ["targets": newTabPage])
-        try await run(fixture, [profile]) {
+        try await fixture.run([profile]) {
             let outcome = try await fixture.runtime.start(profile)
             #expect(outcome == LaunchOutcome(startedFresh: true))
             guard case let .running(pid, _, true) = fixture.runtime.status(for: profile.id) else {
@@ -117,7 +104,7 @@ struct RuntimeLaunchTests {
                 }
             }
         }
-        try await run(fixture, [withPages, withoutPages, restored]) {
+        try await fixture.run([withPages, withoutPages, restored]) {
             for profile in [withPages, withoutPages, restored] {
                 let outcome = try await fixture.runtime.start(profile)
                 #expect(outcome.warnings == [])
@@ -136,7 +123,7 @@ struct RuntimeLaunchTests {
         var profile = fixture.profile(port: freeTestPort())
         profile.launch.startURLs = ["https://first.example/"]
         try fixture.configure(profile, ["targets": newTabPage, "cdp": "silent"])
-        try await run(fixture, [profile]) {
+        try await fixture.run([profile]) {
             let began = Date()
             let outcome = try await fixture.runtime.start(profile)
             #expect(Date().timeIntervalSince(began) < 3)
@@ -155,7 +142,7 @@ struct RuntimeLaunchTests {
         var profile = fixture.profile(port: freeTestPort())
         profile.launch.startURLs = ["https://saved.example/"]
         try fixture.configure(profile, ["targets": newTabPage])
-        try await run(fixture, [profile]) {
+        try await fixture.run([profile]) {
             let overrides = LaunchOverrides(headless: true, urls: ["https://Override.example"], arguments: ["--lang=fr", "--mute-audio"])
             try await fixture.runtime.start(profile, overrides: overrides)
             guard case let .running(pid, _, true) = fixture.runtime.status(for: profile.id) else {
@@ -175,7 +162,7 @@ struct RuntimeLaunchTests {
     func refusedOverrides() async throws {
         let fixture = try FakeEngineFixture("runtime-refused")
         let profile = fixture.profile(port: freeTestPort())
-        try await run(fixture, [profile]) {
+        try await fixture.run([profile]) {
             for argument in ["--user-data-dir=/tmp/other", "--remote-debugging-port=9", "--remote-debugging-pipe",
                              "--remote-debugging-address=0.0.0.0", "-user-data-dir=/tmp/other", "https://example.com/",
                              "(de-DE)", "--", "--=x", "--lang=fr\nhttps://example.com/"] {
@@ -209,7 +196,7 @@ struct RuntimeLaunchTests {
                                                     attributes: [.posixPermissions: 0o700])
             try Data("old".utf8).write(to: file)
         }
-        try await run(fixture, [profile]) {
+        try await fixture.run([profile]) {
             try await fixture.runtime.start(profile, overrides: LaunchOverrides(resetSiteData: true))
             let cookieText = try String(contentsOf: cookies, encoding: .utf8)
             #expect(cookieText == "new")
@@ -239,7 +226,7 @@ struct RuntimeFailureTests {
         let profile = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, ["output": "fake-engine: the profile is broken", "exit_ms": "100",
                                         "exit_code": "7", "ready_ms": "5000"])
-        try await run(fixture, [profile]) {
+        try await fixture.run([profile]) {
             #expect(fixture.runtime.launchLog(for: profile.id) == nil)
             let error = await #expect(throws: (any Error).self) { try await fixture.runtime.start(profile) }
             let message = error?.localizedDescription ?? ""
@@ -263,7 +250,7 @@ struct RuntimeFailureTests {
         let fixture = try FakeEngineFixture("runtime-signal")
         let profile = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, ["kill_ms": "100", "kill_signal": "9", "ready_ms": "5000"])
-        try await run(fixture, [profile]) {
+        try await fixture.run([profile]) {
             let error = await #expect(throws: (any Error).self) { try await fixture.runtime.start(profile) }
             #expect(error?.localizedDescription.contains("SIGKILL") == true)
         }
@@ -274,7 +261,7 @@ struct RuntimeFailureTests {
         let fixture = try FakeEngineFixture("runtime-log")
         let profile = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, ["spam_kb": "512"])
-        try await run(fixture, [profile]) {
+        try await fixture.run([profile]) {
             try await fixture.runtime.start(profile)
             #expect(fixture.runtime.status(for: profile.id).isUp)
             #expect(await fixture.eventually {
@@ -292,7 +279,7 @@ struct RuntimeFailureTests {
         fixture.runtime.readinessTimeout = 1
         let profile = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, ["ready_ms": "60000", "ignore_term": "1"])
-        try await run(fixture, [profile]) {
+        try await fixture.run([profile]) {
             let error = await #expect(throws: (any Error).self) { try await fixture.runtime.start(profile) }
             #expect(error?.localizedDescription.contains("未能在本机端口 \(profile.port) 启用调试") == true)
             let lock = fixture.runtime.dataDirectory(for: profile.id).appendingPathComponent("SingletonLock").path
@@ -315,7 +302,7 @@ struct RuntimeFailureTests {
         let other = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, ["ignore_term": "1"])
         try fixture.configure(other, [:])
-        try await run(fixture, [profile, other]) {
+        try await fixture.run([profile, other]) {
             try await fixture.runtime.start(profile)
             guard case let .running(pid, _, _) = fixture.runtime.status(for: profile.id) else {
                 Issue.record("Not running: \(fixture.runtime.status(for: profile.id))")
@@ -358,7 +345,7 @@ struct RuntimeAdoptionTests {
         try fixture.configure(profile, [:])
         try fixture.configure(started, [:])
         let restarted = fixture.makeRuntime()
-        try await run(fixture, [profile, started], runtimes: [restarted]) {
+        try await fixture.run([profile, started], runtimes: [restarted]) {
             try await fixture.runtime.start(profile)
             try await fixture.runtime.start(started)
             // One is found by a refresh, the other by starting it again.
@@ -390,7 +377,7 @@ struct RuntimeAdoptionTests {
             fixture.commands(profile).filter { method($0) == "Target.closeTarget" }
                 .compactMap { parameters($0)["targetId"] as? String }
         }
-        try await run(fixture, [profile], runtimes: [restarted]) {
+        try await fixture.run([profile], runtimes: [restarted]) {
             try await fixture.runtime.start(profile)
             let status = fixture.runtime.status(for: profile.id)
             let receipt = fixture.runtime.receiptURL(fixture.runtime.dataDirectory(for: profile.id))
@@ -423,7 +410,7 @@ struct RuntimeAdoptionTests {
         // Both launches must finish before either browser relaunches, also on a busy machine.
         try fixture.configure(profile, ["relaunch_ms": "4000"])
         try fixture.configure(refreshed, ["relaunch_ms": "4000"])
-        try await run(fixture, [profile, refreshed]) {
+        try await fixture.run([profile, refreshed]) {
             var first: [UUID: Int32] = [:]
             for item in [profile, refreshed] {
                 try await fixture.runtime.start(item)
@@ -467,7 +454,7 @@ struct RuntimeAdoptionTests {
         defer { bash.terminate() }
         let lock = directory.appendingPathComponent("SingletonLock").path
         try FileManager.default.createSymbolicLink(atPath: lock, withDestinationPath: "host-\(bash.processIdentifier)")
-        try await run(fixture, [profile]) {
+        try await fixture.run([profile]) {
             await fixture.runtime.refresh([profile])
             #expect(fixture.runtime.status(for: profile.id) == .stopped)
             await #expect(throws: (any Error).self) { try await fixture.runtime.start(profile) }
@@ -498,7 +485,7 @@ struct RuntimeAdoptionTests {
         try fixture.configure(profile, [:])
         let socket = try listen(on: "0.0.0.0", port: profile.port)
         defer { close(socket) }
-        try await run(fixture, [profile]) {
+        try await fixture.run([profile]) {
             let error = await #expect(throws: (any Error).self) { try await fixture.runtime.start(profile) }
             let message = error?.localizedDescription ?? ""
             #expect(message.contains("调试端口 \(profile.port) 已被「\(ProcessInspection.name(getpid()))」（PID \(getpid())）占用"))
@@ -510,7 +497,7 @@ struct RuntimeAdoptionTests {
         let fixture = try FakeEngineFixture("runtime-activate")
         let profile = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, [:])
-        try await run(fixture, [profile]) {
+        try await fixture.run([profile]) {
             #expect(fixture.runtime.activate(profile.id) == false)
             try await fixture.runtime.start(profile)
             // The fake engine is not an app macOS could bring forward.

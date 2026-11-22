@@ -75,13 +75,7 @@ private struct RelayFixture {
     }
 
     func run(_ profiles: [BrowserProfile], runtimes: [BrowserRuntime] = [], _ body: () async throws -> Void) async throws {
-        do {
-            try await body()
-        } catch {
-            await cleanUp(profiles, runtimes: runtimes)
-            throw error
-        }
-        await cleanUp(profiles, runtimes: runtimes)
+        try await runThenCleanUp(body) { await cleanUp(profiles, runtimes: runtimes) }
     }
 
     private func cleanUp(_ profiles: [BrowserProfile], runtimes: [BrowserRuntime]) async {

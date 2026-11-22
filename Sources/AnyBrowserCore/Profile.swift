@@ -212,6 +212,11 @@ public enum BrowserRunState: Equatable, Sendable {
     case stopped, starting, stopping
     case running(pid: Int32, port: Int, debugReady: Bool)
     case failed(String)
+
+    public var isRunning: Bool {
+        if case .running = self { return true }
+        return false
+    }
 }
 
 public enum ProfileError: LocalizedError {
@@ -328,6 +333,22 @@ extension BrowserProfile {
 }
 
 extension FingerprintSettings {
+    /// The language the browser runs in: `language`, or else the first of `languages`.
+    var primaryLanguage: String {
+        language.isEmpty ? (languages?.first ?? "") : language
+    }
+
+    /// The Accept-Language list: the generated one, or the primary language and its base language.
+    /// Empty without a primary language.
+    var acceptLanguages: [String] {
+        let primary = primaryLanguage
+        guard !primary.isEmpty else { return [] }
+        // A hand-edited primary language wins over a stale generated list.
+        if let languages, languages.first == primary { return languages }
+        let base = primary.split(separator: "-").first.map(String.init) ?? primary
+        return base == primary ? [primary] : [primary, base]
+    }
+
     /// The fingerprint switches after `--fingerprint=<seed>`.
     func arguments() -> [String] {
         var arguments: [String] = []
@@ -346,16 +367,9 @@ extension FingerprintSettings {
         if let cpuCount {
             arguments.append("--fingerprint-hardware-concurrency=\(cpuCount)")
         }
-        let primaryLanguage = language.isEmpty ? (languages?.first ?? "") : language
         if !primaryLanguage.isEmpty {
             arguments.append("--lang=\(primaryLanguage)")
-            let base = primaryLanguage.split(separator: "-").first.map(String.init)
-            let fallback = base == primaryLanguage ? primaryLanguage
-                : [primaryLanguage, base].compactMap { $0 }.joined(separator: ",")
-            // A hand-edited primary language wins over a stale generated list.
-            let accepted = (languages?.first == primaryLanguage)
-                ? languages!.joined(separator: ",") : fallback
-            arguments.append("--accept-lang=\(accepted)")
+            arguments.append("--accept-lang=\(acceptLanguages.joined(separator: ","))")
         }
         if !timeZone.isEmpty {
             arguments.append("--timezone=\(timeZone)")

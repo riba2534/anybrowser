@@ -157,6 +157,26 @@ extension View {
         return background(WorkbenchPalette.field, in: shape)
             .overlay { shape.strokeBorder(focused ? Color.accentColor : WorkbenchPalette.rule, lineWidth: 1) }
     }
+
+    /// The rounded, bordered panel the lists in sheets sit in.
+    func listPanel() -> some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        return background(WorkbenchPalette.panel, in: shape)
+            .overlay { shape.strokeBorder(WorkbenchPalette.rule, lineWidth: 1) }
+    }
+
+    /// The rounded border of a multi-line text editor.
+    func editorBorder() -> some View {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        return clipShape(shape).overlay { shape.strokeBorder(WorkbenchPalette.rule, lineWidth: 1) }
+    }
+}
+
+extension Binding where Value == Bool {
+    /// Whether `item` holds a value, for an alert or popover; dismissing it clears the value.
+    init<Item>(showing item: Binding<Item?>) {
+        self.init(get: { item.wrappedValue != nil }, set: { if !$0 { item.wrappedValue = nil } })
+    }
 }
 
 /// An error shown inline in a form or sheet.

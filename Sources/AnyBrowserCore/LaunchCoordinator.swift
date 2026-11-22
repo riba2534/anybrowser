@@ -375,11 +375,6 @@ public final class LaunchCoordinator: ObservableObject {
 // MARK: AutomationBackend
 
 extension LaunchCoordinator: AutomationBackend {
-    /// API launches never wait for a decision about a changed fingerprint; they warn and go on.
-    public func start(_ profile: BrowserProfile) async throws {
-        try await start(profile.id, fingerprintChange: .warn)
-    }
-
     public func devToolsEndpoint(for id: UUID) async -> URL? {
         await runtime.devToolsEndpoint(for: id)
     }

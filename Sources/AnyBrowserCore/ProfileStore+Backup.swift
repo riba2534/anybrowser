@@ -81,19 +81,15 @@ extension ProfileStore {
     /// unusable or the current database cannot be kept. The caller makes sure no store has the
     /// directory open.
     public nonisolated static func restoreBackup(_ backup: URL, into directory: URL) throws {
-        guard let canonical = realpath(directory.path, nil) else {
+        guard let root = ProcessInspection.canonicalURL(directory, isDirectory: true) else {
             throw ProfileError.invalid("无法定位本机 Profile 资料目录。")
         }
-        let root = URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
-        free(canonical)
-        let database = root.appendingPathComponent("profiles.sqlite3")
+        let database = root.appendingPathComponent(databaseFileName)
         let unusable = ProfileError.invalid("备份文件「\(backup.lastPathComponent)」不是可用的 AnyBrowser 数据库。")
 
         // NOFOLLOW only refuses a link as the file itself; a linked folder such as /tmp is resolved first.
-        let backupPath = realpath(backup.deletingLastPathComponent().path, nil).map { folder -> String in
-            defer { free(folder) }
-            return URL(fileURLWithPath: String(cString: folder)).appendingPathComponent(backup.lastPathComponent).path
-        } ?? backup.path
+        let backupPath = ProcessInspection.canonicalURL(backup.deletingLastPathComponent())?
+            .appendingPathComponent(backup.lastPathComponent).path ?? backup.path
         var source: OpaquePointer?
         defer { sqlite3_close(source) }
         guard sqlite3_open_v2(backupPath, &source, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK,

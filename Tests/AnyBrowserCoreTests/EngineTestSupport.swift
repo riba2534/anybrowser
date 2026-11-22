@@ -35,6 +35,14 @@ func scratchDirectory(_ label: String) throws -> URL {
     return try #require(ProcessInspection.canonicalURL(url, isDirectory: true))
 }
 
+/// The path of the package's executable `name`, built next to the test bundle; nil when it is not built.
+func builtProduct(_ name: String) -> String? {
+    let candidate = Bundle(for: ProductMarker.self).bundleURL.deletingLastPathComponent().appendingPathComponent(name).path
+    return FileManager.default.isExecutableFile(atPath: candidate) ? candidate : nil
+}
+
+private final class ProductMarker {}
+
 func permissions(_ url: URL) throws -> Int {
     try #require(FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int)
 }
@@ -121,6 +129,63 @@ struct LoopbackPage {
         let port = try await listener.startAndWait(on: queue)
         return LoopbackPage(listener: listener, url: try #require(URL(string: "http://127.0.0.1:\(port)/")))
     }
+}
+
+/// A loopback server that counts requests per path. `/asset.js` may be cached for a day;
+/// `/slow` answers after `delay`.
+final class CountingServer: @unchecked Sendable {
+    let listener: NWListener
+    let base: URL
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+
+    private init(listener: NWListener, base: URL) {
+        self.listener = listener
+        self.base = base
+    }
+
+    static func start(delay: TimeInterval = 0) async throws -> CountingServer {
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        let listener = try NWListener(using: parameters)
+        let queue = DispatchQueue(label: "anybrowser.test.counting")
+        var server: CountingServer?
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: queue)
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { data, _, _, _ in
+                let request = data.map { String(decoding: $0, as: UTF8.self) } ?? ""
+                let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+                server?.count(path)
+                let (headers, body): (String, String) = switch path {
+                case "/asset.js": ("Content-Type: text/javascript\r\nCache-Control: public, max-age=86400", "window.loaded = 1;")
+                case "/favicon.ico": ("Content-Type: text/plain", "")
+                default: ("Content-Type: text/html\r\nCache-Control: no-store", "<!doctype html><title>AnyBrowser runtime \(path)</title>")
+                }
+                let response = Data("HTTP/1.1 200 OK\r\n\(headers)\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)".utf8)
+                queue.asyncAfter(deadline: .now() + (path == "/slow" ? delay : 0)) {
+                    connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
+                }
+            }
+        }
+        let port = try await listener.startAndWait(on: queue)
+        let created = CountingServer(listener: listener, base: try #require(URL(string: "http://127.0.0.1:\(port)/")))
+        server = created
+        return created
+    }
+
+    private func count(_ path: String) {
+        lock.lock()
+        counts[path, default: 0] += 1
+        lock.unlock()
+    }
+
+    func requests(_ path: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return counts[path] ?? 0
+    }
+
+    func url(_ path: String) -> String { base.absoluteString + path.dropFirst() }
 }
 
 final class DevToolsPage {

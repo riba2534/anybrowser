@@ -345,17 +345,18 @@ public enum ProxyProbe {
     private static func bare(_ host: String) -> String {
         host.hasPrefix("[") && host.hasSuffix("]") ? String(host.dropFirst().dropLast()) : host
     }
+}
 
-    private final class Once: @unchecked Sendable {
-        private let lock = NSLock()
-        private var claimed = false
+/// Lets exactly one of several callbacks resume a continuation.
+final class Once: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
 
-        func claim() -> Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            guard !claimed else { return false }
-            claimed = true
-            return true
-        }
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !claimed else { return false }
+        claimed = true
+        return true
     }
 }

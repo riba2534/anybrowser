@@ -253,19 +253,6 @@ struct ProfileBackupTests {
     }
 }
 
-/// Runs `body`, then ends whatever the fixture started, also when `body` throws.
-@MainActor
-private func withFixture(_ fixture: FakeEngineFixture, _ profiles: [BrowserProfile],
-                         _ body: () async throws -> Void) async throws {
-    do {
-        try await body()
-    } catch {
-        await fixture.cleanUp(profiles)
-        throw error
-    }
-    await fixture.cleanUp(profiles)
-}
-
 /// Whether the browser the runtime runs for `id` right now was started without windows.
 @MainActor
 private func runsHeadless(_ id: UUID, _ runtime: BrowserRuntime) -> Bool? {
@@ -292,7 +279,7 @@ struct ProfileBackupFlowTests {
         }
         try write("separate", to: "Default/Cache/Cache_Data/data_0", in: fixture.runtime.cacheDirectory(for: saved.id))
 
-        try await withFixture(fixture, [saved]) {
+        try await fixture.run([saved]) {
             let file = fixture.root.appendingPathComponent("backup.anybrowser")
             let missing = UUID()
             var headless: [Bool?] = []
@@ -367,7 +354,7 @@ struct ProfileBackupFlowTests {
         let store = try ProfileStore(directory: fixture.storage)
         try store.save(fixture.profile(port: 17401))
         let saved = store.profiles[0]
-        try await withFixture(fixture, [saved]) {
+        try await fixture.run([saved]) {
             try await fixture.runtime.start(saved)
             guard case let .running(pid, _, true) = fixture.runtime.status(for: saved.id) else {
                 Issue.record("Not running: \(fixture.runtime.status(for: saved.id))")
@@ -413,7 +400,7 @@ struct ProfileBackupFlowTests {
         let file = fixture.root.appendingPathComponent("cookies.anybrowser")
         try ProfileBackup.pack(staging, to: file)
 
-        try await withFixture(fixture, [saved]) {
+        try await fixture.run([saved]) {
             var headless: [Bool?] = []
             let restored = try await ProfileBackup.restore(from: file, store: store, runtime: fixture.runtime,
                                                            identity: .keepOriginal) { progress in

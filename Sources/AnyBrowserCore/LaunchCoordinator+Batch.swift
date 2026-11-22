@@ -33,7 +33,7 @@ extension LaunchCoordinator {
     /// its turn. A changed fingerprint only adds a warning, as on the API.
     public func startBatch(_ ids: [UUID]) async throws -> BatchReport {
         let preflight = PreflightCache()
-        return try await runBatch(.start, ids, applies: { !running(self.state(for: $0.id)) && !self.isBusy($0.id) }) { profile in
+        return try await runBatch(.start, ids, applies: { !self.state(for: $0.id).isRunning && !self.isBusy($0.id) }) { profile in
             try await self.launch(profile.id, restarting: false, overrides: LaunchOverrides(), fingerprintChange: .warn,
                                   preflight: preflight).warnings
         }
@@ -41,7 +41,7 @@ extension LaunchCoordinator {
 
     /// Stops the running Profiles that are not busy, `maximumConcurrentLaunches` at a time.
     public func stopBatch(_ ids: [UUID]) async throws -> BatchReport {
-        try await runBatch(.stop, ids, applies: { running(self.state(for: $0.id)) && !self.isBusy($0.id) }) { profile in
+        try await runBatch(.stop, ids, applies: { self.state(for: $0.id).isRunning && !self.isBusy($0.id) }) { profile in
             try await self.stop(profile.id)
             return []
         }
@@ -135,9 +135,4 @@ private final class BatchRun {
         report.cancelled = cancelled
         return report
     }
-}
-
-private func running(_ state: BrowserRunState) -> Bool {
-    if case .running = state { return true }
-    return false
 }

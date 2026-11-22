@@ -19,16 +19,28 @@ public enum ProxyAssignment {
 
     /// How many of `profiles` use each entry, comparing normalized addresses.
     public static func usage(of entries: [ProxyEntry], by profiles: [BrowserProfile]) -> [UUID: Int] {
-        var byURL: [String: Int] = [:]
-        for profile in profiles {
-            guard let endpoint = try? ProxyEndpoint.parse(profile.proxy, allowingSOCKSCredentials: true) else { continue }
-            byURL[endpoint.url, default: 0] += 1
-        }
+        usage(of: entries, users: users(of: profiles))
+    }
+
+    /// How many of `users` (see `users(of:)`) use each entry, leaving out the Profiles in `excluded`.
+    public static func usage(of entries: [ProxyEntry], users: [String: [UUID]],
+                             excluding excluded: Set<UUID> = []) -> [UUID: Int] {
         var usage: [UUID: Int] = [:]
         for entry in entries {
-            if let count = byURL[entry.url] { usage[entry.id] = count }
+            let count = users[entry.url]?.filter { !excluded.contains($0) }.count ?? 0
+            if count > 0 { usage[entry.id] = count }
         }
         return usage
+    }
+
+    /// The Profiles using each proxy, by normalized address, in the order of `profiles`.
+    public static func users(of profiles: [BrowserProfile]) -> [String: [UUID]] {
+        var users: [String: [UUID]] = [:]
+        for profile in profiles {
+            guard let endpoint = try? ProxyEndpoint.parse(profile.proxy, allowingSOCKSCredentials: true) else { continue }
+            users[endpoint.url, default: []].append(profile.id)
+        }
+        return users
     }
 
     /// Addresses for `count` Profiles from `entries`. Entries no Profile uses yet (`usage` is zero)

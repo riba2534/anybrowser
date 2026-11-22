@@ -56,11 +56,7 @@ struct ProxyLibrarySheet: View {
                 TextEditor(text: $pasted)
                     .font(.system(size: 12, design: .monospaced))
                     .frame(height: 86)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(WorkbenchPalette.rule, lineWidth: 1)
-                    }
+                    .editorBorder()
                     .accessibilityLabel("要添加的代理，每行一个")
                     .accessibilityIdentifier("proxy-paste")
                 VStack(alignment: .leading, spacing: 8) {
@@ -189,7 +185,7 @@ struct ProxyLibrarySheet: View {
     }
 
     private var list: some View {
-        let usage = ProxyAssignment.usage(of: library.entries, by: workbench.profiles)
+        let usage = ProxyAssignment.usage(of: library.entries, users: workbench.proxyUsers)
         let shown = self.shown
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
@@ -206,10 +202,7 @@ struct ProxyLibrarySheet: View {
             }
         }
         .frame(height: 300)
-        .background(WorkbenchPalette.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WorkbenchPalette.rule, lineWidth: 1)
-        }
+        .listPanel()
         .accessibilityIdentifier("proxy-list")
     }
 
@@ -366,11 +359,7 @@ private struct ProxyEntryEditor: View {
                 TextEditor(text: $entry.note)
                     .font(.system(size: 13))
                     .frame(height: 64)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(WorkbenchPalette.rule, lineWidth: 1)
-                    }
+                    .editorBorder()
                     .accessibilityLabel("备注")
                     .accessibilityIdentifier("proxy-edit-note")
             }

@@ -91,6 +91,12 @@ extension Workbench {
         return library.index.visibleIDs
     }
 
+    /// The saved Profiles using each proxy, by normalized address.
+    var proxyUsers: [String: [UUID]] {
+        refreshIndex()
+        return library.index.proxyUsers
+    }
+
     private func refreshIndex() {
         library.index.update(.init(profiles: profiles, query: library.query, sort: library.sort,
                                    lastLaunched: store?.lastLaunched ?? [:], exits: proxyLibrary?.profileExits ?? [:]))
@@ -109,7 +115,7 @@ extension Workbench {
     func exitSummary(for id: UUID) -> (country: String, ip: String, sharedWith: [String])? {
         guard let record = proxyLibrary?.profileExits[id] else { return nil }
         refreshIndex()
-        let names = (library.index.sharedExits[id] ?? []).compactMap { other in profiles.first { $0.id == other }?.name }
+        let names = (library.index.sharedExits[id] ?? []).compactMap { library.index.names[$0] }
         return (record.exit.countryCode, record.exit.ip, names)
     }
 
@@ -428,15 +434,12 @@ extension Workbench {
         var text: String
         switch moved.count {
         case 0: text = ""
-        case 1: text = "已将「\(moved[0])」移到回收站，\(Self.trashRetention) 天内可在回收站恢复。"
-        default: text = "已将 \(moved.count) 个 Profile 移到回收站，\(Self.trashRetention) 天内可在回收站恢复。"
+        case 1: text = "已将「\(moved[0])」移到回收站，\(TrashedProfile.retentionDays) 天内可在回收站恢复。"
+        default: text = "已将 \(moved.count) 个 Profile 移到回收站，\(TrashedProfile.retentionDays) 天内可在回收站恢复。"
         }
         if !refused.isEmpty { text += "\(refused.count) 个未移动：\(refused.joined(separator: "；"))" }
         notice = Notice(text: text, isError: !refused.isEmpty)
     }
-
-    /// How long trashed Profiles stay; launch maintenance purges them after that.
-    static let trashRetention = 30
 
     func restoreFromTrash(_ id: UUID) {
         guard let store, let entry = store.trashed.first(where: { $0.id == id }) else { return }

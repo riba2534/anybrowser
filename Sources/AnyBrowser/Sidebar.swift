@@ -74,8 +74,7 @@ struct LibrarySidebar: View {
                 FullBackupSheet(workbench: workbench, mode: .restore(file))
             }
         }
-        .alert("数据库备份", isPresented: Binding(get: { restoreOutcome != nil },
-                                                set: { if !$0 { restoreOutcome = nil } })) {
+        .alert("数据库备份", isPresented: Binding(showing: $restoreOutcome)) {
             Button("好") { restoreOutcome = nil }
         } message: {
             Text(restoreOutcome ?? "")

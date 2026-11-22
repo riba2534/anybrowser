@@ -2,38 +2,15 @@
 import Darwin
 import Foundation
 import SQLite3
-
 import Testing
 
 // MARK: Raw database access, as another version or process would see the file
-
-private func databaseURL(_ directory: URL) -> URL { directory.appendingPathComponent("profiles.sqlite3") }
-
-private func withDatabase<Value>(_ directory: URL, _ body: (OpaquePointer) throws -> Value) throws -> Value {
-    var database: OpaquePointer?
-    guard sqlite3_open(databaseURL(directory).path, &database) == SQLITE_OK, let database else {
-        throw ProfileError.invalid("open")
-    }
-    defer { sqlite3_close(database) }
-    return try body(database)
-}
 
 private func exec(_ sql: String, in directory: URL) throws {
     try withDatabase(directory) { database in
         guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
             throw ProfileError.invalid(String(cString: sqlite3_errmsg(database)))
         }
-    }
-}
-
-private func scalar(_ sql: String, in directory: URL) throws -> Int64 {
-    try withDatabase(directory) { database in
-        var read: OpaquePointer?
-        defer { sqlite3_finalize(read) }
-        guard sqlite3_prepare_v2(database, sql, -1, &read, nil) == SQLITE_OK, sqlite3_step(read) == SQLITE_ROW else {
-            throw ProfileError.invalid("scalar")
-        }
-        return sqlite3_column_int64(read, 0)
     }
 }
 
@@ -51,16 +28,8 @@ private func columns(_ table: String, in directory: URL) throws -> [String] {
 }
 
 private func insertRow(_ id: String, port: Int, seed: Int, payload: Data, in directory: URL) throws {
-    try withDatabase(directory) { database in
-        var write: OpaquePointer?
-        defer { sqlite3_finalize(write) }
-        guard sqlite3_prepare_v2(database, "INSERT INTO profiles(id, port, seed, payload) VALUES(?, ?, ?, ?)", -1, &write, nil) == SQLITE_OK,
-              sqlite3_bind_text(write, 1, id, -1, sqliteTransient) == SQLITE_OK,
-              sqlite3_bind_int64(write, 2, Int64(port)) == SQLITE_OK,
-              sqlite3_bind_int64(write, 3, Int64(seed)) == SQLITE_OK,
-              payload.withUnsafeBytes({ sqlite3_bind_blob(write, 4, $0.baseAddress, Int32($0.count), sqliteTransient) }) == SQLITE_OK,
-              sqlite3_step(write) == SQLITE_DONE else { throw ProfileError.invalid("insert") }
-    }
+    try execute("INSERT INTO profiles(id, port, seed, payload) VALUES(?, ?, ?, ?)", in: directory,
+                binding: [id, port, seed, payload])
 }
 
 private func storedPayload(_ id: String, in directory: URL) throws -> Data {

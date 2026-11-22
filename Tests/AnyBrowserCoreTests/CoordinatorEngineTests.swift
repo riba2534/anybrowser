@@ -1,59 +1,6 @@
 @testable import AnyBrowserCore
 import Foundation
-import Network
 import Testing
-
-/// A loopback page whose `/asset.js` the HTTP cache may keep for a day, counting requests per path.
-private final class AssetServer: @unchecked Sendable {
-    let listener: NWListener
-    let base: URL
-    private let lock = NSLock()
-    private var counts: [String: Int] = [:]
-
-    private init(listener: NWListener, base: URL) {
-        self.listener = listener
-        self.base = base
-    }
-
-    static func start() async throws -> AssetServer {
-        let parameters = NWParameters.tcp
-        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
-        let listener = try NWListener(using: parameters)
-        let queue = DispatchQueue(label: "anybrowser.coordinator.assets")
-        var server: AssetServer?
-        listener.newConnectionHandler = { connection in
-            connection.start(queue: queue)
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { data, _, _, _ in
-                let request = data.map { String(decoding: $0, as: UTF8.self) } ?? ""
-                let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
-                server?.count(path)
-                let (headers, body) = path == "/asset.js"
-                    ? ("Content-Type: text/javascript\r\nCache-Control: public, max-age=86400", "window.loaded = 1;")
-                    : ("Content-Type: text/html\r\nCache-Control: no-store", "<!doctype html><title>AnyBrowser coordinator</title>")
-                let response = Data("HTTP/1.1 200 OK\r\n\(headers)\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)".utf8)
-                connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
-            }
-        }
-        let port = try await listener.startAndWait(on: queue)
-        let created = AssetServer(listener: listener, base: try #require(URL(string: "http://127.0.0.1:\(port)/")))
-        server = created
-        return created
-    }
-
-    private func count(_ path: String) {
-        lock.lock()
-        counts[path, default: 0] += 1
-        lock.unlock()
-    }
-
-    func requests(_ path: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return counts[path] ?? 0
-    }
-
-    var page: URL { base.appendingPathComponent("page") }
-}
 
 // Debug ports 9370–9379 belong to this suite.
 @Suite(.serialized)
@@ -90,7 +37,7 @@ struct CoordinatorEngineTests {
 
     /// Sets lasting cookies of a payment site's device identity, plus one of an unrelated site,
     /// and loads the cacheable asset twice.
-    private func browse(_ fixture: Fixture, _ profile: BrowserProfile, _ server: AssetServer) async throws {
+    private func browse(_ fixture: Fixture, _ profile: BrowserProfile, _ server: CountingServer) async throws {
         let endpoint = try #require(await fixture.runtime.devToolsEndpoint(for: profile.id))
         let browser = try DevToolsClient(endpoint: endpoint)
         defer { browser.close() }
@@ -120,8 +67,8 @@ struct CoordinatorEngineTests {
         return Set(cookies.compactMap { $0["name"] as? String })
     }
 
-    private func fetchAsset(_ fixture: Fixture, _ profile: BrowserProfile, _ server: AssetServer) async throws {
-        let page = try await DevToolsPage.open(port: profile.port, url: server.page)
+    private func fetchAsset(_ fixture: Fixture, _ profile: BrowserProfile, _ server: CountingServer) async throws {
+        let page = try await DevToolsPage.open(port: profile.port, url: server.base.appendingPathComponent("page"))
         defer { page.socket.cancel(with: .normalClosure, reason: nil) }
         _ = try await page.evaluate("fetch('/asset.js').then(r => r.text())", awaitPromise: true)
     }
@@ -138,12 +85,12 @@ struct CoordinatorEngineTests {
     func stoppedRegeneration() async throws {
         let fixture = try Fixture("coordinator-engine-stopped")
         defer { try? FileManager.default.removeItem(at: fixture.root) }
-        let server = try await AssetServer.start()
+        let server = try await CountingServer.start()
         defer { server.listener.cancel() }
         var draft = try fixture.store.makeDraft()
         draft.port = testPort(9370)
         draft.proxy = ""
-        draft.launch.startURLs = [server.page.absoluteString]
+        draft.launch.startURLs = [server.url("/page")]
         try fixture.store.save(draft)
         let profile = try #require(fixture.store.profiles.first)
         let coordinator = fixture.coordinator
@@ -186,12 +133,12 @@ struct CoordinatorEngineTests {
     func runningRegeneration() async throws {
         let fixture = try Fixture("coordinator-engine-running")
         defer { try? FileManager.default.removeItem(at: fixture.root) }
-        let server = try await AssetServer.start()
+        let server = try await CountingServer.start()
         defer { server.listener.cancel() }
         var draft = try fixture.store.makeDraft()
         draft.port = testPort(9371)
         draft.proxy = ""
-        draft.launch.startURLs = [server.page.absoluteString]
+        draft.launch.startURLs = [server.url("/page")]
         try fixture.store.save(draft)
         let profile = try #require(fixture.store.profiles.first)
         let coordinator = fixture.coordinator

@@ -14,7 +14,7 @@ struct TrashSheet: View {
 
     var body: some View {
         WorkbenchSheet(title: "回收站",
-                       caption: "移到回收站的 Profile 保留浏览器资料、端口和身份，\(Workbench.trashRetention) 天后自动永久删除。恢复后回到原来的位置，浏览器资料照常使用。",
+                       caption: "移到回收站的 Profile 保留浏览器资料、端口和身份，\(TrashedProfile.retentionDays) 天后自动永久删除。恢复后回到原来的位置，浏览器资料照常使用。",
                        width: 620) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -31,10 +31,7 @@ struct TrashSheet: View {
                 }
             }
             .frame(height: 320)
-            .background(WorkbenchPalette.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WorkbenchPalette.rule, lineWidth: 1)
-            }
+            .listPanel()
             HStack(spacing: 10) {
                 Button("清空回收站…") { confirming = entries }
                     .buttonStyle(WorkbenchButtonStyle(.quiet))
@@ -46,7 +43,7 @@ struct TrashSheet: View {
                     .keyboardShortcut(.cancelAction)
             }
         }
-        .alert(confirmTitle, isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
+        .alert(confirmTitle, isPresented: Binding(showing: $confirming),
                presenting: confirming) { doomed in
             Button("永久删除", role: .destructive) { purge(doomed.map(\.id)) }
             Button("取消", role: .cancel) {}
@@ -62,7 +59,7 @@ struct TrashSheet: View {
     }
 
     private func row(_ entry: TrashedProfile) -> some View {
-        let days = entry.daysRemaining(retention: Workbench.trashRetention)
+        let days = entry.daysRemaining(retention: TrashedProfile.retentionDays)
         return HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(entry.profile.name.isEmpty ? "未命名 Profile" : entry.profile.name)
@@ -158,16 +155,14 @@ struct RepairSheet: View {
             measure()
         }
         .onChange(of: orphans) { _ in measure() }
-        .alert("删除这份无法读取的配置？", isPresented: Binding(get: { confirmingRow != nil },
-                                                      set: { if !$0 { confirmingRow = nil } }),
+        .alert("删除这份无法读取的配置？", isPresented: Binding(showing: $confirmingRow),
                presenting: confirmingRow) { row in
             Button("删除", role: .destructive) { workbench.deleteUnreadable(row) }
             Button("取消", role: .cancel) {}
         } message: { _ in
             Text("数据库里的这一行会被删除，无法恢复；需要时先导出原始 JSON。它的浏览器资料目录保留。")
         }
-        .alert("删除这个资料目录？", isPresented: Binding(get: { confirmingOrphan != nil },
-                                                 set: { if !$0 { confirmingOrphan = nil } }),
+        .alert("删除这个资料目录？", isPresented: Binding(showing: $confirmingOrphan),
                presenting: confirmingOrphan) { id in
             Button("删除", role: .destructive) {
                 deleting.insert(id)

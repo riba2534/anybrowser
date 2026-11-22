@@ -4,13 +4,7 @@ import Foundation
 import Testing
 
 /// The anybrowserctl executable, built next to the test bundle.
-private let controlPath: String? = {
-    let bundle = Bundle(for: ControlMarker.self).bundleURL
-    let candidate = bundle.deletingLastPathComponent().appendingPathComponent("anybrowserctl").path
-    return FileManager.default.isExecutableFile(atPath: candidate) ? candidate : nil
-}()
-
-private final class ControlMarker {}
+private let controlPath = builtProduct("anybrowserctl")
 
 /// One run of anybrowserctl.
 private struct ControlRun: Sendable {

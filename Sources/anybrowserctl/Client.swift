@@ -94,10 +94,7 @@ final class Client {
 
     init(_ resolve: @escaping () throws -> Connection) {
         self.resolve = resolve
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.connectionProxyDictionary = ["HTTPEnable": 0, "HTTPSEnable": 0, "SOCKSEnable": 0]
-        configuration.httpShouldSetCookies = false
-        configuration.urlCredentialStorage = nil
+        let configuration = URLSessionConfiguration.loopback
         // Starting browsers for a cookie transfer or checking many proxies takes a while.
         configuration.timeoutIntervalForRequest = 600
         configuration.timeoutIntervalForResource = 600

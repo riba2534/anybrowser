@@ -31,6 +31,10 @@ public final class LibraryIndex {
     public private(set) var tags: [String] = []
     /// For each Profile whose last exit IP other Profiles share, those Profiles in store order.
     public private(set) var sharedExits: [UUID: [UUID]] = [:]
+    /// Each Profile's name, for naming the ones in `sharedExits`.
+    public private(set) var names: [UUID: String] = [:]
+    /// The Profiles using each proxy, as `ProxyAssignment.users(of:)` lists them.
+    public private(set) var proxyUsers: [String: [UUID]] = [:]
     /// How many times the sections were worked out, for tests.
     public private(set) var computations = 0
     private var inputs: Inputs?
@@ -50,16 +54,21 @@ public final class LibraryIndex {
         if previous?.profiles != inputs.profiles {
             groups = ProfileLibrary.groups(inputs.profiles)
             tags = Self.tags(inputs.profiles)
+            names = Dictionary(inputs.profiles.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+            proxyUsers = ProxyAssignment.users(of: inputs.profiles)
         }
         if previous?.profiles != inputs.profiles || previous?.exits != inputs.exits {
             sharedExits = Self.sharedExits(inputs.exits, among: inputs.profiles.map(\.id))
         }
     }
 
-    static func tags(_ profiles: [BrowserProfile]) -> [String] {
+    static func tags(_ profiles: [BrowserProfile]) -> [String] { tags(in: profiles.map(\.tags)) }
+
+    /// The tags in `lists`, each once whatever its case and spelled as first seen, in display order.
+    public static func tags(in lists: [[String]]) -> [String] {
         var seen: Set<String> = []
         var result: [String] = []
-        for tag in profiles.flatMap(\.tags) where seen.insert(tag.lowercased()).inserted { result.append(tag) }
+        for tag in lists.joined() where seen.insert(tag.lowercased()).inserted { result.append(tag) }
         return result.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
@@ -104,7 +113,7 @@ public enum LibrarySelection {
 extension TrashedProfile {
     /// Whole days left before launch maintenance purges the entry, counting a started day as a
     /// day; 0 once it is due.
-    public func daysRemaining(now: Date = Date(), retention days: Int = 30) -> Int {
+    public func daysRemaining(now: Date = Date(), retention days: Int = TrashedProfile.retentionDays) -> Int {
         let left = Double(days) * 86400 - now.timeIntervalSince(deletedAt)
         return left <= 0 ? 0 : Int((left / 86400).rounded(.up))
     }
@@ -124,8 +133,7 @@ public struct DatabaseBackup: Equatable, Sendable, Identifiable {
         // profiles-<yyyyMMdd>-<HHmmss>-<SSS>-<reason>.sqlite3
         guard name.hasPrefix("profiles-"), name.hasSuffix(".sqlite3") else { return nil }
         let stem = name.dropFirst("profiles-".count).dropLast(".sqlite3".count)
-        guard stem.count > 20, let date = Self.stamp.date(from: String(stem.prefix(19))),
-              stem.dropFirst(19).first == "-" else { return nil }
+        guard stem.count > 20, stem.dropFirst(19).first == "-", let date = ProfileStore.backupDate(url) else { return nil }
         self.url = url
         createdAt = date
         reason = String(stem.dropFirst(20))
@@ -140,13 +148,5 @@ public struct DatabaseBackup: Equatable, Sendable, Identifiable {
         case "manual": return "手动备份"
         default: return reason
         }
-    }
-
-    private static var stamp: DateFormatter {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
-        return formatter
     }
 }

@@ -66,7 +66,7 @@ final class RedirectRefusal: NSObject, URLSessionTaskDelegate {
 
 extension URLSessionConfiguration {
     /// For a browser's debug port on this Mac: no proxies, cookies or stored credentials.
-    static var loopback: URLSessionConfiguration {
+    public static var loopback: URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.connectionProxyDictionary = ["HTTPEnable": 0, "HTTPSEnable": 0, "SOCKSEnable": 0]
         configuration.httpShouldSetCookies = false
@@ -472,7 +472,7 @@ public final class BrowserRuntime: ObservableObject {
                 result = await runningState(saved, directory: directory)
             }
             // The browser may have replaced itself, or AnyBrowser quit before writing the receipt.
-            if result == .stopped, lockHolder(directory) != nil, let lock = try? lockDirectory(directory) {
+            if result == .stopped, ProcessInspection.lockHolder(directory) != nil, let lock = try? lockDirectory(directory) {
                 if let holder = adoptLockHolder(directory, ports: [saved?.port, profile.port], relay: saved?.relay) {
                     receipt = holder
                     adopted = true
@@ -599,7 +599,7 @@ public final class BrowserRuntime: ObservableObject {
     /// in between is never recorded. The relay the browser goes through is kept: `relay` from the
     /// previous receipt, or the helper listening where the browser's arguments say.
     private func adoptLockHolder(_ directory: URL, ports: [Int?], relay: RelayReceipt?) -> Receipt? {
-        guard let pid = lockHolder(directory), let stamp = ProcessStamp.read(pid),
+        guard let pid = ProcessInspection.lockHolder(directory), let stamp = ProcessStamp.read(pid),
               let details = try? PrivateDirectory.check(directory),
               let arguments = ProcessInspection.arguments(pid) else { return nil }
         var seen: Set<Int> = []
@@ -661,17 +661,8 @@ public final class BrowserRuntime: ObservableObject {
         return executableConfirmed && ProcessStamp.read(receipt.pid) == receipt.stamp
     }
 
-    /// The live process the data directory's SingletonLock (`<host>-<pid>`) names.
-    private func lockHolder(_ directory: URL) -> Int32? {
-        let lock = directory.appendingPathComponent("SingletonLock").path
-        guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: lock),
-              let suffix = target.split(separator: "-").last, let pid = Int32(suffix), pid > 1,
-              ProcessStamp.read(pid) != nil else { return nil }
-        return pid
-    }
-
     func profileInUse(_ directory: URL) -> Bool {
-        guard let pid = lockHolder(directory) else { return false }
+        guard let pid = ProcessInspection.lockHolder(directory) else { return false }
         guard let arguments = ProcessInspection.arguments(pid) else { return true }
         return ProcessInspection.hasFlag("--user-data-dir", value: directory.path, arguments: arguments)
     }

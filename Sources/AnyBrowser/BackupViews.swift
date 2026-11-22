@@ -234,17 +234,8 @@ enum BackupPanels {
     static let type = UTType(filenameExtension: ProfileBackup.fileExtension) ?? .data
 
     static func saveLocation() -> URL? {
-        let panel = NSSavePanel()
-        panel.title = "导出完整备份"
-        panel.prompt = "备份"
-        panel.message = "文件包含账号密码和 Cookie，没有加密，请存放在安全的位置。"
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        panel.nameFieldStringValue = "AnyBrowser 备份 \(formatter.string(from: Date())).\(ProfileBackup.fileExtension)"
-        panel.allowedContentTypes = [type]
-        panel.canCreateDirectories = true
-        return panel.runModal() == .OK ? panel.url : nil
+        FilePanels.saveLocation(title: "导出完整备份", prompt: "备份", message: "文件包含账号密码和 Cookie，没有加密，请存放在安全的位置。",
+                                name: "AnyBrowser 备份 \(FilePanels.today).\(ProfileBackup.fileExtension)", types: [type])
     }
 
     static func backupFile() -> URL? {
@@ -315,10 +306,7 @@ struct DatabaseBackupsSheet: View {
                 }
             }
             .frame(height: 280)
-            .background(WorkbenchPalette.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WorkbenchPalette.rule, lineWidth: 1)
-            }
+            .listPanel()
             if let blocker = restoreBlocker {
                 Text(blocker)
                     .font(.system(size: 12))
@@ -347,7 +335,7 @@ struct DatabaseBackupsSheet: View {
             }
         }
         .onAppear(perform: reload)
-        .alert("恢复这份数据库备份？", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
+        .alert("恢复这份数据库备份？", isPresented: Binding(showing: $confirming),
                presenting: confirming) { backup in
             Button("恢复并重新启动 AnyBrowser", role: .destructive) { restore(backup) }
             Button("取消", role: .cancel) {}
@@ -443,8 +431,8 @@ enum DatabaseRestore {
 
     /// The data directory as `SingleInstance` locks it, for when the database could not be opened.
     static func dataDirectory() -> URL? {
-        guard let located = try? ProfileStore.defaultDirectory(), let path = canonicalPath(located) else { return nil }
-        return URL(fileURLWithPath: path, isDirectory: true)
+        guard let located = try? ProfileStore.defaultDirectory() else { return nil }
+        return ProcessInspection.canonicalURL(located, isDirectory: true)
     }
 
     /// Restores the backup named on the command line, if any. Runs before the store opens.
@@ -457,25 +445,19 @@ enum DatabaseRestore {
         }
         // Only a backup this data directory made: the argument is not a way to load any file.
         let folder = claim.directory.appendingPathComponent("Backups", isDirectory: true)
-        guard let parent = canonicalPath(backup.deletingLastPathComponent()), parent == canonicalPath(folder),
+        guard let parent = ProcessInspection.canonicalURL(backup.deletingLastPathComponent(), isDirectory: true),
+              parent.path == ProcessInspection.canonicalURL(folder)?.path,
               let described = DatabaseBackup(backup) else {
             outcome = "未能恢复数据库备份：「\(backup.lastPathComponent)」不是本机资料目录里的备份。"
             return
         }
         do {
             // SQLite refuses a path through a symbolic link, such as /tmp.
-            let canonical = URL(fileURLWithPath: parent, isDirectory: true).appendingPathComponent(backup.lastPathComponent)
-            try ProfileStore.restoreBackup(canonical, into: claim.directory)
+            try ProfileStore.restoreBackup(parent.appendingPathComponent(backup.lastPathComponent), into: claim.directory)
             outcome = "已恢复 \(DatabaseBackupsSheet.date.string(from: described.createdAt)) 的 Profile 数据库备份。恢复前的数据库已另存为一份备份，需要时可在「资料库备份」里恢复回去。"
         } catch {
             outcome = "未能恢复数据库备份：\(error.localizedDescription)当前数据库没有改动。"
         }
-    }
-
-    private static func canonicalPath(_ url: URL) -> String? {
-        guard let resolved = realpath(url.path, nil) else { return nil }
-        defer { free(resolved) }
-        return String(cString: resolved)
     }
 
     /// Starts the waiting shell, then quits. The shell gives up after a minute, in case quitting

@@ -4,41 +4,6 @@ import Foundation
 import SQLite3
 import Testing
 
-private func execute(_ sql: String, in directory: URL, binding values: [Any] = []) throws {
-    var database: OpaquePointer?
-    guard sqlite3_open(directory.appendingPathComponent("profiles.sqlite3").path, &database) == SQLITE_OK else {
-        throw ProfileError.invalid("open")
-    }
-    defer { sqlite3_close(database) }
-    var statement: OpaquePointer?
-    guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else { throw ProfileError.invalid("prepare") }
-    defer { sqlite3_finalize(statement) }
-    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    for (offset, value) in values.enumerated() {
-        let index = Int32(offset + 1)
-        switch value {
-        case let text as String: sqlite3_bind_text(statement, index, text, -1, transient)
-        case let number as Int: sqlite3_bind_int64(statement, index, Int64(number))
-        case let data as Data: _ = data.withUnsafeBytes { sqlite3_bind_blob(statement, index, $0.baseAddress, Int32($0.count), transient) }
-        default: throw ProfileError.invalid("bind")
-        }
-    }
-    guard sqlite3_step(statement) == SQLITE_DONE else { throw ProfileError.invalid("step") }
-}
-
-private func rowCount(_ table: String, in directory: URL) throws -> Int {
-    var database: OpaquePointer?
-    guard sqlite3_open(directory.appendingPathComponent("profiles.sqlite3").path, &database) == SQLITE_OK else {
-        throw ProfileError.invalid("open")
-    }
-    defer { sqlite3_close(database) }
-    var statement: OpaquePointer?
-    guard sqlite3_prepare_v2(database, "SELECT COUNT(*) FROM \(table)", -1, &statement, nil) == SQLITE_OK,
-          sqlite3_step(statement) == SQLITE_ROW else { throw ProfileError.invalid("count") }
-    defer { sqlite3_finalize(statement) }
-    return Int(sqlite3_column_int64(statement, 0))
-}
-
 private func message(_ error: Error?) -> String { error?.localizedDescription ?? "" }
 
 @MainActor
@@ -452,26 +417,13 @@ struct LibraryTests {
         #expect(ProfileLibrary.removalBlocker(state: .failed("x"), busy: false, batchRunning: false) == nil)
     }
 
-    @Test("Batches look each Profile up again before its turn and skip ones removed meanwhile")
-    func batchRunnerLooksUpEachProfile() async {
-        let first = BrowserProfile(name: "A", port: 9222, fingerprint: FingerprintSettings(seed: 1))
-        let removed = BrowserProfile(name: "B", port: 9223, fingerprint: FingerprintSettings(seed: 2))
-        let renamed = BrowserProfile(name: "C", port: 9224, fingerprint: FingerprintSettings(seed: 3))
-        let running = BrowserProfile(name: "D", port: 9225, fingerprint: FingerprintSettings(seed: 4))
-        var saved = [first.id: first, removed.id: removed, renamed.id: renamed, running.id: running]
-        var acted: [String] = []
-        let outcome = await ProfileLibrary.runBatch([first, removed, renamed, running].map(\.id),
-                                                    lookup: { saved[$0] }, applies: { $0.name != "D" }) { profile in
-            acted.append(profile.name)
-            if profile.id == first.id {
-                saved[removed.id] = nil
-                saved[renamed.id]?.name = "C2"
-                return "代理不可达"
-            }
-            throw ProfileError.invalid("端口已占用")
-        }
-        #expect(acted == ["A", "C2"])
-        #expect(outcome.succeeded == 1 && outcome.skipped == 2)
+    @Test("A batch's outcome is summed up in one notice")
+    func batchSummary() {
+        var outcome = ProfileLibrary.BatchOutcome()
+        outcome.succeeded = 1
+        outcome.skipped = 2
+        outcome.failures = ["C2：端口已占用"]
+        outcome.warnings = ["A：代理不可达"]
         #expect(outcome.summary(verb: "启动") == "已启动 1 个 Profile，跳过 2 个。1 个未能启动：C2：端口已占用。提醒：A：代理不可达")
     }
 
