@@ -127,6 +127,43 @@ struct RuntimeEngineTests {
     }
 
     @Test(
+        "With -AppleLanguages as a plist array each start page opens once, in the new tab page and beside it",
+        .enabled(if: testAppPath != nil, "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test.")
+    )
+    func plistLanguagesOpenNoExtraTab() async throws {
+        let (runtime, root) = try prepare("runtime-plist-languages")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let server = try await CountingServer.start()
+        defer { server.listener.cancel() }
+        // Chromium drops the value as an invalid URL and opens its new tab page as usual.
+        runtime.additionalArguments = ["-AppleLanguages", "<array><string>de-DE</string></array>"]
+        var profile = BrowserProfile(name: "Languages", port: testPort(9320), fingerprint: FingerprintSettings(seed: 9320), proxy: "")
+        profile.launch.startURLs = [server.url("/one"), server.url("/two")]
+        let plain = BrowserProfile(name: "Languages, no pages", port: testPort(9321), fingerprint: FingerprintSettings(seed: 9321),
+                                   proxy: "")
+        do {
+            let outcome = try await runtime.start(profile)
+            #expect(outcome.warnings == [])
+            try await runtime.start(plain)
+            let opened = try await DevToolsPage.waitForTargets(port: profile.port) { targets in
+                let urls = targets.filter { $0["type"] as? String == "page" }.compactMap { $0["url"] as? String }
+                return Set(urls) == [server.url("/one"), server.url("/two")]
+            }
+            #expect(opened.filter { $0["type"] as? String == "page" }.count == 2)
+            #expect(server.requests("/one") == 1 && server.requests("/two") == 1)
+            try await DevToolsPage.waitForTargets(port: plain.port) { targets in
+                targets.filter { $0["type"] as? String == "page" }.compactMap { $0["url"] as? String } == ["chrome://newtab/"]
+            }
+            try await runtime.stop(profile.id)
+            try await runtime.stop(plain.id)
+        } catch {
+            try? await runtime.stop(profile.id, force: true)
+            try? await runtime.stop(plain.id, force: true)
+            throw error
+        }
+    }
+
+    @Test(
         "Clearing a running Profile removes domain-wide and partitioned cookies and the HTTP cache",
         .enabled(if: testAppPath != nil, "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test.")
     )
