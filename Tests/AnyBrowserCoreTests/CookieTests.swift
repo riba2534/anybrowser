@@ -443,6 +443,9 @@ struct CookieTests {
                 // Partitioned by an opaque origin: nothing could set it again.
                 ["name": "opaque", "value": "z", "domain": "widget.example", "path": "/", "expires": -1,
                  "httpOnly": false, "secure": true, "session": true, "partitionKeyOpaque": true],
+                // Set by document.cookie = "nameless": not partitioned, and not moved either.
+                ["name": "", "value": "nameless", "domain": "example.com", "path": "/", "expires": -1,
+                 "httpOnly": false, "secure": false, "session": true],
             ]])
         }
         defer { server.stop() }
@@ -456,8 +459,8 @@ struct CookieTests {
                           partitionKey: BrowserCookie.PartitionKey(topLevelSite: "https://example.com", hasCrossSiteAncestor: false)),
         ]
         let export = try await CookieTransfer.exportCookies(from: server.endpoint)
-        #expect(export.count == 3 && export.skipped == 1)
-        #expect(export.summary == "已导出 3 条 Cookie。另有 1 条分区 Cookie 无法迁移，未导出。")
+        #expect(export.count == 3 && export.skipped == 2)
+        #expect(export.summary == "已导出 3 条 Cookie。另有 2 条 Cookie 无法迁移，未导出。")
         #expect(String(decoding: export.data, as: UTF8.self).contains(#""sameSite": "no_restriction""#))
         #expect(try CookieTransfer.decode(export.data, now: now).cookies == expected)
         let devTools = try await CookieTransfer.exportCookies(from: server.endpoint, format: .devTools)
@@ -538,6 +541,37 @@ struct CookieTests {
             == CookieTransfer.ImportResult(imported: 2, skipped: 0))
         #expect(partitioned.cookies.compactMap { ($0["partitionKey"] as? [String: Any])?["topLevelSite"] as? String }
             == ["https://a.example", "https://b.example"])
+    }
+
+    @Test("Domains are lowercased as the browser keeps them, so imports count what it read back")
+    func lowercasesDomains() async throws {
+        let file = #"[{"name": "up", "value": "1", "domain": "UPPER.Example.COM"},"#
+            + #" {"name": "dot", "value": "2", "domain": ".Dot.Example.COM"},"#
+            + #" {"name": "up", "value": "3", "domain": "upper.example.com"},"#
+            + #" {"name": "low", "value": "4", "domain": "lower.example.com"}]"#
+        #expect(try CookieTransfer.decode(Data(file.utf8), now: now).cookies.map(\.domain)
+            == ["upper.example.com", ".dot.example.com", "upper.example.com", "lower.example.com"])
+
+        let jar = CookieJar()
+        let server = try await FakeDevTools.start { method, params in
+            switch method {
+            case "Storage.getCookies": return .result(["cookies": jar.cookies])
+            case "Storage.setCookies":
+                // As Chromium does.
+                jar.set((params["cookies"] as? [[String: Any]] ?? []).map { cookie in
+                    var stored = cookie
+                    stored["domain"] = (cookie["domain"] as? String)?.lowercased()
+                    return stored
+                })
+                return .result([:])
+            default: return .error(-32601, "not found")
+            }
+        }
+        defer { server.stop() }
+        // Both spellings of `up` name one cookie: the browser keeps the later, and the earlier is skipped.
+        #expect(try await CookieTransfer.importCookies(Data(file.utf8), into: server.endpoint)
+            == CookieTransfer.ImportResult(imported: 3, skipped: 1))
+        #expect(jar.cookies.contains { $0["name"] as? String == "up" && $0["value"] as? String == "3" })
     }
 
     @Test("A partition read back as its site still matches the cookie that was set")

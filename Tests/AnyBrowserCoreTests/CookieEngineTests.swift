@@ -2,7 +2,7 @@
 import Foundation
 import Testing
 
-// Uses debugging port 9306.
+// Uses debugging ports 9306 and 9412.
 @Suite(.serialized)
 struct CookieEngineTests {
     @Test(
@@ -159,6 +159,56 @@ struct CookieEngineTests {
             #expect(crowded.evicted > 0 && crowded.imported + crowded.evicted == 200, "\(crowded)")
             #expect(kept.filter { $0["domain"] as? String == "evict.example.edu" }.count == crowded.imported)
             #expect(crowded.displaced == 0)
+            try await runtime.stop(profile.id)
+        } catch {
+            try? await runtime.stop(profile.id)
+            throw error
+        }
+    }
+
+    @Test(
+        "Domains in any case import in full, and a cookie without a name is not called partitioned",
+        .enabled(
+            if: testAppPath != nil,
+            "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test."
+        )
+    )
+    @MainActor
+    func importsDomainsInAnyCase() async throws {
+        let engine = try testEngine()
+        let directory = try scratchDirectory("cookie-case")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        var profile = try store.makeDraft()
+        profile.port = testPort(9412)
+        profile.proxy = ""
+        try store.save(profile)
+
+        let runtime = BrowserRuntime(engine: engine, storage: store.directory)
+        try await runtime.start(profile)
+        do {
+            let endpoint = try #require(await runtime.devToolsEndpoint(for: profile.id))
+            let client = try DevToolsClient(endpoint: endpoint)
+            defer { client.close() }
+            let expiry = Int(Date().timeIntervalSince1970) + 3600
+            let file = """
+            [{"name": "up", "value": "1", "domain": "UPPER.Example.COM", "expirationDate": \(expiry)},
+             {"name": "updot", "value": "2", "domain": ".Dot.Example.COM", "expirationDate": \(expiry)},
+             {"name": "low", "value": "3", "domain": "lower.example.com", "expirationDate": \(expiry)}]
+            """
+            #expect(try await CookieTransfer.importCookies(Data(file.utf8), into: endpoint)
+                == CookieTransfer.ImportResult(imported: 3, skipped: 0))
+            let stored = try await browserCookies(client)
+            #expect(stored["up"]?["domain"] as? String == "upper.example.com")
+            #expect(stored["updot"]?["domain"] as? String == ".dot.example.com")
+
+            // What document.cookie = "nameless" leaves behind.
+            _ = try await client.send("Storage.setCookies", ["cookies": [
+                ["name": "", "value": "nameless", "domain": "lower.example.com", "path": "/"],
+            ]])
+            let export = try await CookieTransfer.exportCookies(from: endpoint)
+            #expect(export.count == 3 && export.skipped == 1)
+            #expect(export.summary == "已导出 3 条 Cookie。另有 1 条 Cookie 无法迁移，未导出。")
             try await runtime.stop(profile.id)
         } catch {
             try? await runtime.stop(profile.id)
