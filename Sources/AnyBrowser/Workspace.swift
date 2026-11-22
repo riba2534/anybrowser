@@ -328,85 +328,88 @@ struct Workspace: View {
                     .help(value.name)
                     .accessibilityAddTraits(.isHeader)
             }
-            .layoutPriority(1)
             Spacer(minLength: 0)
-            if isSaved {
-                Menu {
-                    Button("复制为新 Profile") { workbench.request(.clone) }
-                    Divider()
-                    Button("导出 Cookie…") { workbench.exportCookies(value.id) }
-                        .disabled(!state.isRunning)
-                    Button("导入 Cookie…") { workbench.importCookies(value.id) }
-                        .disabled(!state.isRunning)
-                    Divider()
-                    Button("查看启动日志…") { workbench.showLaunchLog(value.id) }
-                        .disabled(workbench.launchLogText(value.id) == nil)
-                } label: {
-                    Image(systemName: "ellipsis")
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .disabled(busy)
-                .help("更多操作")
-                .accessibilityIdentifier("profile-actions")
-                Button {
-                    Task { await workbench.runSelfCheck(value.id) }
-                } label: {
-                    Label("自检", systemImage: "checklist")
-                }
-                .buttonStyle(WorkbenchButtonStyle(.quiet))
-                .disabled(busy || !state.isRunning)
-                .help(state.isRunning ? "在浏览器里检查网页读到的身份是否与配置一致" : "启动后可以自检")
-                .accessibilityIdentifier("self-check")
-            }
-            if state.isRunning {
-                Button {
-                    workbench.showWindows(value.id)
-                } label: {
-                    Label("显示窗口", systemImage: "macwindow.on.rectangle")
-                }
-                .buttonStyle(WorkbenchButtonStyle(.quiet))
-                .help("把这个 Profile 的浏览器窗口切到最前面")
-                .accessibilityIdentifier("show-windows")
-                if workbench.canForceStop(value.id) {
-                    Button {
-                        workbench.pendingForceStop = Workbench.ProfileSheet(id: value.id)
+            // The actions keep their size; a long name is cut short instead.
+            HStack(spacing: 10) {
+                if isSaved {
+                    Menu {
+                        Button("复制为新 Profile") { workbench.request(.clone) }
+                        Divider()
+                        Button("导出 Cookie…") { workbench.exportCookies(value.id) }
+                            .disabled(!state.isRunning)
+                        Button("导入 Cookie…") { workbench.importCookies(value.id) }
+                            .disabled(!state.isRunning)
+                        Divider()
+                        Button("查看启动日志…") { workbench.showLaunchLog(value.id) }
+                            .disabled(workbench.launchLogText(value.id) == nil)
                     } label: {
-                        Label("强制停止", systemImage: "xmark.octagon")
+                        Image(systemName: "ellipsis")
                     }
-                    .buttonStyle(WorkbenchButtonStyle(.neutral))
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
                     .disabled(busy)
-                    .help("浏览器没有按要求退出时，立即结束它的进程")
-                    .accessibilityIdentifier("force-stop-profile")
+                    .help("更多操作")
+                    .accessibilityIdentifier("profile-actions")
+                    Button {
+                        Task { await workbench.runSelfCheck(value.id) }
+                    } label: {
+                        Label("自检", systemImage: "checklist")
+                    }
+                    .buttonStyle(WorkbenchButtonStyle(.quiet))
+                    .disabled(busy || !state.isRunning)
+                    .help(state.isRunning ? "在浏览器里检查网页读到的身份是否与配置一致" : "启动后可以自检")
+                    .accessibilityIdentifier("self-check")
+                }
+                if state.isRunning {
+                    Button {
+                        workbench.showWindows(value.id)
+                    } label: {
+                        Label("显示窗口", systemImage: "macwindow.on.rectangle")
+                    }
+                    .buttonStyle(WorkbenchButtonStyle(.quiet))
+                    .help("把这个 Profile 的浏览器窗口切到最前面")
+                    .accessibilityIdentifier("show-windows")
+                    if workbench.canForceStop(value.id) {
+                        Button {
+                            workbench.pendingForceStop = Workbench.ProfileSheet(id: value.id)
+                        } label: {
+                            Label("强制停止", systemImage: "xmark.octagon")
+                        }
+                        .buttonStyle(WorkbenchButtonStyle(.neutral))
+                        .disabled(busy)
+                        .help("浏览器没有按要求退出时，立即结束它的进程")
+                        .accessibilityIdentifier("force-stop-profile")
+                    } else {
+                        Button {
+                            Task { await workbench.stop(value.id) }
+                        } label: {
+                            Label("停止", systemImage: "stop")
+                        }
+                        .buttonStyle(WorkbenchButtonStyle(.neutral))
+                        .disabled(busy)
+                        .accessibilityIdentifier("stop-profile")
+                    }
+                    Button {
+                        Task { await workbench.launch(restart: true) }
+                    } label: {
+                        Label(workbench.hasChanges ? "保存并重启" : "重启", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(WorkbenchButtonStyle(.primary))
+                    .disabled(busy)
+                    .accessibilityIdentifier("restart-profile")
                 } else {
                     Button {
-                        Task { await workbench.stop(value.id) }
+                        Task { await workbench.launch() }
                     } label: {
-                        Label("停止", systemImage: "stop")
+                        Label(workbench.hasChanges ? "保存并启动" : "启动", systemImage: "play.fill")
                     }
-                    .buttonStyle(WorkbenchButtonStyle(.neutral))
-                    .disabled(busy)
-                    .accessibilityIdentifier("stop-profile")
+                    .buttonStyle(WorkbenchButtonStyle(.primary))
+                    .disabled(busy || workbench.runtime == nil)
+                    .accessibilityIdentifier("launch-profile")
                 }
-                Button {
-                    Task { await workbench.launch(restart: true) }
-                } label: {
-                    Label(workbench.hasChanges ? "保存并重启" : "重启", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(WorkbenchButtonStyle(.primary))
-                .disabled(busy)
-                .accessibilityIdentifier("restart-profile")
-            } else {
-                Button {
-                    Task { await workbench.launch() }
-                } label: {
-                    Label(workbench.hasChanges ? "保存并启动" : "启动", systemImage: "play.fill")
-                }
-                .buttonStyle(WorkbenchButtonStyle(.primary))
-                .disabled(busy || workbench.runtime == nil)
-                .accessibilityIdentifier("launch-profile")
             }
+            .fixedSize()
         }
         .padding(.horizontal, 28)
         .padding(.top, 34)

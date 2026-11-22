@@ -253,16 +253,13 @@ final class Workbench: ObservableObject {
     private func followSavedChanges() {
         guard let draft, let origin = draftOrigin, origin.id == draft.profile.id, origin.isSaved else { return }
         guard let saved else {
-            // Moved to the recycle bin or removed elsewhere. A flow that removed it here has
-            // usually picked another Profile and said so already.
+            // Moved to the recycle bin or removed, here or through the automation API. A removal
+            // here that picked another Profile itself never gets this far.
             let edited = origin.hasChanges(draft, saved: nil)
             let name = origin.draft.profile.name
             self.draft = profiles.first.map(ProfileDraft.init)
-            if edited {
-                notice = Notice(text: "「\(name)」已在别处移除，未保存的修改已丢弃。", isError: true)
-            } else if notice == nil {
-                notice = Notice(text: "「\(name)」已在别处移除。")
-            }
+            notice = Notice(text: edited ? "「\(name)」已被移除，未保存的修改已丢弃。" : "「\(name)」已被移除。",
+                            isError: edited)
             return
         }
         switch origin.sync(draft, with: saved) {
@@ -501,6 +498,7 @@ final class Workbench: ObservableObject {
         guard let coordinator else { return }
         notice = nil
         stopTimeouts[id] = nil
+        let earlierLog = coordinator.launchLog(for: id)
         do {
             let outcome = restart
                 ? try await coordinator.restart(id, fingerprintChange: fingerprintChange)
@@ -509,8 +507,10 @@ final class Workbench: ObservableObject {
                 notice = Notice(text: outcome.warnings.joined(separator: "\n"), isError: true)
             }
         } catch {
+            // A launch refused before the browser started leaves the previous launch's log in place.
+            let log = coordinator.launchLog(for: id)
             notice = Notice(text: error.localizedDescription, isError: true,
-                            action: coordinator.launchLog(for: id) == nil ? nil : .showLaunchLog(id))
+                            action: log == nil || log == earlierLog ? nil : .showLaunchLog(id))
         }
         if let profile = profiles.first(where: { $0.id == id }) { extensionShelf.check(profile) }
     }
@@ -531,8 +531,9 @@ final class Workbench: ObservableObject {
             try await coordinator.stop(id, force: force)
             stopTimeouts[id] = nil
         } catch {
-            if let pid, runningPID(id) == pid { stopTimeouts[id] = pid }
-            show(error)
+            guard !force, let pid, runningPID(id) == pid else { return show(error) }
+            stopTimeouts[id] = pid
+            notice = Notice(text: error.localizedDescription + "浏览器没有响应时，可以点击「强制停止」。", isError: true)
         }
     }
 
@@ -613,7 +614,9 @@ final class Workbench: ObservableObject {
     /// Brings the Profile's browser windows to the front.
     func showWindows(_ id: UUID) {
         guard coordinator?.activate(id) == true else {
-            notice = Notice(text: "无法切换到此 Profile 的浏览器窗口，请确认它正在运行。", isError: true)
+            notice = Notice(text: state(for: id).isRunning
+                ? "macOS 没有把此 Profile 的浏览器窗口切到前面，可以在程序坞或 ⌘-Tab 中切换。"
+                : "此 Profile 没有在运行。", isError: true)
             return
         }
     }
