@@ -41,6 +41,25 @@ struct FingerprintTests {
         #expect(disabledSpoofing(fingerprint) == "--disable-spoofing=font,audio,clientrects,gpu")
     }
 
+    @Test("-AppleLanguages carries the primary language as the last two arguments")
+    func appleLanguagesFollowThePrimaryLanguage() {
+        var fingerprint = FingerprintSettings(seed: 7)
+        #expect(!fingerprint.arguments().contains("-AppleLanguages"))
+        fingerprint.language = "de-DE"
+        fingerprint.languages = ["de-DE", "de"]
+        #expect(Array(fingerprint.arguments().suffix(2)) == ["-AppleLanguages", "<array><string>de-DE</string></array>"])
+        #expect(fingerprint.arguments().filter { $0 == "-AppleLanguages" }.count == 1)
+        // A generated list without a primary field still names the language.
+        fingerprint.language = ""
+        #expect(Array(fingerprint.arguments().suffix(2)) == ["-AppleLanguages", "<array><string>de-DE</string></array>"])
+        // A hand-edited primary language wins over a stale generated list.
+        fingerprint.language = "en-US"
+        #expect(Array(fingerprint.arguments().suffix(2)) == ["-AppleLanguages", "<array><string>en-US</string></array>"])
+        // Only a valid tag goes into the plist; validation rejects anything else before launch.
+        fingerprint.language = "en</string>"
+        #expect(!fingerprint.arguments().contains("-AppleLanguages"))
+    }
+
     @Test("Choosing a platform drops what it cannot use")
     func adaptingToPlatform() {
         var fingerprint = FingerprintSettings(seed: 6)

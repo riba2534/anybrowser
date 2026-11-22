@@ -76,6 +76,8 @@ struct ProfileTests {
         #expect(arguments.contains("--fingerprint-screen-height=1080"))
         #expect(arguments.contains("--fingerprint-device-scale-factor=1"))
         #expect(arguments.contains("--disable-spoofing=font,audio,gpu"))
+        // Cocoa reads these two as the AppleLanguages default, which ICU follows.
+        #expect(Array(arguments.suffix(2)) == ["-AppleLanguages", "<array><string>zh-CN</string></array>"])
     }
 
     @Test("Proxy addresses are validated and legacy profiles decode")

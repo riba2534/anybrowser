@@ -337,6 +337,14 @@ extension FingerprintSettings {
         if !disabled.isEmpty {
             arguments.append("--disable-spoofing=\(disabled.map(\.rawValue).joined(separator: ","))")
         }
+        // `--lang` leaves ICU on the Mac's own languages, so Date strings, Intl defaults, Workers
+        // and blob frames would show them. Cocoa reads `-AppleLanguages <plist>` from argv as a
+        // user default. Chromium also takes the value for a start URL: the old-style `(de-DE)`
+        // opened `http://(de-de)/` and sent that request through the proxy at every launch, while
+        // the XML form is no valid URL and is dropped. A valid tag needs no XML escaping.
+        if Self.isLanguageTag(primaryLanguage) {
+            arguments += ["-AppleLanguages", "<array><string>\(primaryLanguage)</string></array>"]
+        }
         return arguments
     }
 }
