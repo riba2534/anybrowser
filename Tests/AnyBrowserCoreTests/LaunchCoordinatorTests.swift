@@ -723,6 +723,49 @@ struct LaunchCoordinatorTests {
         }
     }
 
+    @Test("After a proxy change the launch looks the new exit up, and the old one is shared with no one")
+    func exitAfterProxyChange() async throws {
+        let fixture = try CoordinatorFixture("coordinator-exit-moved")
+        let berlin = ProxyExit(ip: "198.51.100.7", countryCode: "DE", city: "Berlin", timeZone: "Europe/Berlin", languages: ["de-DE"])
+        var lookups: [String] = []
+        fixture.coordinator.exitLookup = { proxy in
+            lookups.append(proxy)
+            return proxy.hasSuffix(":9") ? Self.tokyo : berlin
+        }
+        let moving = try fixture.add(9410) {
+            $0.name = "A"
+            $0.proxy = "127.0.0.1:9"
+            $0.fingerprint.timeZone = "Europe/Berlin"
+            $0.fingerprint.language = "de-DE"
+        }
+        let staying = try fixture.add(9411) {
+            $0.name = "B"
+            $0.proxy = "127.0.0.1:9"
+            $0.fingerprint.timeZone = "Asia/Tokyo"
+            $0.fingerprint.language = "ja-JP"
+        }
+        try await fixture.run([moving, staying]) {
+            let coordinator = fixture.coordinator
+            #expect(try await coordinator.start(moving.id).warnings.contains { $0.contains("Asia/Tokyo") })
+            try await coordinator.stop(moving.id)
+            try await coordinator.start(staying.id)
+            try await coordinator.stop(staying.id)
+            #expect(coordinator.consistencyContext(for: staying.id).profilesSharingExit == ["A"])
+
+            // Moved to a proxy that leaves in Berlin, where its identity is.
+            try fixture.edit(moving) { $0.proxy = "127.0.0.1:10" }
+            #expect(coordinator.lastExit(for: moving.id) == nil)
+            #expect(coordinator.consistencyContext(for: staying.id).profilesSharingExit.isEmpty)
+            let moved = try await coordinator.start(moving.id)
+            #expect(await fixture.fake.eventually { coordinator.lastExit(for: moving.id) != nil })
+            #expect(lookups == ["127.0.0.1:9", "127.0.0.1:9", "127.0.0.1:10"])
+            #expect(coordinator.lastExit(for: moving.id)?.exit == berlin)
+            #expect(moved.warnings.isEmpty)
+            #expect(coordinator.consistencyContext(for: staying.id).profilesSharingExit.isEmpty)
+            try await coordinator.stop(moving.id)
+        }
+    }
+
     @Test("A slow exit lookup never holds up the launch; what it finds arrives as a late warning")
     func slowExitReview() async throws {
         let fixture = try CoordinatorFixture("coordinator-exit-slow")

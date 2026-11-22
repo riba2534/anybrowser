@@ -57,11 +57,12 @@ public enum CookieTransfer {
     public struct Export: Sendable {
         public var data: Data
         public var count: Int
-        /// Cookies the browser holds that cannot be moved, such as ones partitioned by an opaque origin.
+        /// Cookies the browser holds that cannot be moved, such as ones partitioned by an opaque origin
+        /// or ones without a name.
         public var skipped: Int
 
         public var summary: String {
-            "已导出 \(count) 条 Cookie。" + (skipped > 0 ? "另有 \(skipped) 条分区 Cookie 无法迁移，未导出。" : "")
+            "已导出 \(count) 条 Cookie。" + (skipped > 0 ? "另有 \(skipped) 条 Cookie 无法迁移，未导出。" : "")
         }
     }
 
@@ -292,6 +293,9 @@ public enum CookieTransfer {
         default: break
         }
         guard domain.contains(where: { $0 != "." }) else { return nil }
+        // Chromium keeps domains lowercased: read back, a cookie set as Example.COM would not match
+        // the file's entry, and two entries differing in case would be one cookie.
+        domain = domain.lowercased()
         if path.isEmpty { path = "/" }
 
         var expires: Double?

@@ -1,16 +1,17 @@
 import Foundation
 
 // Before a launch the Profile's proxy exit is compared with its fingerprint: time zone and language
-// against where the exit is, and whether other Profiles leave through the same IP. A recorded exit
-// up to `exitReviewAge` old is used as it is; otherwise the exit is looked up beside the launch,
-// which never waits for it or fails because of it.
+// against where the exit is, and whether other Profiles leave through the same IP. An exit recorded
+// through the same proxy up to `exitReviewAge` ago is used as it is; otherwise the exit is looked up
+// beside the launch, which never waits for it or fails because of it.
 extension LaunchCoordinator {
     /// The facts about other Profiles the editor's consistency hints need for this Profile.
     public func consistencyContext(for id: UUID) -> ConsistencyContext {
         ConsistencyContext(profilesSharingExit: proxyLibrary.profilesSharingExit(with: id).compactMap { profile($0)?.name })
     }
 
-    /// The exit last seen for the Profile and when, kept across launches of AnyBrowser.
+    /// The exit last seen for the Profile through its present proxy and when, kept across launches
+    /// of AnyBrowser.
     public func lastExit(for id: UUID) -> (exit: ProxyExit, checkedAt: Date)? {
         proxyLibrary.lastExit(forProfile: id)
     }
@@ -30,7 +31,7 @@ extension LaunchCoordinator {
         guard let endpoint = try? ProxyEndpoint.parse(profile.proxy) else { return nil }
         let id = profile.id
         let review = ExitReview()
-        if let record = proxyLibrary.lastExit(forProfile: id), Date().timeIntervalSince(record.checkedAt) < exitReviewAge {
+        if let record = proxyLibrary.lastExit(forProfile: id, proxy: profile.proxy), Date().timeIntervalSince(record.checkedAt) < exitReviewAge {
             review.finish(exitWarnings(for: id, exit: record.exit))
             return review
         }
@@ -42,7 +43,7 @@ extension LaunchCoordinator {
             if self.exitLookups[key] == lookup { self.exitLookups[key] = nil }
             // A failed lookup says nothing about the exit.
             guard let exit else { return review.finish([]) }
-            try? self.proxyLibrary.recordExit(exit, forProfile: id)
+            try? self.proxyLibrary.recordExit(exit, forProfile: id, proxy: profile.proxy)
             review.finish(self.exitWarnings(for: id, exit: exit))
         }
         return review

@@ -125,6 +125,100 @@ struct ProxyLibraryTests {
         #expect(ProxyLibrary(store: store).profileExits[gone] == nil)
     }
 
+    @Test("A recorded exit holds only while the Profile keeps the proxy it was seen through")
+    func exitsFollowTheProxy() throws {
+        let directory = try scratchDirectory("proxy-exit-proxy")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        var profiles: [BrowserProfile] = []
+        for proxy in ["127.0.0.1:9", "http://alice:s3cret@127.0.0.1:9"] {
+            var profile = try store.makeDraft()
+            profile.proxy = proxy
+            try store.save(profile)
+            profiles.append(profile)
+        }
+        let library = ProxyLibrary(store: store)
+        let tokyo = ProxyExit(ip: "203.0.113.5", countryCode: "JP", timeZone: "Asia/Tokyo")
+        try library.recordExit(tokyo, forProfile: profiles[0].id)
+        try library.recordExit(tokyo, forProfile: profiles[1].id, proxy: "127.0.0.1:9:alice:s3cret")
+        #expect(library.lastExit(forProfile: profiles[1].id)?.exit == tokyo)
+        #expect(library.profilesSharingExit(with: profiles[1].id) == [profiles[0].id])
+        // Stored as the exit's own JSON, which earlier readers take as it is, without the password.
+        let stored = try withDatabase(directory) { database -> Data in
+            var read: OpaquePointer?
+            defer { sqlite3_finalize(read) }
+            guard sqlite3_prepare_v2(database, "SELECT exit FROM profile_exits WHERE id='\(profiles[1].id.uuidString)'",
+                                     -1, &read, nil) == SQLITE_OK, sqlite3_step(read) == SQLITE_ROW,
+                  let bytes = sqlite3_column_blob(read, 0) else { throw ProfileError.invalid("read") }
+            return Data(bytes: bytes, count: Int(sqlite3_column_bytes(read, 0)))
+        }
+        #expect(try JSONDecoder().decode(ProxyExit.self, from: stored) == tokyo)
+        #expect(!String(decoding: stored, as: UTF8.self).contains("s3cret"))
+
+        // Written another way, the proxy is the same one.
+        profiles[0].proxy = "http://127.0.0.1:9/"
+        try store.save(profiles[0])
+        #expect(library.lastExit(forProfile: profiles[0].id)?.exit == tokyo)
+
+        // Moved to another proxy: the exit seen through the old one says nothing and is shared with no one.
+        profiles[0].proxy = "127.0.0.1:10"
+        try store.save(profiles[0])
+        #expect(library.lastExit(forProfile: profiles[0].id) == nil)
+        #expect(library.lastExit(forProfile: profiles[0].id, proxy: "127.0.0.1:9")?.exit == tokyo)
+        #expect(library.profilesSharingExit(with: profiles[0].id).isEmpty)
+        #expect(library.profilesSharingExit(with: profiles[1].id).isEmpty)
+        #expect(ProxyLibrary(store: store).lastExit(forProfile: profiles[0].id) == nil)
+        let index = LibraryIndex()
+        index.update(.init(profiles: store.profiles, query: "", sort: .created, lastLaunched: [:], exits: library.profileExits))
+        #expect(Set(index.exits.keys) == [profiles[1].id] && index.sharedExits.isEmpty)
+        profiles[0].proxy = ""
+        try store.save(profiles[0])
+        #expect(library.lastExit(forProfile: profiles[0].id) == nil)
+
+        // A record that does not say which proxy it came through holds for none.
+        try execute("UPDATE profile_exits SET exit=? WHERE id=?", in: directory,
+                    binding: [try JSONEncoder().encode(tokyo), profiles[1].id.uuidString])
+        let reopened = ProxyLibrary(store: store)
+        #expect(reopened.profileExits[profiles[1].id]?.exit == tokyo)
+        #expect(reopened.lastExit(forProfile: profiles[1].id) == nil)
+    }
+
+    @Test("A database a newer AnyBrowser wrote is not written to, with a reason the user can read")
+    func refusesNewerDatabase() throws {
+        let directory = try scratchDirectory("proxy-read-only")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let profileID: UUID
+        do {
+            let store = try ProfileStore(directory: directory)
+            let profile = try store.makeDraft()
+            try store.save(profile)
+            profileID = profile.id
+            try ProxyLibrary(store: store).add(["http://1.2.3.4:8080"])
+        }
+        try execute("PRAGMA user_version = 99", in: directory)
+        let store = try ProfileStore(directory: directory)
+        #expect(store.isReadOnly)
+        let library = ProxyLibrary(store: store)
+        var edited = try #require(library.entries.first)
+        edited.label = "changed"
+        let exit = ProxyExit(ip: "203.0.113.5")
+        let writes: [(String, () throws -> Void)] = [
+            ("add", { _ = try library.add(["http://5.6.7.8:8080"]) }), ("update", { try library.update(edited) }),
+            ("recordCheck", { try library.recordCheck(edited.id, exit: exit) }),
+            ("recordExit", { try library.recordExit(exit, forProfile: profileID) }), ("remove", { try library.remove([edited.id]) }),
+        ]
+        for (name, write) in writes {
+            do {
+                try write()
+                Issue.record("\(name) wrote to the database")
+            } catch {
+                #expect(error.localizedDescription.contains("更新版本的 AnyBrowser"), "\(name): \(error.localizedDescription)")
+            }
+        }
+        #expect(library.entries.map(\.label) == [""] && library.profileExits.isEmpty)
+        #expect(try rowCount("proxies", in: directory) == 1 && rowCount("profile_exits", in: directory) == 0)
+    }
+
     @Test("Rows this version cannot read are left alone")
     func skipsUnreadableRows() throws {
         let directory = try scratchDirectory("proxy-rows")

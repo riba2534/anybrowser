@@ -258,6 +258,18 @@ struct RelayTests {
         #expect(refused)
     }
 
+    @Test("A start that fails leaves the relay free to start again")
+    func startsAgainAfterFailing() async throws {
+        let (holder, taken) = try await relay("http://127.0.0.1:9")
+        defer { holder.stop() }
+        let relay = try ProxyRelay(upstream: try #require(try ProxyEndpoint.parse("http://127.0.0.1:9")))
+        await #expect(throws: ProfileError.self) { try await relay.start(port: taken) }
+        #expect(relay.port == nil)
+        let port = try await relay.start()
+        defer { relay.stop() }
+        #expect(port != taken && relay.port == port)
+    }
+
     @Test("HTTPS upstreams get TLS with certificate checks")
     func speaksTLSToTheUpstream() async throws {
         guard #available(macOS 15, *) else { return }

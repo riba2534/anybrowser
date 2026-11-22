@@ -210,14 +210,43 @@ struct LibraryIndexTests {
         #expect(LibraryIndex.sharedExits(exits, among: ids) == [ids[0]: [ids[2]], ids[2]: [ids[0]]])
 
         let index = LibraryIndex()
-        let profiles = [profile("A", port: 9222), profile("B", port: 9223)]
+        var profiles = [profile("A", port: 9222, proxy: "10.0.0.1:8080"), profile("B", port: 9223, proxy: "10.0.0.2:8080")]
         var inputs = LibraryIndex.Inputs(profiles: profiles, query: "", sort: .created, lastLaunched: [:])
         index.update(inputs)
         #expect(index.sharedExits.isEmpty)
-        inputs.exits = [profiles[0].id: record("9.9.9.9"), profiles[1].id: record("9.9.9.9")]
+        let seen = { (ip: String, profile: BrowserProfile) in
+            ProfileExitRecord(exit: exit(ip), checkedAt: Date(), proxy: ProfileExitRecord.key(for: profile.proxy))
+        }
+        inputs.exits = [profiles[0].id: seen("9.9.9.9", profiles[0]), profiles[1].id: seen("9.9.9.9", profiles[1])]
         index.update(inputs)
         #expect(index.sharedExits[profiles[0].id] == [profiles[1].id])
         #expect(index.names[profiles[1].id] == "B")
+        #expect(index.exits == inputs.exits)
+
+        // B has moved to another proxy: what was seen through the old one no longer counts.
+        profiles[1].proxy = "http://10.0.0.3:8080"
+        inputs.profiles = profiles
+        index.update(inputs)
+        #expect(index.sharedExits.isEmpty)
+        #expect(Set(index.exits.keys) == [profiles[0].id])
+    }
+
+    @Test("Proxies of Profiles in the recycle bin count as used, as the API counts them")
+    func countsTrashedProxyUsers() throws {
+        let pool = entries(3)
+        let kept = profile("Kept", port: 9222, proxy: pool[1].url)
+        let trashed = TrashedProfile(profile: profile("Trashed", port: 9223, proxy: "10.0.0.1:8080"), deletedAt: Date())
+        let index = LibraryIndex()
+        var inputs = LibraryIndex.Inputs(profiles: [kept], query: "", sort: .created, lastLaunched: [:])
+        index.update(inputs)
+        #expect(index.proxyUsers == [pool[1].url: [kept.id]])
+        inputs.trashed = [trashed]
+        index.update(inputs)
+        #expect(index.proxyUsers == ProxyAssignment.users(of: [kept, trashed.profile]))
+        #expect(index.proxyUsers[pool[0].url] == [trashed.id])
+        // Restored, it would share its proxy with a Profile made meanwhile: hand out the free one first.
+        let usage = ProxyAssignment.usage(of: pool, users: index.proxyUsers)
+        #expect(try ProxyAssignment.pick(1, from: pool, order: .sequential, usage: usage) == [pool[2].url])
     }
 
     @Test("⇧-click ranges and arrow steps follow the rows as shown")

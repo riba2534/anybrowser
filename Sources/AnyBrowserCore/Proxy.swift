@@ -69,7 +69,9 @@ public struct ProxyEndpoint: Equatable, Sendable {
         let fields = authority.split(separator: ":", omittingEmptySubsequences: false)
         let listed = fields.count >= 4 && !fields[0].hasPrefix("[") && !fields[0].contains("@")
             && Int(fields[1]).map { (1...65535).contains($0) } == true
-        let fromList = {
+        // Read as user:password@host:port, such a line would need a password with an unencoded colon,
+        // which no URL is written with; so an @ in it belongs to the user name or password.
+        if listed {
             guard fields.count == 4 else {
                 throw ProfileError.invalid(
                     "用户名或密码含有冒号时无法按 主机:端口:用户名:密码 识别，请改写成 http://用户名:密码@主机:端口，并把其中的冒号写成 %3A。")
@@ -80,19 +82,12 @@ public struct ProxyEndpoint: Equatable, Sendable {
         }
         // The last @ ends the credentials: an @ inside them has to be written as %40.
         guard let at = authority.lastIndex(of: "@") else {
-            return listed ? try fromList()
-                : try endpoint(scheme: scheme, authority: authority, credentials: nil,
-                               allowingSOCKSCredentials: allowingSOCKSCredentials)
-        }
-        do {
-            return try endpoint(scheme: scheme, authority: authority[authority.index(after: at)...],
-                                credentials: try credentials(authority[..<at]),
+            return try endpoint(scheme: scheme, authority: authority, credentials: nil,
                                 allowingSOCKSCredentials: allowingSOCKSCredentials)
-        } catch {
-            // A password from such a list may itself hold an @.
-            guard listed else { throw error }
-            return try fromList()
         }
+        return try endpoint(scheme: scheme, authority: authority[authority.index(after: at)...],
+                            credentials: try credentials(authority[..<at]),
+                            allowingSOCKSCredentials: allowingSOCKSCredentials)
     }
 
     private static var invalidAddress: ProfileError {

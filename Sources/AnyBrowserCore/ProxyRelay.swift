@@ -117,25 +117,32 @@ public final class ProxyRelay: @unchecked Sendable {
             guard let self else { return connection.cancel() }
             self.accept(connection)
         }
-        let bound: Int = try await withCheckedThrowingContinuation { continuation in
-            // Cleared on the first final state, so the continuation resumes once.
-            listener.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    listener.stateUpdateHandler = nil
-                    continuation.resume(returning: Int(listener.port?.rawValue ?? 0))
-                case .failed(let error):
-                    listener.stateUpdateHandler = nil
-                    listener.cancel()
-                    continuation.resume(throwing: ProfileError.invalid("无法启动本机代理中继：\(error.localizedDescription)"))
-                case .cancelled:
-                    listener.stateUpdateHandler = nil
-                    continuation.resume(throwing: ProfileError.invalid("代理中继已停止。"))
-                default:
-                    break
+        let bound: Int
+        do {
+            bound = try await withCheckedThrowingContinuation { continuation in
+                // Cleared on the first final state, so the continuation resumes once.
+                listener.stateUpdateHandler = { state in
+                    switch state {
+                    case .ready:
+                        listener.stateUpdateHandler = nil
+                        continuation.resume(returning: Int(listener.port?.rawValue ?? 0))
+                    case .failed(let error):
+                        listener.stateUpdateHandler = nil
+                        listener.cancel()
+                        continuation.resume(throwing: ProfileError.invalid("无法启动本机代理中继：\(error.localizedDescription)"))
+                    case .cancelled:
+                        listener.stateUpdateHandler = nil
+                        continuation.resume(throwing: ProfileError.invalid("代理中继已停止。"))
+                    default:
+                        break
+                    }
                 }
+                listener.start(queue: listenerQueue)
             }
-            listener.start(queue: listenerQueue)
+        } catch {
+            // A listener that never became ready leaves the relay free to start again.
+            locked { if self.listener === listener { self.listener = nil } }
+            throw error
         }
         locked { boundPort = bound }
         return bound

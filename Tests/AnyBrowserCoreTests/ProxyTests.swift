@@ -59,6 +59,11 @@ struct ProxyTests {
         #expect(try ProxyEndpoint.parse("user-zone-us:p%40ss@gate.example.com:7777") == listed)
         let socksListed = try ProxyEndpoint.parse("socks5://10.0.0.2:1080:alice:secret", allowingSOCKSCredentials: true)
         #expect(socksListed == ProxyEndpoint(scheme: "socks5", host: "10.0.0.2", port: 1080, username: "alice", password: "secret"))
+        // An @ in such a line belongs to the credentials, even where user:password@host:port would also parse.
+        #expect(try ProxyEndpoint.parse("gate.example.com:7000:alice@example.org:5555")
+            == ProxyEndpoint(scheme: "http", host: "gate.example.com", port: 7000, username: "alice@example.org", password: "5555"))
+        #expect(try ProxyEndpoint.parse("1.2.3.4:8080:user@x.y:80")
+            == ProxyEndpoint(scheme: "http", host: "1.2.3.4", port: 8080, username: "user@x.y", password: "80"))
 
         // socks5h means remote DNS, which is what Chromium's socks5 already does.
         let remote = try #require(try ProxyEndpoint.parse("SOCKS5H://127.0.0.1:1080"))
@@ -84,7 +89,7 @@ struct ProxyTests {
         }
 
         for (address, message) in [("socks4://127.0.0.1:1080", "SOCKS4"), ("socks4a://127.0.0.1:1080", "SOCKS4"),
-                                   ("gate.example.com:7777:user:pa:ss", "%3A"),
+                                   ("gate.example.com:7777:user:pa:ss", "%3A"), ("gate.example.com:7000:alice:p@ss:1234", "%3A"),
                                    ("gate.example.com:7777:user", "主机:端口:用户名:密码")] {
             do {
                 _ = try ProxyEndpoint.parse(address)
