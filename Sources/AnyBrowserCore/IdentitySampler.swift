@@ -33,13 +33,15 @@ public enum IdentitySampler {
         public let languages: [String]
 
         public init?(language: String, timeZone: String, languages: [String]? = nil) {
-            let primary = language.trimmingCharacters(in: .whitespacesAndNewlines)
+            let primary = IdentitySampler.chromeLanguageTag(language)
             guard FingerprintSettings.isLanguageTag(primary),
                   FingerprintSettings.isTimeZone(timeZone) else { return nil }
             let base = primary.split(separator: "-").first.map(String.init) ?? primary
-            var ordered = (languages ?? [])
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter(FingerprintSettings.isLanguageTag)
+            var ordered: [String] = []
+            for tag in (languages ?? []).map(IdentitySampler.chromeLanguageTag)
+            where FingerprintSettings.isLanguageTag(tag) && !ordered.contains(tag) {
+                ordered.append(tag)
+            }
             if ordered.first != primary {
                 ordered.removeAll { $0 == primary }
                 ordered.insert(primary, at: 0)
@@ -55,12 +57,13 @@ public enum IdentitySampler {
             self.languages = ordered
         }
 
+        /// Only the exit's first language is used, completed the way Chrome lists languages by
+        /// default: ipapi.co returns every language of the country ("en-US,es-US,haw,fr").
         public init?(exit: ProxyExit) {
-            let tags = exit.languages.filter(FingerprintSettings.isLanguageTag)
+            let tags = exit.languages.map(IdentitySampler.chromeLanguageTag).filter(FingerprintSettings.isLanguageTag)
             let fallback = ProxyProbe.commonLanguages[exit.countryCode.uppercased()] ?? []
-            let ordered = tags.isEmpty ? fallback : tags
-            guard let primary = ordered.first else { return nil }
-            self.init(language: primary, timeZone: exit.timeZone, languages: ordered)
+            guard let primary = tags.first ?? fallback.first else { return nil }
+            self.init(language: primary, timeZone: exit.timeZone)
         }
 
         /// The Mac's own locale, used when a Profile has no proxy.
@@ -68,6 +71,28 @@ public enum IdentitySampler {
             guard let language = Locale.preferredLanguages.first else { return nil }
             return LocaleHint(language: language, timeZone: TimeZone.current.identifier)
         }
+    }
+
+    /// A language tag as Chrome writes it. macOS reports `zh-Hans-CN` or `en_US`; Chrome uses
+    /// `zh-CN` and `en-US`, and has no script subtags in its language lists.
+    static func chromeLanguageTag(_ tag: String) -> String {
+        let parts = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: { $0 == "-" || $0 == "_" }).map(String.init)
+        guard let first = parts.first else { return "" }
+        let language = first.lowercased()
+        var rest = Array(parts.dropFirst())
+        var script: String?
+        if let next = rest.first, next.count == 4, next.allSatisfy(\.isLetter) {
+            script = next.lowercased()
+            rest.removeFirst()
+        }
+        if let region = rest.first, region.count == 2 || region.count == 3 {
+            rest[0] = region.uppercased()
+        } else if language == "zh", let script {
+            // A bare script stands for the region Chrome would use.
+            rest.insert(script == "hant" ? "TW" : "CN", at: 0)
+        }
+        return ([language] + rest).joined(separator: "-")
     }
 
     private struct Weighted<Value> {
@@ -98,16 +123,18 @@ public enum IdentitySampler {
 
     /// New Profiles start on macOS because the bundled engine can already match the host's
     /// font rendering there. Windows/Linux remain available through an explicit preset.
-    private static let defaultPresetIDs = ["macos26-chrome", "macos15-chrome"]
+    private static let defaultPresetIDs = ["macos27-chrome", "macos26-chrome", "macos15-chrome"]
 
     /// Fingerprint Chromium 148 accepts `--fingerprint-screen-*`, but in a windowed probe both
     /// `screen.width/height` and `availWidth/Height` still reported the host display. Keep the
     /// fields for a future engine, but do not claim a screen the browser will not report.
     private static let screenSpoofingSupported = false
 
+    /// Shared by whole identities and by the field randomizer's platform, brand and platform version.
     private static let presetWeights: [String: Int] = [
-        "macos26-chrome": 60,
-        "macos15-chrome": 40,
+        "macos27-chrome": 30,
+        "macos26-chrome": 45,
+        "macos15-chrome": 25,
         "win11-chrome": 10,
         "win10-chrome": 5,
         "win11-edge": 5,
@@ -175,28 +202,39 @@ public enum IdentitySampler {
         return (locale.language, locale.timeZone, locale.languages)
     }
 
-    /// CPU counts that are plausible for the selected platform.
-    static func randomCPUCount(for platform: BrowserPlatform?) -> Int {
+    /// A logical CPU count for the machine behind the identity. With spoofed WebGL the seed fixes
+    /// the GPU, and the count comes from the machines that ship with it; otherwise WebGL shows this
+    /// Mac's GPU and only the platform is known.
+    static func randomCPUCount(for platform: BrowserPlatform?, seed: Int, spoofsGPU: Bool) -> Int {
+        if spoofsGPU, platform != nil, let gpu = EngineHardwareTable.bundled.gpu(for: platform, seed: seed),
+           let count = gpu.cpuCounts.randomElement() {
+            return count
+        }
         let values: [Int]
         switch platform {
         case .macOS: values = [8, 10, 12]
-        case .windows: values = [4, 6, 8, 12, 16]
-        case .linux: values = [2, 4, 8]
-        case nil: values = [4, 8, 12, 16]
+        case .windows, nil: values = [4, 8, 12, 16]
+        case .linux: values = [4, 8]
         }
         return values.randomElement()!
     }
 
+    /// A preset drawn with the shared weights from those `accepts` allows; all presets when none is allowed.
+    static func weightedPreset(where accepts: (IdentityPreset) -> Bool) -> IdentityPreset {
+        let candidates = IdentityPreset.all.filter(accepts)
+        let weighted = (candidates.isEmpty ? IdentityPreset.all : candidates)
+            .map { Weighted(value: $0, weight: presetWeights[$0.id] ?? 1) }
+        return choose(weighted) ?? IdentityPreset.all.first { $0.id == "macos26-chrome" }!
+    }
+
     private static func choosePreset(ids: [String], platforms: [BrowserPlatform]?) -> IdentityPreset {
         let wanted = Set(ids)
-        var candidates = IdentityPreset.all.filter { wanted.contains($0.id) }
-        if let platforms, !platforms.isEmpty {
-            let allowed = Set(platforms)
-            let narrowed = candidates.filter { allowed.contains($0.platform) }
-            if !narrowed.isEmpty { candidates = narrowed }
+        guard IdentityPreset.all.contains(where: { wanted.contains($0.id) }) else {
+            return IdentityPreset.all.first { $0.id == "macos26-chrome" }!
         }
-        let weighted = candidates.map { Weighted(value: $0, weight: presetWeights[$0.id] ?? 1) }
-        return choose(weighted) ?? IdentityPreset.all.first { $0.id == "macos26-chrome" }!
+        let allowed = Set(platforms ?? [])
+        let narrowed = IdentityPreset.all.contains { wanted.contains($0.id) && allowed.contains($0.platform) }
+        return weightedPreset { wanted.contains($0.id) && (!narrowed || allowed.contains($0.platform)) }
     }
 
     private static func screenProfiles(for platform: BrowserPlatform) -> [Weighted<ScreenProfile>] {
