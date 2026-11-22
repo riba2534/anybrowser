@@ -62,10 +62,13 @@ public final class LibraryIndex {
         }
     }
 
-    static func tags(_ profiles: [BrowserProfile]) -> [String] {
+    static func tags(_ profiles: [BrowserProfile]) -> [String] { tags(in: profiles.map(\.tags)) }
+
+    /// The tags in `lists`, each once whatever its case and spelled as first seen, in display order.
+    public static func tags(in lists: [[String]]) -> [String] {
         var seen: Set<String> = []
         var result: [String] = []
-        for tag in profiles.flatMap(\.tags) where seen.insert(tag.lowercased()).inserted { result.append(tag) }
+        for tag in lists.joined() where seen.insert(tag.lowercased()).inserted { result.append(tag) }
         return result.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 

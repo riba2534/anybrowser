@@ -23,11 +23,7 @@ struct OrganizationCard: View {
                 TextEditor(text: $draft.profile.notes)
                     .font(.system(size: 13))
                     .frame(height: 72)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(WorkbenchPalette.rule, lineWidth: 1)
-                    }
+                    .editorBorder()
                     .accessibilityLabel("备注")
                     .accessibilityIdentifier("profile-notes")
             }

@@ -58,10 +58,7 @@ extension Workbench {
     }
 
     private static func cookieFileName(_ profileName: String) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
         let name = profileName.components(separatedBy: CharacterSet(charactersIn: "/:")).joined(separator: "-")
-        return "\(name.isEmpty ? "Profile" : name)-Cookie-\(formatter.string(from: Date())).json"
+        return "\(name.isEmpty ? "Profile" : name)-Cookie-\(FilePanels.today).json"
     }
 }

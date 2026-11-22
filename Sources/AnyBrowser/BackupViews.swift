@@ -234,17 +234,8 @@ enum BackupPanels {
     static let type = UTType(filenameExtension: ProfileBackup.fileExtension) ?? .data
 
     static func saveLocation() -> URL? {
-        let panel = NSSavePanel()
-        panel.title = "导出完整备份"
-        panel.prompt = "备份"
-        panel.message = "文件包含账号密码和 Cookie，没有加密，请存放在安全的位置。"
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        panel.nameFieldStringValue = "AnyBrowser 备份 \(formatter.string(from: Date())).\(ProfileBackup.fileExtension)"
-        panel.allowedContentTypes = [type]
-        panel.canCreateDirectories = true
-        return panel.runModal() == .OK ? panel.url : nil
+        FilePanels.saveLocation(title: "导出完整备份", prompt: "备份", message: "文件包含账号密码和 Cookie，没有加密，请存放在安全的位置。",
+                                name: "AnyBrowser 备份 \(FilePanels.today).\(ProfileBackup.fileExtension)", types: [type])
     }
 
     static func backupFile() -> URL? {
@@ -315,10 +306,7 @@ struct DatabaseBackupsSheet: View {
                 }
             }
             .frame(height: 280)
-            .background(WorkbenchPalette.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WorkbenchPalette.rule, lineWidth: 1)
-            }
+            .listPanel()
             if let blocker = restoreBlocker {
                 Text(blocker)
                     .font(.system(size: 12))
@@ -347,7 +335,7 @@ struct DatabaseBackupsSheet: View {
             }
         }
         .onAppear(perform: reload)
-        .alert("恢复这份数据库备份？", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
+        .alert("恢复这份数据库备份？", isPresented: Binding(showing: $confirming),
                presenting: confirming) { backup in
             Button("恢复并重新启动 AnyBrowser", role: .destructive) { restore(backup) }
             Button("取消", role: .cancel) {}

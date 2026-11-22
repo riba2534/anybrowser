@@ -274,6 +274,6 @@ struct SharedExtensionsSheet: View {
     }
 
     private var showRemoval: Binding<Bool> {
-        Binding(get: { removal != nil }, set: { if !$0 { removal = nil } })
+        Binding(showing: $removal)
     }
 }

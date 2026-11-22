@@ -217,7 +217,7 @@ struct LibraryBatchBar: View {
     }
 
     private var presented: Binding<Bool> {
-        Binding(get: { popover != nil }, set: { if !$0 { popover = nil } })
+        Binding(showing: $popover)
     }
 
     private func more(_ picked: [BrowserProfile], ids: Set<UUID>) -> some View {

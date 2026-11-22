@@ -401,31 +401,11 @@ struct Workspace: View {
         .background(WorkbenchPalette.iconSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private var showNavigationAlert: Binding<Bool> {
-        Binding(
-            get: { workbench.pendingDestination != nil },
-            set: { showing in if !showing { workbench.pendingDestination = nil } }
-        )
-    }
+    private var showNavigationAlert: Binding<Bool> { Binding(showing: $workbench.pendingDestination) }
 
-    private var showFingerprintAlert: Binding<Bool> {
-        Binding(
-            get: { workbench.pendingFingerprintLaunch != nil },
-            set: { showing in if !showing { workbench.pendingFingerprintLaunch = nil } }
-        )
-    }
+    private var showFingerprintAlert: Binding<Bool> { Binding(showing: $workbench.pendingFingerprintLaunch) }
 
-    private var showForceStopAlert: Binding<Bool> {
-        Binding(
-            get: { workbench.pendingForceStop != nil },
-            set: { showing in if !showing { workbench.pendingForceStop = nil } }
-        )
-    }
+    private var showForceStopAlert: Binding<Bool> { Binding(showing: $workbench.pendingForceStop) }
 
-    private var showRemovalAlert: Binding<Bool> {
-        Binding(
-            get: { removeCandidate != nil },
-            set: { showing in if !showing { removeCandidate = nil } }
-        )
-    }
+    private var showRemovalAlert: Binding<Bool> { Binding(showing: $removeCandidate) }
 }

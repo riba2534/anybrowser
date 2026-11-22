@@ -81,10 +81,7 @@ struct ProxySourceFields: View {
     }
 
     private var libraryTags: [String] {
-        var seen: Set<String> = []
-        return (workbench.proxyLibrary?.entries ?? []).flatMap(\.tags)
-            .filter { seen.insert($0.lowercased()).inserted }
-            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        LibraryIndex.tags(in: workbench.proxyLibrary?.entries.map(\.tags) ?? [])
     }
 
     @ViewBuilder private var poolSummary: some View {
