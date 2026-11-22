@@ -223,8 +223,9 @@ struct RuntimeFailureTests {
             #expect(fixture.runtime.launchLog(for: profile.id) == nil)
             let error = await #expect(throws: (any Error).self) { try await fixture.runtime.start(profile) }
             let message = error?.localizedDescription ?? ""
-            #expect(message.contains("退出码 7"))
-            #expect(message.contains("the profile is broken"))
+            let lines = message.split(separator: "\n")
+            #expect(lines.first == "Chromium 在调试端口就绪前退出（退出码 7）。")
+            #expect(lines.contains("fake-engine: the profile is broken"))
             guard case .failed(let shown) = fixture.runtime.status(for: profile.id) else {
                 Issue.record("Not failed: \(fixture.runtime.status(for: profile.id))")
                 return
@@ -333,21 +334,27 @@ struct RuntimeAdoptionTests {
     func adoptsAndWatches() async throws {
         let fixture = try FakeEngineFixture("runtime-adopt")
         let profile = fixture.profile(port: 11430)
+        let started = fixture.profile(port: 11438)
         try fixture.configure(profile, [:])
+        try fixture.configure(started, [:])
         let restarted = fixture.makeRuntime()
-        try await run(fixture, [profile], runtimes: [restarted]) {
+        try await run(fixture, [profile, started], runtimes: [restarted]) {
             try await fixture.runtime.start(profile)
+            try await fixture.runtime.start(started)
+            // One is found by a refresh, the other by starting it again.
             await restarted.refresh([profile])
             #expect(restarted.status(for: profile.id) == fixture.runtime.status(for: profile.id))
-            guard case let .running(pid, _, true) = restarted.status(for: profile.id) else {
-                Issue.record("Not adopted: \(restarted.status(for: profile.id))")
-                return
-            }
-            let adopted = try await restarted.start(profile)
+            let adopted = try await restarted.start(started)
             #expect(adopted.startedFresh == false)
-            // The adopted browser is not its child: an exit source reports it without a refresh.
-            kill(pid, SIGKILL)
-            #expect(await fixture.eventually(3) { restarted.status(for: profile.id) == .stopped })
+            for item in [profile, started] {
+                guard case let .running(pid, _, true) = restarted.status(for: item.id) else {
+                    Issue.record("Not adopted: \(restarted.status(for: item.id))")
+                    return
+                }
+                // The adopted browser is not its child: an exit source reports it without a refresh.
+                kill(pid, SIGKILL)
+                #expect(await fixture.eventually(3) { restarted.status(for: item.id) == .stopped })
+            }
         }
     }
 
@@ -355,23 +362,34 @@ struct RuntimeAdoptionTests {
     func adoptsLockHolder() async throws {
         let fixture = try FakeEngineFixture("runtime-lock")
         let profile = fixture.profile(port: 11431)
-        try fixture.configure(profile, [:])
+        // The session brought back an -AppleLanguages placeholder next to a real tab.
+        try fixture.configure(profile, ["targets": #"[{"targetId":"p1","type":"page","url":"http://(de-de)/","title":"(de-de)"},"#
+                                            + #"{"targetId":"tab","type":"page","url":"https://kept.example/","title":"Kept"}]"#])
         let restarted = fixture.makeRuntime()
+        func closed() -> [String] {
+            fixture.commands(profile).filter { method($0) == "Target.closeTarget" }
+                .compactMap { parameters($0)["targetId"] as? String }
+        }
         try await run(fixture, [profile], runtimes: [restarted]) {
             try await fixture.runtime.start(profile)
             let status = fixture.runtime.status(for: profile.id)
             let receipt = fixture.runtime.receiptURL(fixture.runtime.dataDirectory(for: profile.id))
             try FileManager.default.removeItem(at: receipt)
 
+            #expect(fixture.commands(profile).isEmpty)
             await restarted.refresh([profile])
             #expect(restarted.status(for: profile.id) == status)
             #expect(FileManager.default.fileExists(atPath: receipt.path))
+            // Only the placeholder goes; nothing is opened in a browser the user restarted.
+            #expect(closed() == ["p1"])
+            #expect(!fixture.commands(profile).contains { ["Page.navigate", "Target.createTarget"].contains(method($0)) })
             try FileManager.default.removeItem(at: receipt)
             // Starting it adopts it the same way.
             let fresh = fixture.makeRuntime()
             let adopted = try await fresh.start(profile)
-            #expect(adopted.startedFresh == false)
+            #expect(adopted == LaunchOutcome(startedFresh: false))
             #expect(fresh.status(for: profile.id) == status)
+            #expect(closed() == ["p1", "p1"])
             try await fresh.stop(profile.id)
             #expect(fresh.status(for: profile.id) == .stopped)
         }

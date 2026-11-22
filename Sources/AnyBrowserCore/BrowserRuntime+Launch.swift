@@ -150,8 +150,10 @@ extension BrowserRuntime {
     /// AnyBrowser has had its turn: the first reuses a placeholder tab or the new tab page, the
     /// rest open behind it. Spare placeholder tabs are closed, or the only one shows the new tab
     /// page when there are no start pages. Best effort within `budget`; problems become warnings.
+    /// `waitingForTabs` waits for Chromium's first tab and the expected placeholders; without it the
+    /// tabs are taken as they are, for a browser that has been running for a while.
     nonisolated static func openStartPages(_ urls: [String], endpoint: URL, placeholders: Int,
-                                           budget: TimeInterval) async -> [String] {
+                                           waitingForTabs: Bool = true, budget: TimeInterval) async -> [String] {
         let client: DevToolsClient
         do {
             client = try DevToolsClient(endpoint: endpoint, timeout: budget)
@@ -161,7 +163,7 @@ extension BrowserRuntime {
         let report = StartPageReport()
         let finished = await withTaskGroup(of: Bool.self) { group in
             group.addTask {
-                await arrangeTabs(client, urls: urls, placeholders: placeholders, report: report)
+                await arrangeTabs(client, urls: urls, placeholders: placeholders, waiting: waitingForTabs, report: report)
                 return true
             }
             group.addTask {
@@ -177,20 +179,21 @@ extension BrowserRuntime {
         }
         var warnings = report.close().warnings
         if !finished {
-            warnings.append("启动网址没有在 \(Int(budget.rounded())) 秒内全部打开。")
+            let seconds = Int(budget.rounded())
+            warnings.append(urls.isEmpty ? "占位标签页没有在 \(seconds) 秒内处理完。" : "启动网址没有在 \(seconds) 秒内全部打开。")
         }
         return warnings
     }
 
     private nonisolated static func arrangeTabs(_ client: DevToolsClient, urls: [String], placeholders expected: Int,
-                                                report: StartPageReport) async {
+                                                waiting: Bool, report: StartPageReport) async {
         var pages: [[String: Any]] = []
         do {
             // The first tabs appear a moment after the endpoint does.
             while true {
                 let targets = try await client.send("Target.getTargets")["targetInfos"] as? [[String: Any]] ?? []
                 pages = targets.filter { $0["type"] as? String == "page" }
-                if !pages.isEmpty && pages.filter(isPlaceholder).count >= expected { break }
+                if !waiting || !pages.isEmpty && pages.filter(isPlaceholder).count >= expected { break }
                 try await Task.sleep(nanoseconds: 100_000_000)
             }
         } catch {

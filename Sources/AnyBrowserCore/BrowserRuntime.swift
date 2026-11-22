@@ -247,7 +247,7 @@ public final class BrowserRuntime: ObservableObject {
                 if !running.ready {
                     throw BrowserRuntimeError.message("浏览器正在运行，但本机调试端口 \(running.receipt.port) 尚未就绪。")
                 }
-                return LaunchOutcome(startedFresh: false)
+                return LaunchOutcome(startedFresh: false, warnings: running.warnings)
             }
             guard !profileInUse(directory) else {
                 throw BrowserRuntimeError.message("此 Profile 的资料目录正在使用，请先在浏览器中退出。")
@@ -399,15 +399,17 @@ public final class BrowserRuntime: ObservableObject {
             let directory = dataDirectory(for: id)
             let saved = readReceipt(directory)
             var receipt = saved
+            var adopted = false
             var result: BrowserRunState = .stopped
             if let saved {
                 result = await runningState(saved, directory: directory)
             }
             // The browser may have replaced itself, or AnyBrowser quit before writing the receipt.
             if result == .stopped, lockHolder(directory) != nil, let lock = try? lockDirectory(directory) {
-                if let adopted = adoptLockHolder(directory, ports: [saved?.port, profile.port]) {
-                    receipt = adopted
-                    result = await runningState(adopted, directory: directory)
+                if let holder = adoptLockHolder(directory, ports: [saved?.port, profile.port]) {
+                    receipt = holder
+                    adopted = true
+                    result = await runningState(holder, directory: directory)
                 }
                 close(lock)
             }
@@ -419,6 +421,10 @@ public final class BrowserRuntime: ObservableObject {
             if result == .stopped, case .failed = previous { continue }
             if case let .running(pid, _, _) = result { watchExit(of: pid, for: id) }
             if result != previous { states[id] = result }
+            if adopted, case .running(_, _, true) = result {
+                // Nobody waits on a refresh; problems go to the launch log, if there is one.
+                for warning in await closePlaceholders(receipt, directory: directory) { logs[id]?.note(warning) }
+            }
         }
     }
 
@@ -500,13 +506,22 @@ public final class BrowserRuntime: ObservableObject {
 
     /// The Profile's running browser: the one its receipt names, or else the one holding the data
     /// directory's SingletonLock once it passes every ownership check.
-    private func runningBrowser(_ directory: URL, receipt: Receipt?, ports: [Int?]) async -> (receipt: Receipt, ready: Bool)? {
+    private func runningBrowser(_ directory: URL, receipt: Receipt?,
+                                ports: [Int?]) async -> (receipt: Receipt, ready: Bool, warnings: [String])? {
         if let receipt, case let .running(_, _, ready) = await runningState(receipt, directory: directory) {
-            return (receipt, ready)
+            return (receipt, ready, [])
         }
         guard let adopted = adoptLockHolder(directory, ports: ports),
               case let .running(_, _, ready) = await runningState(adopted, directory: directory) else { return nil }
-        return (adopted, ready)
+        return (adopted, ready, ready ? await closePlaceholders(adopted, directory: directory) : [])
+    }
+
+    /// A browser that relaunched itself brings its `(xx)` placeholder tabs back with the session.
+    /// They are closed as at launch, but no start page opens: the user restarted what was open.
+    private func closePlaceholders(_ receipt: Receipt, directory: URL) async -> [String] {
+        guard let endpoint = await verifiedEndpoint(receipt, directory: directory) else { return [] }
+        return await Self.openStartPages([], endpoint: endpoint, placeholders: 0, waitingForTabs: false,
+                                         budget: startPageBudget)
     }
 
     /// Writes a receipt for the process the data directory's SingletonLock names when it is this
