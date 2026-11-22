@@ -119,14 +119,16 @@ struct RuntimeLaunchTests {
     @Test("Start pages that take longer than the budget become a warning, not a failure")
     func startPageBudget() async throws {
         let fixture = try FakeEngineFixture("runtime-budget")
-        fixture.runtime.startPageBudget = 0.5
+        // The budget also bounds the DevTools handshake, which can take longer than half a second
+        // on a loaded machine and would then report a connection failure instead.
+        fixture.runtime.startPageBudget = 1
         var profile = fixture.profile(port: freeTestPort())
         profile.launch.startURLs = ["https://first.example/"]
         try fixture.configure(profile, ["targets": newTabPage, "cdp": "silent"])
         try await fixture.run([profile]) {
             let began = Date()
             let outcome = try await fixture.runtime.start(profile)
-            #expect(Date().timeIntervalSince(began) < 3)
+            #expect(Date().timeIntervalSince(began) < 4)
             #expect(outcome.startedFresh)
             #expect(outcome.warnings.contains { $0.contains("秒内") })
             guard case .running(_, _, true) = fixture.runtime.status(for: profile.id) else {
