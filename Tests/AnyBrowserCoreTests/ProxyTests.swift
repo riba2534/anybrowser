@@ -36,6 +36,52 @@ struct ProxyTests {
         #expect(throws: ProfileError.self) { try profile.validated() }
     }
 
+    @Test("Provider formats, socks5h and empty passwords parse to one normalized address")
+    func parsesProviderFormats() throws {
+        // host:port:user:password, as residential providers hand them out.
+        let listed = try #require(try ProxyEndpoint.parse(" gate.example.com:7777:user-zone-us:p@ss "))
+        #expect(listed == ProxyEndpoint(scheme: "http", host: "gate.example.com", port: 7777,
+                                        username: "user-zone-us", password: "p@ss"))
+        #expect(listed.url == "http://user-zone-us:p%40ss@gate.example.com:7777")
+        #expect(try ProxyEndpoint.parse(listed.url) == listed)
+        #expect(try ProxyEndpoint.parse("http://user-zone-us:p%40ss@Gate.Example.com:7777/") == listed)
+        #expect(try ProxyEndpoint.parse("user-zone-us:p%40ss@gate.example.com:7777") == listed)
+        let socksListed = try ProxyEndpoint.parse("socks5://10.0.0.2:1080:alice:secret", allowingSOCKSCredentials: true)
+        #expect(socksListed == ProxyEndpoint(scheme: "socks5", host: "10.0.0.2", port: 1080, username: "alice", password: "secret"))
+
+        // socks5h means remote DNS, which is what Chromium's socks5 already does.
+        let remote = try #require(try ProxyEndpoint.parse("SOCKS5H://127.0.0.1:1080"))
+        #expect(remote == ProxyEndpoint(scheme: "socks5", host: "127.0.0.1", port: 1080))
+        #expect(remote.url == "socks5://127.0.0.1:1080" && remote.server == remote.url)
+
+        // A key alone signs in to some providers; the password stays empty, not missing.
+        let key = try #require(try ProxyEndpoint.parse("http://APIKEY:@proxy.example:8011"))
+        #expect(key.username == "APIKEY" && key.password == "" && key.hasCredentials)
+        #expect(key.url == "http://APIKEY:@proxy.example:8011")
+        #expect(try ProxyEndpoint.parse("proxy.example:8011:APIKEY:") == key)
+        let tricky = ProxyEndpoint(scheme: "https", host: "[::1]", port: 443, username: "a b/c", password: "é:%@")
+        #expect(try ProxyEndpoint.parse(tricky.url) == tricky)
+
+        // SOCKS5 credentials are refused for the engine, accepted where a relay signs in.
+        let socks = "socks5://alice:secret@127.0.0.1:1080"
+        #expect(throws: ProfileError.self) { try ProxyEndpoint.parse(socks) }
+        #expect(try ProxyEndpoint.parse(socks, allowingSOCKSCredentials: true)?.password == "secret")
+        #expect(throws: ProfileError.self) {
+            try ProxyEndpoint.parse("socks5://\(String(repeating: "u", count: 256)):p@127.0.0.1:1080", allowingSOCKSCredentials: true)
+        }
+
+        for (address, message) in [("socks4://127.0.0.1:1080", "SOCKS4"), ("socks4a://127.0.0.1:1080", "SOCKS4"),
+                                   ("gate.example.com:7777:user:pa:ss", "%3A"),
+                                   ("gate.example.com:7777:user", "主机:端口:用户名:密码")] {
+            do {
+                _ = try ProxyEndpoint.parse(address)
+                Issue.record("\(address) was accepted")
+            } catch {
+                #expect(error.localizedDescription.contains(message), "\(address): \(error.localizedDescription)")
+            }
+        }
+    }
+
     @Test("SOCKS5 credentials and malformed credentials are refused")
     func refusesBadCredentials() throws {
         do {
@@ -46,7 +92,7 @@ struct ProxyTests {
             #expect(error.localizedDescription.contains("HTTP 代理"))
         }
         let malformed = [
-            "http://alice@127.0.0.1:8080", "http://:secret@127.0.0.1:8080", "http://alice:@127.0.0.1:8080",
+            "http://alice@127.0.0.1:8080", "http://:secret@127.0.0.1:8080", "127.0.0.1:8080::secret",
             "http://@127.0.0.1:8080", "http://al ice:secret@127.0.0.1:8080", "http://alice:sec/ret@127.0.0.1:8080",
             "http://alice:sec#ret@127.0.0.1:8080", "http://alice:sec%zzret@127.0.0.1:8080",
             "http://alice:sec%0Aret@127.0.0.1:8080", "http://al%3Aice:secret@127.0.0.1:8080",

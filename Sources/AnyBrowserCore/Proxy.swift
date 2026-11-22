@@ -22,34 +22,94 @@ public struct ProxyEndpoint: Equatable, Sendable {
     /// The value of `--proxy-server`: never contains credentials.
     public var server: String { "\(scheme)://\(host):\(port)" }
 
+    /// The normalized address, credentials included and percent-encoded. Parsing it gives back this
+    /// endpoint, so different ways of writing one proxy share a single value.
+    public var url: String {
+        guard let username else { return server }
+        let encode = { (text: String) in text.addingPercentEncoding(withAllowedCharacters: Self.unreserved) ?? text }
+        return "\(scheme)://\(encode(username)):\(encode(password ?? ""))@\(host):\(port)"
+    }
+
     public var hasCredentials: Bool { username != nil }
 
-    /// Parses `host:port` (HTTP) or `scheme://host:port`, optionally with `user:password@` before the
-    /// host for HTTP and HTTPS proxies. An empty address means no proxy (nil).
-    public static func parse(_ text: String) throws -> ProxyEndpoint? {
+    private static let unreserved = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
+
+    /// Parses `host:port` (HTTP), `host:port:user:password`, or `scheme://host:port`, optionally with
+    /// `user:password@` before the host; the password may be empty. `socks5h://` means the same as
+    /// `socks5://`: Chromium already leaves name resolution to a SOCKS5 proxy. An empty address means
+    /// no proxy (nil).
+    ///
+    /// The engine cannot sign in to a SOCKS5 proxy by itself, so SOCKS5 credentials are refused unless
+    /// the caller relays the connection and sets `allowingSOCKSCredentials`.
+    public static func parse(_ text: String, allowingSOCKSCredentials: Bool = false) throws -> ProxyEndpoint? {
         let address = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !address.isEmpty else { return nil }
-        let invalid = ProfileError.invalid(
-            "代理须为主机:端口，或以 http://、https://、socks5:// 开头；HTTP 和 HTTPS 代理可带账号密码，例如 http://用户名:密码@主机:端口。")
-        guard address.utf8.count <= 512 else { throw invalid }
+        guard address.utf8.count <= 512 else { throw invalidAddress }
 
         let uri = address.contains("://") ? address : "http://\(address)"
-        guard let separator = uri.range(of: "://") else { throw invalid }
-        var authority = uri[separator.upperBound...]
-        var credentials: (username: String, password: String)?
+        guard let separator = uri.range(of: "://") else { throw invalidAddress }
+        var scheme = uri[..<separator.lowerBound].lowercased()
+        switch scheme {
+        case "socks5h":
+            scheme = "socks5"
+        case "socks4", "socks4a":
+            throw ProfileError.invalid("不支持 SOCKS4 代理：它不能使用账号密码，域名也可能在本机解析。请改用 SOCKS5 或 HTTP 代理。")
+        default:
+            break
+        }
+        let authority = uri[separator.upperBound...]
+        // Providers also hand out host:port:user:password, with the credentials as they are rather
+        // than percent-encoded. A colon inside them makes the fields ambiguous, so only exactly four
+        // qualify; IPv6 hosts are bracketed and never match.
+        let fields = authority.split(separator: ":", omittingEmptySubsequences: false)
+        let listed = fields.count >= 4 && !fields[0].hasPrefix("[") && !fields[0].contains("@")
+            && Int(fields[1]).map { (1...65535).contains($0) } == true
+        let fromList = {
+            guard fields.count == 4 else {
+                throw ProfileError.invalid(
+                    "用户名或密码含有冒号时无法按 主机:端口:用户名:密码 识别，请改写成 http://用户名:密码@主机:端口，并把其中的冒号写成 %3A。")
+            }
+            return try endpoint(scheme: scheme, authority: authority[..<fields[1].endIndex],
+                                credentials: try literalCredentials(fields[2], fields[3]),
+                                allowingSOCKSCredentials: allowingSOCKSCredentials)
+        }
         // The last @ ends the credentials: an @ inside them has to be written as %40.
-        if let at = authority.lastIndex(of: "@") {
-            guard uri[..<separator.lowerBound].lowercased() != "socks5" else {
+        guard let at = authority.lastIndex(of: "@") else {
+            return listed ? try fromList()
+                : try endpoint(scheme: scheme, authority: authority, credentials: nil,
+                               allowingSOCKSCredentials: allowingSOCKSCredentials)
+        }
+        do {
+            return try endpoint(scheme: scheme, authority: authority[authority.index(after: at)...],
+                                credentials: try credentials(authority[..<at]),
+                                allowingSOCKSCredentials: allowingSOCKSCredentials)
+        } catch {
+            // A password from such a list may itself hold an @.
+            guard listed else { throw error }
+            return try fromList()
+        }
+    }
+
+    private static var invalidAddress: ProfileError {
+        .invalid("代理须为主机:端口、主机:端口:用户名:密码，或以 http://、https://、socks5:// 开头；HTTP 和 HTTPS 代理可带账号密码，例如 http://用户名:密码@主机:端口。")
+    }
+
+    private static func endpoint(scheme: String, authority: Substring, credentials: (username: String, password: String)?,
+                                 allowingSOCKSCredentials: Bool) throws -> ProxyEndpoint {
+        let invalid = invalidAddress
+        if let credentials, scheme == "socks5" {
+            guard allowingSOCKSCredentials else {
                 throw ProfileError.invalid("内核不支持 SOCKS5 代理的账号密码，请改用 HTTP 代理，或去掉用户名和密码。")
             }
-            credentials = try Self.credentials(authority[..<at])
-            authority = authority[authority.index(after: at)...]
+            // RFC 1929 gives each a one-byte length.
+            guard credentials.username.utf8.count <= 255, credentials.password.utf8.count <= 255 else {
+                throw ProfileError.invalid("SOCKS5 代理的用户名和密码各不能超过 255 字节。")
+            }
         }
-
-        let location = "\(uri[..<separator.lowerBound])://\(authority)"
+        let location = "\(scheme)://\(authority)"
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.:/[]")
         guard location.unicodeScalars.allSatisfy(allowed.contains),
-              let parts = URLComponents(string: location), let scheme = parts.scheme?.lowercased(),
+              let parts = URLComponents(string: location), parts.scheme == scheme,
               ["http", "https", "socks5"].contains(scheme),
               let host = parts.host?.lowercased(), !host.isEmpty,
               let port = parts.port, (1...65535).contains(port),
@@ -69,19 +129,29 @@ public struct ProxyEndpoint: Equatable, Sendable {
                              username: credentials?.username, password: credentials?.password)
     }
 
-    /// `user:password`, each percent-decoded. Only unreserved characters, sub-delimiters and percent
-    /// escapes may appear as typed (RFC 3986 userinfo).
+    /// The user name and password of a `host:port:user:password` line, taken as they are.
+    private static func literalCredentials(_ username: Substring, _ password: Substring) throws -> (username: String, password: String) {
+        let forbidden = CharacterSet.whitespacesAndNewlines.union(.controlCharacters)
+        guard !username.isEmpty, !(username + password).unicodeScalars.contains(where: forbidden.contains) else {
+            throw ProfileError.invalid("代理的用户名不能为空，也不能含有空格。")
+        }
+        return (String(username), String(password))
+    }
+
+    /// `user:password`, each percent-decoded; providers that sign in with a key alone leave the
+    /// password empty. Only unreserved characters, sub-delimiters and percent escapes may appear as
+    /// typed (RFC 3986 userinfo).
     private static func credentials(_ userInfo: Substring) throws -> (username: String, password: String) {
         let typed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~!$&'()*+,;=:%")
         let parts = userInfo.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
         guard parts.count == 2, userInfo.unicodeScalars.allSatisfy(typed.contains),
               let username = parts[0].removingPercentEncoding, let password = parts[1].removingPercentEncoding,
-              !username.isEmpty, !password.isEmpty,
+              !username.isEmpty,
               // HTTP Basic authentication ends the user name at the first colon.
               !username.contains(":"),
               !(username + password).unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
             throw ProfileError.invalid(
-                "代理的用户名和密码都不能为空，写成 http://用户名:密码@主机:端口；其中的 @、/、# 等特殊字符请用百分号编码，例如 @ 写成 %40。")
+                "代理的用户名不能为空，写成 http://用户名:密码@主机:端口；其中的 @、/、# 等特殊字符请用百分号编码，例如 @ 写成 %40。")
         }
         return (username, password)
     }
