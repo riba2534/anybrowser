@@ -280,7 +280,7 @@ final class Workbench: ObservableObject {
         var launched = profile
         launched.passkeyBox = profile.passkeyBox ?? store?.passkeyBoxAccount
         // A browser that was already running keeps whatever configuration it was started with.
-        guard try await runtime.start(profile, passkeyBox: launched.passkeyBox) else { return warning }
+        guard try await runtime.start(profile, passkeyBox: launched.passkeyBox).startedFresh else { return warning }
         runningConfigurations[id] = launched
         store?.recordLaunch(id)
         if let warning { notice = Notice(text: warning, isError: true) }

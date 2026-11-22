@@ -32,6 +32,7 @@ struct InstalledEngineTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try ProfileStore(directory: directory)
         var profile = try store.makeDraft()
+        profile.port = testPort(profile.port)
         profile.proxy = ""
         try store.save(profile)
         try await flow.account.verify()
@@ -76,8 +77,9 @@ struct InstalledEngineTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try ProfileStore(directory: directory)
         var profiles: [BrowserProfile] = []
-        for _ in 0..<2 {
+        for index in 0..<2 {
             var profile = try store.makeDraft()
+            profile.port = testPort(9222 + index)
             profile.proxy = ""
             try store.save(profile)
             profiles.append(profile)
@@ -115,7 +117,7 @@ struct InstalledEngineTests {
 
     @MainActor
     private func verify(engine: BrowserEngine) async throws {
-        #expect(engine.version == "148.0.7778.215")
+        #expect(engine.version == BundledVersions.engine)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("anybrowser-test-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -125,6 +127,8 @@ struct InstalledEngineTests {
         defer { proxy.listener.cancel() }
         let store = try ProfileStore(directory: directory)
         var first = try store.makeDraft()
+        #expect(first.port == 9222)
+        first.port = testPort(9222)
         let proxyPort = try #require(proxy.url.port)
         first.proxy = "127.0.0.1:\(proxyPort)"
         first.fingerprint.platform = .macOS
@@ -132,11 +136,12 @@ struct InstalledEngineTests {
         first.fingerprint.timeZone = "UTC"
         try store.save(first)
         var second = try store.makeDraft()
+        second.port = testPort(9223)
         second.fingerprint.platform = .windows
         second.fingerprint.cpuCount = 12
         second.fingerprint.timeZone = "Asia/Tokyo"
         try store.save(second)
-        #expect([first.port, second.port] == [9222, 9223] as [Int])
+        #expect([first.port, second.port] == [testPort(9222), testPort(9223)] as [Int])
 
         let runtime = BrowserRuntime(engine: engine, storage: store.directory)
         do {
@@ -156,7 +161,7 @@ struct InstalledEngineTests {
             #expect(restored.status(for: second.id) == runtime.status(for: second.id))
             #expect(restored.matchesRunningConfiguration(first) == true)
             // Starting a Profile that is already running adopts it and reports that nothing was launched.
-            #expect(try await restored.start(first) == false)
+            #expect(try await restored.start(first).startedFresh == false)
             var changed = first
             changed.fingerprint.cpuCount = 16
             #expect(restored.matchesRunningConfiguration(changed) == false)
@@ -255,7 +260,7 @@ struct InstalledEngineTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try ProfileStore(directory: directory)
         var profile = try store.makeDraft()
-        profile.port = 9313
+        profile.port = testPort(9313)
         profile.proxy = ""
         try store.save(profile)
 
@@ -292,7 +297,7 @@ struct InstalledEngineTests {
                 """)
             if let fields = observed as? [String: Any] {
                 #expect((fields["id"] as? String) == id)
-                #expect((fields["version"] as? String) == "0.4.0")
+                #expect((fields["version"] as? String) == BundledVersions.passkeyBox)
                 #expect((fields["server"] as? String) == "https://password.riba2534.cn/")
                 return
             }

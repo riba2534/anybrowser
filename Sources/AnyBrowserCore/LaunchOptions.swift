@@ -24,11 +24,21 @@ public struct LaunchOptions: Codable, Equatable, Sendable {
     public var window: WindowLayout?
     /// Absolute paths of unpacked extension directories loaded next to Passkey Box.
     public var extensionDirectories: [String]
+    /// Loads the bundled Passkey Box; a Profile that never uses passkeys can leave it out.
+    public var loadPasskeyBox: Bool
+    /// Reopens the tabs of the last session in addition to the start pages.
+    public var restoreSession: Bool
+    /// Names of extensions in the shared library (`Extensions/Shared/<name>`) this Profile loads.
+    public var sharedExtensions: [String]
 
-    public init(startURLs: [String] = [], window: WindowLayout? = nil, extensionDirectories: [String] = []) {
+    public init(startURLs: [String] = [], window: WindowLayout? = nil, extensionDirectories: [String] = [],
+                loadPasskeyBox: Bool = true, restoreSession: Bool = false, sharedExtensions: [String] = []) {
         self.startURLs = startURLs
         self.window = window
         self.extensionDirectories = extensionDirectories
+        self.loadPasskeyBox = loadPasskeyBox
+        self.restoreSession = restoreSession
+        self.sharedExtensions = sharedExtensions
     }
 
     public init(from decoder: Decoder) throws {
@@ -36,6 +46,9 @@ public struct LaunchOptions: Codable, Equatable, Sendable {
         startURLs = try data.decodeIfPresent([String].self, forKey: .startURLs) ?? []
         window = try data.decodeIfPresent(WindowLayout.self, forKey: .window)
         extensionDirectories = try data.decodeIfPresent([String].self, forKey: .extensionDirectories) ?? []
+        loadPasskeyBox = try data.decodeIfPresent(Bool.self, forKey: .loadPasskeyBox) ?? true
+        restoreSession = try data.decodeIfPresent(Bool.self, forKey: .restoreSession) ?? false
+        sharedExtensions = try data.decodeIfPresent([String].self, forKey: .sharedExtensions) ?? []
     }
 
     /// Checks the options without touching the disk, so a Profile whose extension folder has
@@ -82,7 +95,27 @@ public struct LaunchOptions: Codable, Equatable, Sendable {
         guard result.extensionDirectories.count <= Self.maximumExtensionDirectories else {
             throw ProfileError.invalid("扩展目录最多 \(Self.maximumExtensionDirectories) 个。")
         }
+        result.loadPasskeyBox = loadPasskeyBox
+        result.restoreSession = restoreSession
+        for name in sharedExtensions where !result.sharedExtensions.contains(name) {
+            guard Self.isSharedExtensionName(name) else {
+                throw ProfileError.invalid("共享扩展名称无效：\(name.prefix(64))")
+            }
+            result.sharedExtensions.append(name)
+        }
+        guard result.sharedExtensions.count <= Self.maximumExtensionDirectories else {
+            throw ProfileError.invalid("共享扩展最多 \(Self.maximumExtensionDirectories) 个。")
+        }
         return result
+    }
+
+    /// A shared-library folder name: 1–64 letters, digits, spaces, dots, underscores or hyphens,
+    /// starting with a letter or digit, so it is always a single safe path component.
+    public static func isSharedExtensionName(_ name: String) -> Bool {
+        guard (1...64).contains(name.count), let first = name.unicodeScalars.first,
+              CharacterSet.alphanumerics.contains(first), first.isASCII else { return false }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-")
+        return name.unicodeScalars.allSatisfy(allowed.contains)
     }
 
     /// Run right before launch: every extension directory must still hold an unpacked extension.

@@ -409,7 +409,7 @@ struct AutomationTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try ProfileStore(directory: directory)
         var profile = try store.makeDraft()
-        profile.port = 9305
+        profile.port = testPort(9305)
         profile.proxy = ""
         try store.save(profile)
         let runtime = BrowserRuntime(engine: engine, storage: store.directory)
@@ -420,10 +420,10 @@ struct AutomationTests {
                 #expect(started.status == 200)
                 #expect((started.json?["profile"] as? [String: Any])?["status"] as? String == "running")
                 let debug = try #require(started.json?["debug"] as? [String: String])
-                #expect(debug["http"] == "http://127.0.0.1:9305")
+                #expect(debug["http"] == "http://127.0.0.1:\(profile.port)")
                 let webSocket = try #require(debug["webSocket"])
-                #expect(webSocket.hasPrefix("ws://127.0.0.1:9305/devtools/browser/"))
-                let version = try #require(URL(string: "http://127.0.0.1:9305/json/version"))
+                #expect(webSocket.hasPrefix("ws://127.0.0.1:\(profile.port)/devtools/browser/"))
+                let version = try #require(URL(string: "http://127.0.0.1:\(profile.port)/json/version"))
                 let (data, _) = try await URLSession.shared.data(from: version)
                 let info = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
                 #expect(info["webSocketDebuggerUrl"] as? String == webSocket)
@@ -433,7 +433,7 @@ struct AutomationTests {
 
                 let again = await request(port, "POST", "/api/v1/profiles/\(profile.id)/start")
                 #expect((again.json?["debug"] as? [String: String])?["webSocket"] == webSocket)
-                #expect(runtime.status(for: profile.id) == .running(pid: pid, port: 9305, debugReady: true))
+                #expect(runtime.status(for: profile.id) == .running(pid: pid, port: profile.port, debugReady: true))
 
                 let stopped = await request(port, "POST", "/api/v1/profiles/\(profile.id)/stop")
                 #expect(stopped.status == 200)

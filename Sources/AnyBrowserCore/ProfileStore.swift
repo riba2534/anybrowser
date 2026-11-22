@@ -4,7 +4,8 @@ import Foundation
 import SQLite3
 
 /// SQLITE_TRANSIENT: SQLite copies bound values before the call returns.
-private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+private let transient = sqliteTransient
 
 @MainActor
 public final class ProfileStore: ObservableObject {
@@ -15,7 +16,7 @@ public final class ProfileStore: ObservableObject {
     @Published public private(set) var unreadableProfiles = 0
     @Published public private(set) var lastLaunched: [UUID: Date] = [:]
     public let directory: URL
-    private var database: OpaquePointer?
+    private(set) var database: OpaquePointer?
     // Unreadable rows keep their port and seed so new Profiles never collide with them.
     private var unreadablePorts: Set<Int> = []
     private var unreadableSeeds: Set<Int> = []
@@ -45,24 +46,7 @@ public final class ProfileStore: ObservableObject {
         sqlite3_busy_timeout(database, 2000)
         do {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
-            guard sqlite3_exec(database, """
-                CREATE TABLE IF NOT EXISTS profiles (
-                    id TEXT PRIMARY KEY NOT NULL,
-                    port INTEGER NOT NULL UNIQUE,
-                    seed INTEGER NOT NULL UNIQUE,
-                    payload BLOB NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY NOT NULL,
-                    value BLOB NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS profile_usage (
-                    id TEXT PRIMARY KEY NOT NULL,
-                    last_launched_at REAL NOT NULL
-                )
-                """, nil, nil, nil) == SQLITE_OK else {
-                throw databaseError()
-            }
+            try migrate()
             let read = try statement("SELECT id, port, seed, payload FROM profiles ORDER BY rowid")
             defer { sqlite3_finalize(read) }
             var status = sqlite3_step(read)
@@ -299,7 +283,77 @@ public final class ProfileStore: ObservableObject {
         }
     }
 
-    private func statement(_ sql: String) throws -> OpaquePointer {
+    /// Schema steps in order. `PRAGMA user_version` records the last one applied; databases from
+    /// 0.4.0 and earlier report 0 and already have the tables of step 1. Append new steps; never
+    /// edit or reorder applied ones.
+    static let migrations: [(version: Int32, sql: String)] = [
+        (1, """
+            CREATE TABLE IF NOT EXISTS profiles (
+                id TEXT PRIMARY KEY NOT NULL,
+                port INTEGER NOT NULL UNIQUE,
+                seed INTEGER NOT NULL UNIQUE,
+                payload BLOB NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY NOT NULL,
+                value BLOB NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS profile_usage (
+                id TEXT PRIMARY KEY NOT NULL,
+                last_launched_at REAL NOT NULL
+            )
+            """),
+        // Recycle bin: a removed Profile keeps its row, port and seed until it is purged.
+        (2, "ALTER TABLE profiles ADD COLUMN deleted_at REAL"),
+        // Proxy library and the last exit seen for each Profile.
+        (3, """
+            CREATE TABLE IF NOT EXISTS proxies (
+                id TEXT PRIMARY KEY NOT NULL,
+                url TEXT NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                last_exit BLOB,
+                last_checked_at REAL
+            );
+            CREATE TABLE IF NOT EXISTS profile_exits (
+                id TEXT PRIMARY KEY NOT NULL,
+                exit BLOB NOT NULL,
+                checked_at REAL NOT NULL
+            )
+            """),
+    ]
+    static var schemaVersion: Int32 { migrations.last!.version }
+
+    /// The schema version the database reported before this store migrated it.
+    public private(set) var openedSchemaVersion: Int32 = 0
+
+    /// Applies the steps the database has not seen yet, all in one transaction.
+    private func migrate() throws {
+        let read = try statement("PRAGMA user_version")
+        defer { sqlite3_finalize(read) }
+        guard sqlite3_step(read) == SQLITE_ROW else { throw databaseError() }
+        let current = sqlite3_column_int(read, 0)
+        openedSchemaVersion = current
+        let pending = Self.migrations.filter { $0.version > current }
+        guard !pending.isEmpty else { return }
+        guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw databaseError() }
+        do {
+            for step in pending {
+                guard sqlite3_exec(database, step.sql, nil, nil, nil) == SQLITE_OK,
+                      sqlite3_exec(database, "PRAGMA user_version = \(step.version)", nil, nil, nil) == SQLITE_OK else {
+                    throw databaseError()
+                }
+            }
+            guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw databaseError() }
+        } catch {
+            sqlite3_exec(database, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    func statement(_ sql: String) throws -> OpaquePointer {
         var value: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &value, nil) == SQLITE_OK, let value else {
             throw databaseError()
@@ -307,7 +361,7 @@ public final class ProfileStore: ObservableObject {
         return value
     }
 
-    private func databaseError() -> ProfileError {
+    func databaseError() -> ProfileError {
         .invalid("本机 Profile 数据库操作失败（\(sqlite3_errcode(database))）。")
     }
 }

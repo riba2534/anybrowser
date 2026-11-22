@@ -22,7 +22,7 @@ struct ProxyEngineTests {
         defer { stub.stop() }
         let store = try ProfileStore(directory: directory)
         var profile = try store.makeDraft()
-        profile.port = 9303
+        profile.port = testPort(9303)
         profile.proxy = "http://user:pass@127.0.0.1:\(stub.port)"
         try store.save(profile)
 

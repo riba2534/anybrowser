@@ -22,7 +22,7 @@ struct CookieEngineTests {
         let host = try #require(page.url.host)
         let store = try ProfileStore(directory: directory)
         var profile = try store.makeDraft()
-        profile.port = 9306
+        profile.port = testPort(9306)
         profile.proxy = ""
         try store.save(profile)
 

@@ -111,6 +111,20 @@ public struct FingerprintSettings: Codable, Equatable, Sendable {
     }
 }
 
+/// How the account behind a Profile is doing, recorded by the user to filter and batch-manage Profiles.
+public enum AccountStatus: String, CaseIterable, Codable, Sendable {
+    case active, verifying, limited, banned
+
+    public var title: String {
+        switch self {
+        case .active: return "正常"
+        case .verifying: return "待验证"
+        case .limited: return "受限"
+        case .banned: return "已封禁"
+        }
+    }
+}
+
 public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
     public static let defaultProxy = "127.0.0.1:7890"
 
@@ -125,10 +139,15 @@ public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
     /// This Profile's own Passkey Box account; nil uses the account set in AnyBrowser.
     public var passkeyBox: PasskeyBoxAccount?
     public var launch: LaunchOptions
+    /// Free-form labels for search (`tag:`) and batch actions.
+    public var tags: [String]
+    /// The account state the user recorded; nil when not set.
+    public var accountStatus: AccountStatus?
 
     public init(id: UUID = UUID(), name: String, port: Int, fingerprint: FingerprintSettings,
                 proxy: String = BrowserProfile.defaultProxy, group: String = "", notes: String = "",
-                passkeyBox: PasskeyBoxAccount? = nil, launch: LaunchOptions = LaunchOptions()) {
+                passkeyBox: PasskeyBoxAccount? = nil, launch: LaunchOptions = LaunchOptions(),
+                tags: [String] = [], accountStatus: AccountStatus? = nil) {
         self.id = id
         self.name = name
         self.port = port
@@ -138,6 +157,8 @@ public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
         self.notes = notes
         self.passkeyBox = passkeyBox
         self.launch = launch
+        self.tags = tags
+        self.accountStatus = accountStatus
     }
 
     public init(from decoder: Decoder) throws {
@@ -151,6 +172,9 @@ public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
         notes = try data.decodeIfPresent(String.self, forKey: .notes) ?? ""
         passkeyBox = try data.decodeIfPresent(PasskeyBoxAccount.self, forKey: .passkeyBox)
         launch = try data.decodeIfPresent(LaunchOptions.self, forKey: .launch) ?? LaunchOptions()
+        tags = try data.decodeIfPresent([String].self, forKey: .tags) ?? []
+        // A status written by a newer version reads as unset instead of hiding the Profile.
+        accountStatus = (try? data.decodeIfPresent(AccountStatus.self, forKey: .accountStatus)) ?? nil
     }
 }
 
@@ -171,6 +195,29 @@ public enum ProfileError: LocalizedError {
 }
 
 extension BrowserProfile {
+    public static let maximumTags = 20
+
+    /// Trimmed tags without duplicates (ignoring case), each at most 30 characters, without
+    /// commas or control characters.
+    public static func validatedTags(_ tags: [String]) throws -> [String] {
+        var result: [String] = []
+        for tag in tags {
+            let text = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            guard text.count <= 30, text.unicodeScalars.count <= 240, !text.contains(","),
+                  !text.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+                throw ProfileError.invalid("标签最多 30 个字符，且不能包含逗号：\(text.prefix(30))")
+            }
+            if !result.contains(where: { $0.caseInsensitiveCompare(text) == .orderedSame }) {
+                result.append(text)
+            }
+        }
+        guard result.count <= maximumTags else {
+            throw ProfileError.invalid("每个 Profile 最多 \(maximumTags) 个标签。")
+        }
+        return result
+    }
+
     public func validated() throws -> BrowserProfile {
         var result = self
         result.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -212,6 +259,7 @@ extension BrowserProfile {
         }
         result.passkeyBox = try passkeyBox?.validated()
         result.launch = try launch.validated()
+        result.tags = try Self.validatedTags(tags)
         return result
     }
 

@@ -67,6 +67,38 @@ extension URLSessionConfiguration {
     }
 }
 
+/// One-off choices for a single launch; none of them is saved with the Profile.
+public struct LaunchOverrides: Equatable, Sendable {
+    /// Runs the browser without windows (`--headless=new`).
+    public var headless: Bool
+    /// Pages to open instead of the Profile's start pages; nil keeps the start pages.
+    public var urls: [String]?
+    /// Extra Chromium switches for this launch only, appended after the Profile's own.
+    public var arguments: [String]
+    /// Clears the Profile's site data on disk right before the browser starts (identity reset).
+    public var resetSiteData: Bool
+
+    public init(headless: Bool = false, urls: [String]? = nil, arguments: [String] = [], resetSiteData: Bool = false) {
+        self.headless = headless
+        self.urls = urls
+        self.arguments = arguments
+        self.resetSiteData = resetSiteData
+    }
+}
+
+/// What `BrowserRuntime.start` did.
+public struct LaunchOutcome: Equatable, Sendable {
+    /// False when the Profile's browser was already running and was adopted as it was.
+    public var startedFresh: Bool
+    /// Problems that did not stop the launch, shown to the user and returned by the API.
+    public var warnings: [String]
+
+    public init(startedFresh: Bool, warnings: [String] = []) {
+        self.startedFresh = startedFresh
+        self.warnings = warnings
+    }
+}
+
 @MainActor
 public final class BrowserRuntime: ObservableObject {
     @Published public private(set) var states: [UUID: BrowserRunState] = [:]
@@ -115,12 +147,13 @@ public final class BrowserRuntime: ObservableObject {
     }
 
     /// Starts the Profile's browser. Passkey Box signs in with `passkeyBox` when it is set.
-    /// Returns false when it found the Profile's browser already running and left it as it was.
+    /// `startedFresh` is false when it found the Profile's browser already running and left it as it was.
     @discardableResult
-    public func start(_ profile: BrowserProfile, passkeyBox: PasskeyBoxAccount? = nil) async throws -> Bool {
+    public func start(_ profile: BrowserProfile, passkeyBox: PasskeyBoxAccount? = nil,
+                      overrides: LaunchOverrides = LaunchOverrides()) async throws -> LaunchOutcome {
         let profile = try profile.validated()
         let id = profile.id
-        guard status(for: id) != .starting && status(for: id) != .stopping else { return false }
+        guard status(for: id) != .starting && status(for: id) != .stopping else { return LaunchOutcome(startedFresh: false) }
         let directory = dataDirectory(for: id)
         states[id] = .starting
         do {
@@ -136,7 +169,7 @@ public final class BrowserRuntime: ObservableObject {
                     if !ready {
                         throw BrowserRuntimeError.message("浏览器正在运行，但本机调试端口 \(port) 尚未就绪。")
                     }
-                    return false
+                    return LaunchOutcome(startedFresh: false)
                 default:
                     break
                 }
@@ -179,7 +212,7 @@ public final class BrowserRuntime: ObservableObject {
                 while child.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
                     if await verifyEndpoint(receipt, directory: directory) {
                         states[id] = .running(pid: receipt.pid, port: receipt.port, debugReady: true)
-                        return true
+                        return LaunchOutcome(startedFresh: true)
                     }
                     try await Task.sleep(nanoseconds: 150_000_000)
                 }
@@ -212,7 +245,9 @@ public final class BrowserRuntime: ObservableObject {
         }
     }
 
-    public func stop(_ id: UUID) async throws {
+    /// Stops the Profile's browser. `force` sends SIGKILL to a browser that is still verified as
+    /// this Profile's own once a graceful stop timed out.
+    public func stop(_ id: UUID, force: Bool = false) async throws {
         let oldState = status(for: id)
         guard oldState != .starting && oldState != .stopping else { return }
         let directory = dataDirectory(for: id)

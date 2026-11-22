@@ -28,7 +28,7 @@ struct LaunchEngineTests {
         try Data("chrome.runtime.onInstalled.addListener(() => {});".utf8)
             .write(to: extensionDirectory.appendingPathComponent(worker))
 
-        var profile = BrowserProfile(name: "Launch options", port: 9302, fingerprint: FingerprintSettings(seed: 9302), proxy: "")
+        var profile = BrowserProfile(name: "Launch options", port: testPort(9302), fingerprint: FingerprintSettings(seed: 9302), proxy: "")
         profile.launch = LaunchOptions(startURLs: [page.url.absoluteString],
                                        window: WindowLayout(width: 1000, height: 700, x: 60, y: 80),
                                        extensionDirectories: [extensionDirectory.path])
@@ -81,7 +81,7 @@ struct LaunchEngineTests {
             PasskeyBoxAccount(serverURL: "http://127.0.0.1:9", username: "alice-\(suffix)", password: "first"),
             PasskeyBoxAccount(serverURL: "http://127.0.0.1:9", username: "bob-\(suffix)", password: "second"),
         ]
-        let profiles = [9302, 9312].map {
+        let profiles = [testPort(9302), testPort(9312)].map {
             BrowserProfile(name: "Identity \($0)", port: $0, fingerprint: FingerprintSettings(seed: $0), proxy: "")
         }
 

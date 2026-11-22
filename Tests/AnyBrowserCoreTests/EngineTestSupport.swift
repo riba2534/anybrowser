@@ -9,6 +9,12 @@ import Testing
 /// The packaged AnyBrowser.app the engine suites run against; they are skipped without it.
 let testAppPath = ProcessInfo.processInfo.environment["ANYBROWSER_TEST_APP"]
 
+/// Engine suites add `ANYBROWSER_TEST_PORT_OFFSET` to their fixed debug ports, so several
+/// worktrees can run them at the same time without fighting over 9222 and friends.
+func testPort(_ port: Int) -> Int {
+    port + (ProcessInfo.processInfo.environment["ANYBROWSER_TEST_PORT_OFFSET"].flatMap(Int.init) ?? 0)
+}
+
 func testEngine() throws -> BrowserEngine {
     try BrowserEngine.bundled(in: URL(fileURLWithPath: try #require(testAppPath)))
 }
