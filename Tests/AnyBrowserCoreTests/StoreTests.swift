@@ -237,6 +237,7 @@ struct StoreTests {
             { try store.saveSetting("x", forKey: "anything") },
             { _ = try store.saveBatch(.init(count: 1)) },
             { _ = try store.saveClone(of: saved.id) },
+            { _ = try store.importProfiles(from: ProfileLibrary.export([edited], includeSecrets: false)) },
         ]
         for refusal in refusals {
             #expect(message(#expect(throws: ProfileError.self) { try refusal() }).contains("更新版本"))
