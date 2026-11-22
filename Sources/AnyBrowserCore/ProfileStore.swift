@@ -520,7 +520,7 @@ public final class ProfileStore: ObservableObject {
 
     // MARK: Identity reset bookkeeping
 
-    static let pendingResetPrefix = "pendingReset:"
+    nonisolated static let pendingResetPrefix = "pendingReset:"
     static let launchFingerprintPrefix = "lastLaunchFingerprint:"
 
     /// Whether a new identity was saved but the old one's site data has not been cleared yet.
@@ -715,7 +715,7 @@ public final class ProfileStore: ObservableObject {
     /// Schema steps in order. `PRAGMA user_version` records the last one applied; databases from
     /// 0.4.0 and earlier report 0 and already have the tables of step 1. Append new steps; never
     /// edit or reorder applied ones.
-    static let migrations: [(version: Int32, sql: String)] = [
+    nonisolated static let migrations: [(version: Int32, sql: String)] = [
         (1, """
             CREATE TABLE IF NOT EXISTS profiles (
                 id TEXT PRIMARY KEY NOT NULL,

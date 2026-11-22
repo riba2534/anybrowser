@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -6,8 +7,10 @@ extension BrowserRuntime {
     ///
     /// A stopped Profile loses the data files of every site: cookies, local and session storage,
     /// IndexedDB, service workers and the HTTP and code caches, including the cache directory
-    /// Chromium keeps under ~/Library/Caches. It is signed out everywhere; extension storage,
-    /// preferences, history and bookmarks stay. `LaunchOverrides.resetSiteData` deletes the same.
+    /// Chromium keeps under ~/Library/Caches. It is signed out everywhere; preferences, history,
+    /// bookmarks and an extension's chrome.storage, IndexedDB and Cache Storage stay. What an
+    /// extension keeps in Local Storage or its file system goes with the sites': Chromium keeps one
+    /// database for every origin there. `LaunchOverrides.resetSiteData` deletes the same.
     ///
     /// A running Profile is cleared through DevTools for the payment and verification sites in
     /// `siteOrigins` only: their cookies, including domain-wide and partitioned ones and Stripe's
@@ -147,7 +150,7 @@ extension BrowserRuntime {
             }
         }
         let failures: [String] = await Task.detached {
-            var failures = siteDataPaths.compactMap { relative -> String? in
+            var failures = siteDataTargets(in: root).compactMap { relative -> String? in
                 do {
                     try removeSiteDataIfPresent(root.appendingPathComponent(relative), under: root)
                     return nil
@@ -311,18 +314,53 @@ private let stripeDeviceCookies: Set<String> = ["__stripe_mid", "__stripe_sid"]
 /// (`Local Extension Settings`), preferences, history and bookmarks are deliberately left alone.
 /// The caches are here for a data directory outside Application Support, which keeps them.
 /// Shared Storage, Private State Tokens and the per-site salts of media device ids identify a
-/// device as well as cookies do.
+/// device as well as cookies do. Local Storage and File System are one database for all origins,
+/// extensions included, so they go whole. `WebStorage` holds the quota database, which Chromium
+/// rebuilds from what is left, and the storage buckets of partitioned and named storage.
 private let siteDataPaths = [
     "Default/Cookies", "Default/Cookies-journal",
     "Default/Network/Cookies", "Default/Network/Cookies-journal",
     "Default/Local Storage", "Default/Session Storage", "Default/WebStorage",
-    "Default/IndexedDB", "Default/Service Worker",
     "Default/SharedStorage", "Default/SharedStorage-wal", "Default/Shared Dictionary",
     "Default/Trust Tokens", "Default/Trust Tokens-journal",
     "Default/MediaDeviceSalts", "Default/MediaDeviceSalts-journal",
     "Default/Cache", "Default/Code Cache", "Default/GPUCache",
     "Default/blob_storage", "Default/File System", "Default/databases",
 ]
+
+/// `siteDataPaths`, and the entries of the directories where Chromium keeps one per origin that do
+/// not belong to an extension: IndexedDB databases and the service workers' Cache Storage. The
+/// service worker registrations go whole; Chromium registers an extension's worker again when it
+/// loads the extension.
+private func siteDataTargets(in root: URL) -> [String] {
+    func entries(_ relative: String, keeping kept: (URL) -> Bool) -> [String] {
+        let directory = root.appendingPathComponent(relative)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        return names.sorted().filter { !kept(directory.appendingPathComponent($0)) }.map { relative + "/" + $0 }
+    }
+    return siteDataPaths
+        + entries("Default/IndexedDB") { $0.lastPathComponent.hasPrefix("chrome-extension_") }
+        + entries("Default/Service Worker") { $0.lastPathComponent == "CacheStorage" }
+        + entries("Default/Service Worker/CacheStorage", keeping: isExtensionCacheStorage)
+}
+
+/// Whether a directory of the service workers' Cache Storage holds an extension's caches. It is
+/// named after the SHA-1 of its origin's identifier, `chrome-extension_<id>_0` for an extension,
+/// and its index names the origin.
+private func isExtensionCacheStorage(_ directory: URL) -> Bool {
+    guard let index = try? PrivateFile.read(directory.appendingPathComponent("index.txt"), limit: 16 << 20, failure: "") else {
+        return false
+    }
+    var rest = String(decoding: index, as: UTF8.self)[...]
+    while let found = rest.range(of: "chrome-extension://") {
+        rest = rest[found.upperBound...]
+        let id = rest.prefix(32)
+        guard id.count == 32, id.allSatisfy({ ("a"..."p").contains($0) }) else { continue }
+        let digest = Insecure.SHA1.hash(data: Data("chrome-extension_\(id)_0".utf8)).map { String(format: "%02x", $0) }.joined()
+        if digest == directory.lastPathComponent { return true }
+    }
+    return false
+}
 
 /// Removes one site-data path, refusing to traverse a symlinked parent. A symlink at the
 /// leaf itself is removed as a link, never followed.

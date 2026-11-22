@@ -78,9 +78,10 @@ extension ProfileStore {
 
     /// Replaces the database in `directory` with `backup` in one rename. The database it replaces is
     /// first kept as another backup, even when it is damaged. Nothing is replaced when the backup is
-    /// unusable or the current database cannot be kept. The caller makes sure no store has the
-    /// directory open.
-    public nonisolated static func restoreBackup(_ backup: URL, into directory: URL) throws {
+    /// unusable or the current database cannot be kept. The restored copy starts the recycle bin's
+    /// 30 days again and drops pending identity resets (see `tidyRestored`). The caller makes sure
+    /// no store has the directory open.
+    public nonisolated static func restoreBackup(_ backup: URL, into directory: URL, now: Date = Date()) throws {
         guard let root = ProcessInspection.canonicalURL(directory, isDirectory: true) else {
             throw ProfileError.invalid("无法定位本机 Profile 资料目录。")
         }
@@ -106,8 +107,29 @@ extension ProfileStore {
                 throw ProfileError.invalid("无法替换本机 Profile 数据库。")
             }
         }
-        try copy(source, to: database)
+        try copy(source, to: database) { tidyRestored($0, now: now) }
         pruneBackups(in: folder)
+    }
+
+    /// Takes out of a restored database what held when the backup was made and would now delete
+    /// browser data unasked. A Profile then in the recycle bin may have been taken out and used
+    /// since: by its old removal date launch maintenance would purge it at once, so every entry
+    /// gets its 30 days from now. A pending identity reset may have been carried out since: the
+    /// next launch would delete the new identity's site data, so the marks go, and a seed or
+    /// platform that differs from the last launch is asked about instead. A newer version's
+    /// database opens read-only and is left as it is.
+    private nonisolated static func tidyRestored(_ database: OpaquePointer, now: Date) -> Bool {
+        var read: OpaquePointer?
+        defer { sqlite3_finalize(read) }
+        guard sqlite3_prepare_v2(database, "PRAGMA user_version", -1, &read, nil) == SQLITE_OK,
+              sqlite3_step(read) == SQLITE_ROW else { return false }
+        // Neither existed before version 2.
+        guard let current = migrations.last?.version, (2...current).contains(sqlite3_column_int(read, 0)) else { return true }
+        let sql = """
+            UPDATE profiles SET deleted_at=\(now.timeIntervalSince1970) WHERE deleted_at IS NOT NULL;
+            DELETE FROM settings WHERE key LIKE '\(pendingResetPrefix)%'
+            """
+        return sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK
     }
 
     /// Keeps the database about to be replaced byte for byte, with its journal, so even a damaged
@@ -137,8 +159,10 @@ extension ProfileStore {
                                   -1, &table, nil) == SQLITE_OK && sqlite3_step(table) == SQLITE_ROW
     }
 
-    /// Copies a whole database into a new 0600 file at `target`, staged next to it and renamed into place.
-    private nonisolated static func copy(_ source: OpaquePointer, to target: URL) throws {
+    /// Copies a whole database into a new 0600 file at `target`, staged next to it and renamed into
+    /// place once `adjust` has changed the copy and returned true.
+    private nonisolated static func copy(_ source: OpaquePointer, to target: URL,
+                                         adjust: (OpaquePointer) -> Bool = { _ in true }) throws {
         let failure = ProfileError.invalid("无法备份本机 Profile 数据库。")
         let staging = target.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).sqlite3")
         // Created as 0600 first, so the copy is never readable by anyone else, even briefly.
@@ -156,9 +180,9 @@ extension ProfileStore {
         }
         let stepped = sqlite3_backup_step(backup, -1)
         let finished = sqlite3_backup_finish(backup)
+        let adjusted = stepped == SQLITE_DONE && finished == SQLITE_OK && adjust(destination)
         let closed = sqlite3_close(destination)
-        guard stepped == SQLITE_DONE, finished == SQLITE_OK, closed == SQLITE_OK,
-              rename(staging.path, target.path) == 0 else { throw failure }
+        guard adjusted, closed == SQLITE_OK, rename(staging.path, target.path) == 0 else { throw failure }
         copied = true
     }
 

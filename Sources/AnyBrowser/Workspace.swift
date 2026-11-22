@@ -49,7 +49,7 @@ struct Workspace: View {
             }
             Button("取消", role: .cancel) { workbench.pendingFingerprintLaunch = nil }
         } message: { pending in
-            Text("「\(pending.name)」的指纹种子或平台与上次启动时不同，浏览器里仍保存着旧身份的网站数据。清理会删除 Cookie、Storage、IndexedDB、Service Worker、HTTP 缓存和 Code Cache，所有网站都要重新登录；扩展数据和偏好设置保留。")
+            Text("「\(pending.name)」的指纹种子或平台与上次启动时不同，浏览器里仍保存着旧身份的网站数据。清理会删除 Cookie、Storage、IndexedDB、Service Worker、HTTP 缓存和 Code Cache，所有网站都要重新登录；偏好设置，以及扩展存放在 chrome.storage、IndexedDB 和 Cache Storage 里的数据保留，扩展的 Local Storage 和文件系统（OPFS）数据会一并清除。")
         }
         .sheet(isPresented: $workbench.showingPasskeyBox) {
             PasskeyBoxSettings(workbench: workbench)
