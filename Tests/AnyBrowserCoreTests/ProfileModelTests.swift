@@ -66,4 +66,22 @@ struct ProfileModelTests {
         #expect(profile.name.count == 80)
         #expect(throws: Never.self) { try profile.validated() }
     }
+
+    @Test("Current IANA names are accepted where macOS lists only the old spelling; abbreviations are not")
+    func timeZoneNames() throws {
+        for name in ["Asia/Kolkata", "Europe/Kyiv", "Asia/Kathmandu", "Asia/Yangon", "Atlantic/Faroe", "America/Nuuk",
+                     "Asia/Shanghai", "America/New_York", "UTC"] {
+            #expect(FingerprintSettings.isTimeZone(name), "\(name)")
+        }
+        for name in ["PST", "EST", "GMT+8", "UTC+8", "Asia/Atlantis", "asia/kolkata", ""] {
+            #expect(!FingerprintSettings.isTimeZone(name), "\(name)")
+        }
+        var profile = BrowserProfile(name: "India", port: 9700, fingerprint: FingerprintSettings(seed: 9700))
+        profile.fingerprint.language = "hi-IN"
+        profile.fingerprint.timeZone = "Asia/Kolkata"
+        #expect(throws: Never.self) { try profile.validated() }
+        #expect(IdentitySampler.LocaleHint(language: "hi-IN", timeZone: "Asia/Kolkata")?.timeZone == "Asia/Kolkata")
+        profile.fingerprint.timeZone = "GMT+8"
+        #expect(throws: ProfileError.self) { try profile.validated() }
+    }
 }

@@ -415,10 +415,20 @@ extension FingerprintSettings {
         text.range(of: #"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$"#, options: .regularExpression) == text.startIndex..<text.endIndex
     }
 
-    /// An IANA time zone this Mac knows, or UTC.
+    /// An IANA time zone this Mac knows, UTC, or a current IANA name that macOS lists only under
+    /// its old spelling. `TimeZone(identifier:)` is not used: it also accepts PST and GMT+8.
     static func isTimeZone(_ text: String) -> Bool {
-        TimeZone.knownTimeZoneIdentifiers.contains(text) || text == "UTC"
+        TimeZone.knownTimeZoneIdentifiers.contains(text) || text == "UTC" || currentTimeZoneNames.contains(text)
     }
+
+    /// Renamed zones exit-IP services report by their current name, while some macOS releases list
+    /// only the old one (Asia/Calcutta, Europe/Kiev, America/Godthab, …).
+    static let currentTimeZoneNames: Set<String> = [
+        "Asia/Kolkata", "Europe/Kyiv", "Asia/Kathmandu", "Asia/Yangon", "Atlantic/Faroe", "America/Nuuk",
+        "Asia/Ho_Chi_Minh", "Asia/Dhaka", "Asia/Thimphu", "Asia/Ulaanbaatar", "Africa/Asmara",
+        "Pacific/Kanton", "Pacific/Chuuk", "Pacific/Pohnpei", "America/Ciudad_Juarez",
+        "America/Argentina/Buenos_Aires", "America/Indiana/Indianapolis", "America/Kentucky/Louisville",
+    ]
 
     mutating func randomize(_ fields: Set<FingerprintField>, excluding seeds: Set<Int>) {
         if fields.contains(.seed) {
