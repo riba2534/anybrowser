@@ -22,14 +22,17 @@ enum ProfileExtensions {
         return root
     }
 
-    /// The unpacked extensions a Profile loads, in order: Passkey Box, the proxy sign-in helper
-    /// when the proxy has credentials, then the Profile's own extensions.
     /// Run right before launch: throws when an extension the Profile loads is unavailable,
     /// for example a shared-library extension that has been removed.
     static func check(for profile: BrowserProfile, in storage: URL) throws {}
 
+    /// The unpacked extensions a Profile loads, in order: Passkey Box unless the Profile leaves it
+    /// out, the proxy sign-in helper when the proxy has credentials, then the Profile's own extensions.
     static func paths(for profile: BrowserProfile, in storage: URL) -> [URL] {
-        var paths = [PasskeyBoxInstall.directory(in: storage, for: profile.id)]
+        var paths: [URL] = []
+        if profile.launch.loadPasskeyBox {
+            paths.append(PasskeyBoxInstall.directory(in: storage, for: profile.id))
+        }
         if let endpoint = try? ProxyEndpoint.parse(profile.proxy), endpoint.hasCredentials {
             paths.append(ProxyAuthExtension.directory(in: storage, for: profile.id))
         }

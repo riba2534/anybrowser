@@ -45,31 +45,36 @@ struct PasskeyBoxTests {
         #expect(try ProfileStore(directory: directory).passkeyBoxAccount == nil)
     }
 
+    @Test("managed-config.json holds the account and the owned-only sign-in policy")
+    func managedConfiguration() throws {
+        let account = PasskeyBoxAccount(serverURL: "pk.example.com/", username: " alice ", password: #"p"w/"#)
+        #expect(String(decoding: try account.managedConfiguration(), as: UTF8.self)
+            == #"{"autoLogin":"owned-only","password":"p\"w/","serverUrl":"https://pk.example.com","username":"alice"}"#)
+        #expect(throws: ProfileError.self) { try PasskeyBoxAccount(username: "", password: "x").managedConfiguration() }
+    }
+
     @Test("Profiles load a private copy of Passkey Box with managed-config.json")
     func installsACopyWithManagedConfig() throws {
         let root = try scratchDirectory("passkey")
         defer { try? FileManager.default.removeItem(at: root) }
-        let source = root.appendingPathComponent("Bundle/PasskeyBox", isDirectory: true)
-        try FileManager.default.createDirectory(at: source.appendingPathComponent("icons"), withIntermediateDirectories: true)
-        try Data(#"{"version":"0.3.0"}"#.utf8).write(to: source.appendingPathComponent("manifest.json"))
-        try Data("one".utf8).write(to: source.appendingPathComponent("background.js"))
-        try Data("png".utf8).write(to: source.appendingPathComponent("icons/icon-16.png"))
-        let storage = root.appendingPathComponent("Storage", isDirectory: true)
-        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+        let (source, storage) = try bundle(in: root)
         let id = UUID()
         let target = PasskeyBoxInstall.directory(in: storage, for: id)
         let config = target.appendingPathComponent("managed-config.json")
         #expect(target.path == storage.path + "/Extensions/\(id.uuidString.lowercased())/PasskeyBox")
 
+        // Without an account the file still holds the policy, for the account the extension keeps.
         try PasskeyBoxInstall.prepare(bundled: source, in: storage, for: id, account: nil)
         #expect(try String(contentsOf: target.appendingPathComponent("icons/icon-16.png"), encoding: .utf8) == "png")
-        #expect(!FileManager.default.fileExists(atPath: config.path))
+        #expect(try String(contentsOf: config, encoding: .utf8) == #"{"autoLogin":"owned-only"}"#)
+        #expect(try permissions(config) == 0o600)
         #expect(try permissions(target.deletingLastPathComponent()) == 0o700)
 
         let account = PasskeyBoxAccount(serverURL: "https://pk.example.com/", username: "alice", password: #"p"w"#)
         try PasskeyBoxInstall.prepare(bundled: source, in: storage, for: id, account: account)
         let written = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: config)) as? [String: String])
-        #expect(written == ["serverUrl": "https://pk.example.com", "username": "alice", "password": #"p"w"#])
+        #expect(written == ["autoLogin": "owned-only", "serverUrl": "https://pk.example.com", "username": "alice",
+                            "password": #"p"w"#])
         #expect(try String(contentsOf: config, encoding: .utf8).contains(#""serverUrl":"https://pk.example.com""#))
         #expect(try permissions(config) == 0o600)
 
@@ -98,9 +103,80 @@ struct PasskeyBoxTests {
         #expect(try FileManager.default.attributesOfItem(atPath: target.path)[.type] as? FileAttributeType == .typeDirectory)
 
         try PasskeyBoxInstall.prepare(bundled: source, in: storage, for: id, account: nil)
-        #expect(!FileManager.default.fileExists(atPath: config.path))
+        #expect(try String(contentsOf: config, encoding: .utf8) == #"{"autoLogin":"owned-only"}"#)
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: target.deletingLastPathComponent().path)
         #expect(leftovers == ["PasskeyBox"])
+    }
+
+    @Test("A Profile that leaves Passkey Box out has its copy removed and does not load it")
+    func leavesPasskeyBoxOut() throws {
+        let root = try scratchDirectory("passkey")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (source, storage) = try bundle(in: root)
+        var profile = BrowserProfile(name: "No passkeys", port: 9301, fingerprint: FingerprintSettings(seed: 3))
+        let target = PasskeyBoxInstall.directory(in: storage, for: profile.id)
+        #expect(ProfileExtensions.paths(for: profile, in: storage).first == target)
+        profile.launch.loadPasskeyBox = false
+        #expect(!ProfileExtensions.paths(for: profile, in: storage).contains(target))
+
+        let account = PasskeyBoxAccount(serverURL: "https://pk.example.com", username: "alice", password: "pw")
+        try PasskeyBoxInstall.prepare(bundled: source, in: storage, for: profile.id, account: account)
+        #expect(FileManager.default.fileExists(atPath: target.appendingPathComponent("managed-config.json").path))
+        // Taking it out does not need the bundled copy.
+        let missing = root.appendingPathComponent("Missing", isDirectory: true)
+        try PasskeyBoxInstall.prepare(bundled: missing, in: storage, for: profile.id, account: account, enabled: false)
+        var details = stat()
+        #expect(lstat(target.path, &details) != 0)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: target.deletingLastPathComponent().path).isEmpty)
+        try PasskeyBoxInstall.prepare(bundled: missing, in: storage, for: profile.id, account: nil, enabled: false)
+
+        // A link in its place goes; what it points to stays.
+        let elsewhere = root.appendingPathComponent("Elsewhere", isDirectory: true)
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: elsewhere.appendingPathComponent("manifest.json"))
+        try FileManager.default.createSymbolicLink(at: target, withDestinationURL: elsewhere)
+        try PasskeyBoxInstall.prepare(bundled: source, in: storage, for: profile.id, account: nil, enabled: false)
+        #expect(lstat(target.path, &details) != 0)
+        #expect(try String(contentsOf: elsewhere.appendingPathComponent("manifest.json"), encoding: .utf8) == "keep")
+
+        // Turning it back on installs a fresh copy.
+        try PasskeyBoxInstall.prepare(bundled: source, in: storage, for: profile.id, account: nil)
+        #expect(try String(contentsOf: target.appendingPathComponent("background.js"), encoding: .utf8) == "one")
+    }
+
+    @Test("Copies and account files left by an interrupted install are deleted on the next start")
+    func cleansUpInterruptedInstalls() throws {
+        let root = try scratchDirectory("passkey")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (source, storage) = try bundle(in: root)
+        let id = UUID()
+        let parent = try ProfileExtensions.prepareRoot(in: storage, for: id)
+        try FileManager.default.createDirectory(at: parent.appendingPathComponent("ProxyAuth"), withIntermediateDirectories: true)
+        let account = PasskeyBoxAccount(serverURL: "https://pk.example.com", username: "alice", password: "pw")
+
+        for enabled in [true, false] {
+            for name in [".PasskeyBox-\(UUID().uuidString)", ".PasskeyBox-old-\(UUID().uuidString)"] {
+                let copy = parent.appendingPathComponent(name, isDirectory: true)
+                try FileManager.default.createDirectory(at: copy, withIntermediateDirectories: true)
+                try Data(#"{"password":"old"}"#.utf8).write(to: copy.appendingPathComponent("managed-config.json"))
+            }
+            try Data(#"{"password":"old"}"#.utf8).write(to: parent.appendingPathComponent(".managed-config.json-\(UUID().uuidString)"))
+            try PasskeyBoxInstall.prepare(bundled: source, in: storage, for: id, account: account, enabled: enabled)
+            let left = try FileManager.default.contentsOfDirectory(atPath: parent.path).sorted()
+            #expect(left == (enabled ? ["PasskeyBox", "ProxyAuth"] : ["ProxyAuth"]))
+        }
+    }
+
+    /// A bundled Passkey Box under `root/Bundle`, and an empty storage directory.
+    private func bundle(in root: URL) throws -> (source: URL, storage: URL) {
+        let source = root.appendingPathComponent("Bundle/PasskeyBox", isDirectory: true)
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("icons"), withIntermediateDirectories: true)
+        try Data(#"{"version":"0.3.0"}"#.utf8).write(to: source.appendingPathComponent("manifest.json"))
+        try Data("one".utf8).write(to: source.appendingPathComponent("background.js"))
+        try Data("png".utf8).write(to: source.appendingPathComponent("icons/icon-16.png"))
+        let storage = root.appendingPathComponent("Storage", isDirectory: true)
+        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+        return (source, storage)
     }
 
     @Test("Saving verifies the account with GET /api/v1/me")
