@@ -7,6 +7,9 @@ public struct BrowserEngine: Sendable {
     public let version: String
     let executable: URL
     let passkeyBoxDirectory: URL
+    /// The AnyBrowserRelay helper beside the app, which a proxy with credentials needs; app
+    /// bundles from before 0.5 have none.
+    var relayExecutable: URL?
 
     public static func bundled(in bundleURL: URL = Bundle.main.bundleURL) throws -> BrowserEngine {
         guard let root = ProcessInspection.canonicalURL(bundleURL, isDirectory: true) else {
@@ -33,7 +36,12 @@ public struct BrowserEngine: Sendable {
         guard !extensionURL.path.contains(",") else {
             throw BrowserRuntimeError.message("请将 AnyBrowser 移到路径不含逗号的目录。")
         }
-        return BrowserEngine(version: version, executable: executable, passkeyBoxDirectory: extensionURL)
+        let relayURL = root.appendingPathComponent("Contents/MacOS/\(RelayHelper.executableName)")
+        let relay = ProcessInspection.canonicalURL(relayURL).flatMap {
+            $0.path == relayURL.path && FileManager.default.isExecutableFile(atPath: $0.path) ? $0 : nil
+        }
+        return BrowserEngine(version: version, executable: executable, passkeyBoxDirectory: extensionURL,
+                             relayExecutable: relay)
     }
 }
 
@@ -113,9 +121,11 @@ public final class BrowserRuntime: ObservableObject {
         let port: Int
         let device: Int32
         let inode: UInt64
+        /// The relay the browser goes through, when its proxy has credentials.
+        var relay: RelayReceipt? = nil
     }
 
-    private let engine: BrowserEngine
+    let engine: BrowserEngine
     let storage: URL
     /// Chromium keeps the HTTP and code caches of a data directory inside `applicationSupport`
     /// under `caches`, at the same relative path; elsewhere they stay in the data directory.
@@ -135,6 +145,8 @@ public final class BrowserRuntime: ObservableObject {
     var stopTimeout: TimeInterval = 8
     var terminationGrace: TimeInterval = 3
     var startPageBudget: TimeInterval = 5
+    var relayStartTimeout: TimeInterval = 5
+    var relayRelaunchGrace: TimeInterval = RelayHelper.defaultRelaunchGrace
 
     /// `applicationSupport` and `caches` default to this user's folders; tests pass stand-ins.
     public init(engine: BrowserEngine, storage: URL, applicationSupport: URL? = nil, caches: URL? = nil) {
@@ -214,7 +226,15 @@ public final class BrowserRuntime: ObservableObject {
         let directory = dataDirectory(for: profile.id)
         guard let receipt = readReceipt(directory), receipt.pid == pid, owns(receipt, directory: directory),
               let arguments = ProcessInspection.arguments(pid), ProcessStamp.read(pid) == receipt.stamp else { return nil }
-        return arguments.dropFirst().elementsEqual(launchArguments(profile, directory: directory))
+        // The relay listens on a new port at every launch; what counts is that it still runs and
+        // goes to the proxy the Profile names now.
+        var relayPort: Int?
+        if let relay = receipt.relay {
+            guard ownsRelay(relay, directory: directory), let upstream = try? ProxyEndpoint.parse(profile.proxy),
+                  upstream.needsRelay, relay.upstream == RelayReceipt.digest(upstream) else { return false }
+            relayPort = relay.port
+        }
+        return arguments.dropFirst().elementsEqual(launchArguments(profile, directory: directory, relayPort: relayPort))
     }
 
     /// Starts the Profile's browser. Passkey Box signs in with `passkeyBox` when it is set.
@@ -262,19 +282,29 @@ public final class BrowserRuntime: ObservableObject {
             if IdentityShim.isNeeded(for: engine.version) {
                 try IdentityShim.prepare(for: profile, in: storage)
             }
-            try ProxyAuthExtension.prepare(for: profile, in: storage)
+            ProfileExtensions.removeLegacyProxySignIn(in: storage, for: id)
             if overrides.resetSiteData {
                 // Under the directory lock and before the browser exists, so nothing writes the old data back.
                 try await removeSiteData(for: id)
             }
-            let arguments = launchArguments(profile, directory: directory)
-                + (overrides.headless ? ["--headless=new"] : []) + extraArguments
             stopWatching(id)
             let log = LaunchLog()
             logs[id] = log
             // Read continuously: a pipe nobody reads blocks Chromium once its buffer fills.
             let output = Pipe()
             log.read(from: output.fileHandleForReading)
+            // The relay has to listen before the browser starts, since its port goes into the arguments.
+            var relay: RelayLaunch?
+            if let upstream = try ProxyEndpoint.parse(profile.proxy), upstream.needsRelay {
+                do {
+                    relay = try await startRelay(to: upstream, directory: directory, output: output, log: log)
+                } catch {
+                    output.fileHandleForReading.readabilityHandler = nil
+                    throw error
+                }
+            }
+            let arguments = launchArguments(profile, directory: directory, relayPort: relay?.receipt.port)
+                + (overrides.headless ? ["--headless=new"] : []) + extraArguments
             let child = Process()
             child.executableURL = engine.executable
             child.arguments = arguments
@@ -291,9 +321,11 @@ public final class BrowserRuntime: ObservableObject {
             } catch {
                 // Without a child the pipe never reaches its end; the handles close when released.
                 output.fileHandleForReading.readabilityHandler = nil
+                if let relay { await end(relay.process) }
                 throw error
             }
             children[id] = child
+            relay?.hand(over: child.processIdentifier)
             var launchReceipt: Receipt?
             do {
                 let details = try PrivateDirectory.check(directory)
@@ -301,7 +333,7 @@ public final class BrowserRuntime: ObservableObject {
                     throw await launchFailure("Chromium 在调试端口就绪前退出", child: child, log: log)
                 }
                 let receipt = Receipt(pid: child.processIdentifier, stamp: stamp, port: profile.port,
-                                      device: details.st_dev, inode: details.st_ino)
+                                      device: details.st_dev, inode: details.st_ino, relay: relay?.receipt)
                 try JSONEncoder().encode(receipt).write(to: receiptURL(directory), options: .atomic)
                 launchReceipt = receipt
                 let deadline = ProcessInfo.processInfo.systemUptime + readinessTimeout
@@ -325,7 +357,8 @@ public final class BrowserRuntime: ObservableObject {
                                                           : "Chromium 在调试端口就绪前退出",
                                           child: child, log: log)
             } catch {
-                await abandon(child, receipt: launchReceipt, directory: directory, id: id)
+                let kept = await abandon(child, receipt: launchReceipt, directory: directory, id: id)
+                if !kept, let relay { await end(relay.process) }
                 throw error
             }
         } catch {
@@ -352,10 +385,12 @@ public final class BrowserRuntime: ObservableObject {
         var knownPort: Int?
         if case let .running(_, port, _) = oldState { knownPort = port }
         guard let receipt = saved.flatMap({ owns($0, directory: directory) ? $0 : nil })
-                ?? adoptLockHolder(directory, ports: [saved?.port, knownPort]) else {
+                ?? adoptLockHolder(directory, ports: [saved?.port, knownPort], relay: saved?.relay) else {
             if profileInUse(directory) {
                 throw BrowserRuntimeError.message("无法确认该浏览器进程的归属，请从浏览器窗口退出。")
             }
+            // The browser is gone already; its relay may still wait for it to come back.
+            await endRelay(saved?.relay, directory: directory)
             states[id] = .stopped
             return
         }
@@ -383,6 +418,7 @@ public final class BrowserRuntime: ObservableObject {
                 try await Task.sleep(nanoseconds: force ? 50_000_000 : 100_000_000)
             }
             try? FileManager.default.removeItem(at: receiptURL(directory))
+            await endRelay(receipt.relay, directory: directory)
             stopWatching(id)
             states[id] = .stopped
         } catch {
@@ -406,7 +442,7 @@ public final class BrowserRuntime: ObservableObject {
             }
             // The browser may have replaced itself, or AnyBrowser quit before writing the receipt.
             if result == .stopped, lockHolder(directory) != nil, let lock = try? lockDirectory(directory) {
-                if let holder = adoptLockHolder(directory, ports: [saved?.port, profile.port]) {
+                if let holder = adoptLockHolder(directory, ports: [saved?.port, profile.port], relay: saved?.relay) {
                     receipt = holder
                     adopted = true
                     result = await runningState(holder, directory: directory)
@@ -464,12 +500,13 @@ public final class BrowserRuntime: ObservableObject {
         watchers.removeValue(forKey: id)?.source.cancel()
     }
 
-    private func launchArguments(_ profile: BrowserProfile, directory: URL) -> [String] {
+    private func launchArguments(_ profile: BrowserProfile, directory: URL, relayPort: Int?) -> [String] {
         var extensions = ProfileExtensions.paths(for: profile, in: storage)
         if IdentityShim.isNeeded(for: engine.version) {
             extensions.append(IdentityShim.directory(in: storage, for: profile.id))
         }
-        return profile.launchArguments(userDataDirectory: directory, extensions: extensions) + additionalArguments
+        return profile.launchArguments(userDataDirectory: directory, extensions: extensions, relayPort: relayPort)
+            + additionalArguments
     }
 
     /// Switches that decide which process is a Profile's browser, or take its endpoint away.
@@ -511,7 +548,7 @@ public final class BrowserRuntime: ObservableObject {
         if let receipt, case let .running(_, _, ready) = await runningState(receipt, directory: directory) {
             return (receipt, ready, [])
         }
-        guard let adopted = adoptLockHolder(directory, ports: ports),
+        guard let adopted = adoptLockHolder(directory, ports: ports, relay: receipt?.relay),
               case let .running(_, _, ready) = await runningState(adopted, directory: directory) else { return nil }
         return (adopted, ready, ready ? await closePlaceholders(adopted, directory: directory) : [])
     }
@@ -528,15 +565,17 @@ public final class BrowserRuntime: ObservableObject {
     /// engine on exactly this directory and one of `ports`, as after chrome://restart, which gives
     /// the browser a new pid. The caller holds the directory lock. `owns` repeats every check, and
     /// the start time is read once more right before writing, so a pid that exited and was reused
-    /// in between is never recorded.
-    private func adoptLockHolder(_ directory: URL, ports: [Int?]) -> Receipt? {
+    /// in between is never recorded. The relay the browser goes through is kept: `relay` from the
+    /// previous receipt, or the helper listening where the browser's arguments say.
+    private func adoptLockHolder(_ directory: URL, ports: [Int?], relay: RelayReceipt?) -> Receipt? {
         guard let pid = lockHolder(directory), let stamp = ProcessStamp.read(pid),
               let details = try? PrivateDirectory.check(directory),
               let arguments = ProcessInspection.arguments(pid) else { return nil }
         var seen: Set<Int> = []
         for port in ports.compactMap({ $0 }) where seen.insert(port).inserted
             && ProcessInspection.hasFlag("--remote-debugging-port", value: String(port), arguments: arguments) {
-            let receipt = Receipt(pid: pid, stamp: stamp, port: port, device: details.st_dev, inode: details.st_ino)
+            let receipt = Receipt(pid: pid, stamp: stamp, port: port, device: details.st_dev, inode: details.st_ino,
+                                  relay: adoptedRelay(arguments: arguments, saved: relay, directory: directory))
             guard owns(receipt, directory: directory), ProcessStamp.read(pid) == stamp,
                   (try? JSONEncoder().encode(receipt).write(to: receiptURL(directory), options: .atomic)) != nil
             else { return nil }
@@ -637,25 +676,28 @@ public final class BrowserRuntime: ObservableObject {
     }
 
     /// Ends a browser this launch started and that will not become ready: SIGTERM, then SIGKILL
-    /// once `terminationGrace` has passed. Only this launch's own child is signalled.
-    private func abandon(_ child: Process, receipt: Receipt?, directory: URL, id: UUID) async {
+    /// once `terminationGrace` has passed. Only this launch's own child is signalled. True when the
+    /// browser is still there afterwards, and stays recorded as the Profile's.
+    @discardableResult
+    private func abandon(_ child: Process, receipt: Receipt?, directory: URL, id: UUID) async -> Bool {
         if child.isRunning { child.terminate() }
         await waitUntil(seconds: terminationGrace) { !child.isRunning }
         if child.isRunning, receipt.map({ ProcessStamp.read(child.processIdentifier) == $0.stamp }) ?? true {
             kill(child.processIdentifier, SIGKILL)
             await waitUntil(seconds: 2) { !child.isRunning }
         }
-        guard let receipt else { return }
+        guard let receipt else { return false }
         if owns(receipt, directory: directory) {
             states[id] = .running(pid: receipt.pid, port: receipt.port, debugReady: false)
-        } else {
-            try? FileManager.default.removeItem(at: receiptURL(directory))
+            return true
         }
+        try? FileManager.default.removeItem(at: receiptURL(directory))
+        return false
     }
 
     /// Polls `condition` for up to `seconds`. It keeps waiting in a cancelled task, so a cancelled
     /// launch still cleans up after itself.
-    private func waitUntil(seconds: TimeInterval, _ condition: () -> Bool) async {
+    func waitUntil(seconds: TimeInterval, _ condition: () -> Bool) async {
         let deadline = ProcessInfo.processInfo.systemUptime + seconds
         while !condition() && ProcessInfo.processInfo.systemUptime < deadline {
             await withCheckedContinuation { continuation in

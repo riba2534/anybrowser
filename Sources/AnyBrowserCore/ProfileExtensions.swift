@@ -39,20 +39,34 @@ enum ProfileExtensions {
     }
 
     /// The unpacked extensions a Profile loads, in order: Passkey Box unless the Profile leaves it
-    /// out, the proxy sign-in helper when the proxy has credentials, the shared-library extensions
-    /// the Profile picked, then the Profile's own extension directories.
+    /// out, the shared-library extensions the Profile picked, then the Profile's own extension directories.
     static func paths(for profile: BrowserProfile, in storage: URL) -> [URL] {
         var paths: [URL] = []
         if profile.launch.loadPasskeyBox {
             paths.append(PasskeyBoxInstall.directory(in: storage, for: profile.id))
-        }
-        if let endpoint = try? ProxyEndpoint.parse(profile.proxy), endpoint.hasCredentials {
-            paths.append(ProxyAuthExtension.directory(in: storage, for: profile.id))
         }
         // When two directories hold the same extension ID, Chromium keeps the one listed later, so
         // the Profile's own directories come last and win over a shared copy of the same extension.
         paths += profile.launch.sharedExtensions.map { SharedExtensions.directory(named: $0, in: storage) }
         paths += profile.launch.extensionDirectories.map { URL(fileURLWithPath: $0, isDirectory: true) }
         return paths
+    }
+
+    /// Where AnyBrowser 0.4 wrote the extension that answered proxy sign-in, credentials included.
+    static func legacyProxySignIn(in storage: URL, for id: UUID) -> URL {
+        root(in: storage, for: id).appendingPathComponent("ProxyAuth", isDirectory: true)
+    }
+
+    /// Deletes that extension, now that the relay signs in. Only a real directory of this user
+    /// whose manifest is the one AnyBrowser generated goes; anything else there is left alone.
+    static func removeLegacyProxySignIn(in storage: URL, for id: UUID) {
+        let directory = legacyProxySignIn(in: storage, for: id)
+        var details = stat()
+        guard lstat(directory.path, &details) == 0, details.st_mode & S_IFMT == S_IFDIR, details.st_uid == getuid(),
+              let manifest = try? PrivateFile.read(directory.appendingPathComponent("manifest.json"), limit: 4096,
+                                                   failure: ""),
+              let fields = try? JSONSerialization.jsonObject(with: manifest) as? [String: Any],
+              fields["name"] as? String == "AnyBrowser Proxy Sign-in" else { return }
+        try? FileManager.default.removeItem(at: directory)
     }
 }

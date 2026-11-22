@@ -3,14 +3,7 @@ import Darwin
 import Foundation
 import Testing
 
-/// The AnyBrowserRelay executable, built next to the test bundle.
-private let helperPath: String? = {
-    let bundle = Bundle(for: HelperMarker.self).bundleURL
-    let candidate = bundle.deletingLastPathComponent().appendingPathComponent("AnyBrowserRelay").path
-    return FileManager.default.isExecutableFile(atPath: candidate) ? candidate : nil
-}()
-
-private final class HelperMarker {}
+private let helperPath = relayHelperPath
 
 @Suite("Relay helper process", .serialized,
        .enabled(if: helperPath != nil, "Build the AnyBrowserRelay product (swift build) to run the helper tests."))
