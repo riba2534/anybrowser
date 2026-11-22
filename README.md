@@ -163,7 +163,7 @@ anybrowserctl proxies add --file proxies.txt
 anybrowserctl delete 店铺
 ```
 
-Profile 可以用 id 或名称指定，重名时须用 id。访问令牌和端口依次取自 `--token`、`--port`，环境变量 `ANYBROWSER_TOKEN`、`ANYBROWSER_PORT`，都没有时只读读取 AnyBrowser 保存的自动化接口设置（数据目录可用 `--data-dir` 或 `ANYBROWSER_DATA_DIR` 指定），所以在本机打开接口后可以直接使用。输出是接口返回的 JSON，加 `--pretty` 缩进显示。出错时在 stderr 输出原因，退出状态为 1（接口返回错误）、2（用法错误）或 3（无法连接或读取设置）。`anybrowserctl help` 列出全部命令和选项。
+Profile 可以用 id 或名称指定，重名时须用 id；`restore` 在回收站中按名称查找，`delete --purge` 同时查找已保存的和回收站中的，两处同名也算重名。访问令牌和端口依次取自 `--token`、`--port`，环境变量 `ANYBROWSER_TOKEN`、`ANYBROWSER_PORT`，都没有时只读读取 AnyBrowser 保存的自动化接口设置（数据目录可用 `--data-dir` 或 `ANYBROWSER_DATA_DIR` 指定），所以在本机打开接口后可以直接使用。输出是接口返回的 JSON，加 `--pretty` 缩进显示。出错时在 stderr 输出原因，退出状态为 1（接口返回错误，或名称找不到、有重名）、2（用法错误）或 3（无法连接或读取设置）。`anybrowserctl help` 列出全部命令和选项。
 
 #### 端点
 

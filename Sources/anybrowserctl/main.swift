@@ -38,7 +38,8 @@ Profile（<Profile> 为 id 或名称）：
 
 令牌和端口依次取自 --token、--port，环境变量 ANYBROWSER_TOKEN、ANYBROWSER_PORT，最后只读读取
 AnyBrowser 保存的自动化接口设置（数据目录默认 ~/Library/Application Support/AnyBrowser，可用
---data-dir 或 ANYBROWSER_DATA_DIR 指定）。退出状态：0 成功，1 接口返回错误，2 用法错误，3 无法连接或读取。
+--data-dir 或 ANYBROWSER_DATA_DIR 指定）。退出状态：0 成功，1 接口返回错误、名称找不到或重名，2 用法错误，
+3 无法连接或读取。
 """
 
 /// The options each command accepts, beside the global ones.
@@ -151,19 +152,15 @@ func run(_ command: String, _ subcommand: String?, _ arguments: Arguments, _ cli
         try arguments.expect(1...1, "delete <Profile> [--purge [--delete-data]]")
         let purge = arguments.flag("purge")
         guard purge || !arguments.flag("delete-data") else { throw Failure.usage("--delete-data 须与 --purge 一起使用。") }
-        var id: String
-        do {
-            id = try await profile()
-        } catch Failure.local(_) where purge {
-            // Purging also reaches Profiles already in the recycle bin.
-            id = try await client.profileID(positionals[0], inTrash: true)
-        }
+        // Purging also reaches Profiles already in the recycle bin.
+        let id = try await client.profileID(positionals[0], trashed: purge)
         var query: [(String, String)] = purge ? [("purge", "1")] : []
         if arguments.flag("delete-data") { query.append(("deleteData", "1")) }
         return try await client.send("DELETE", "/api/v1/profiles/\(id)", query: query)
     case "restore":
         try arguments.expect(1...1, "restore <Profile>")
-        return try await client.send("POST", "/api/v1/profiles/\(try await client.profileID(positionals[0], inTrash: true))/restore")
+        let id = try await client.profileID(positionals[0], saved: false, trashed: true)
+        return try await client.send("POST", "/api/v1/profiles/\(id)/restore")
     case "start", "restart":
         try arguments.expect(1...1, "\(command) <Profile> [--headless] [--url 网址]... [--arg 开关]...")
         return try await client.send("POST", "/api/v1/profiles/\(try await profile())/\(command)", json: launchBody(arguments))
