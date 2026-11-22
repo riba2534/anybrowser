@@ -13,6 +13,7 @@ struct AnyBrowserApp: App {
         // One window: no tab bar to open a second one from, and no "Merge All Windows".
         NSWindow.allowsAutomaticWindowTabbing = false
         let instance = SingleInstance.claim()
+        DatabaseRestore.performRequested(in: instance)
         _workbench = StateObject(wrappedValue: Workbench(instance: instance))
     }
 
@@ -27,35 +28,84 @@ struct AnyBrowserApp: App {
         .handlesExternalEvents(matching: ["*"])
         .windowStyle(.hiddenTitleBar)
         .commands {
-            CommandGroup(replacing: .newItem) {
-                Button("新建 Profile") { workbench.request(.new) }
-                    .keyboardShortcut("n")
-                    .disabled(workbench.store == nil)
+            LibraryCommands(workbench: workbench)
+        }
+    }
+}
+
+/// The menus. Items that write are disabled while the database is read-only.
+private struct LibraryCommands: Commands {
+    @ObservedObject var workbench: Workbench
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("新建 Profile") { workbench.request(.new) }
+                .keyboardShortcut("n")
+                .disabled(!workbench.canWrite)
+        }
+        CommandGroup(replacing: .appSettings) {
+            Button("Passkey Box 账号…") { workbench.showingPasskeyBox = true }
+                .keyboardShortcut(",")
+                .disabled(workbench.store == nil)
+        }
+        CommandGroup(after: .newItem) {
+            Button("批量新建 Profile…") { workbench.showingBatchCreate = true }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(!workbench.canWrite)
+            Button("保存 Profile") { workbench.save() }
+                .keyboardShortcut("s")
+                .disabled(!workbench.hasChanges || !workbench.canWrite)
+            Divider()
+            Button("导入 Profile…") { workbench.importProfiles() }
+                .disabled(!workbench.canWrite)
+            Button("导出 Profile…") { workbench.exportProfiles(includeSecrets: false) }
+                .disabled(workbench.profiles.isEmpty)
+            Button("导出 Profile（含密码）…") { workbench.exportProfiles(includeSecrets: true) }
+                .disabled(workbench.profiles.isEmpty)
+            Divider()
+            Button(workbench.batchSelection.isEmpty ? "导出完整备份…" : "导出所选的完整备份…") { workbench.requestFullBackup() }
+                .disabled(workbench.coordinator == nil || workbench.profiles.isEmpty)
+            Button("从完整备份恢复…") { workbench.requestFullRestore() }
+                .disabled(workbench.coordinator == nil || !workbench.canWrite)
+            Button("资料库备份…") { workbench.library.sheet = .databaseBackups }
+        }
+        CommandGroup(after: .appSettings) {
+            Button("自动化接口…") { workbench.showingAutomation = true }
+                .disabled(workbench.automation == nil)
+        }
+        CommandMenu("Profile") {
+            let id = workbench.saved?.id
+            let running = id.map { workbench.state(for: $0).isRunning } ?? false
+            let busy = id.map(workbench.isBusy) ?? true
+            Button(running ? "重启" : "启动") { Task { await workbench.launch(restart: running) } }
+                .keyboardShortcut("r")
+                .disabled(workbench.draft == nil || busy && id != nil || workbench.runtime == nil
+                          || workbench.hasChanges && !workbench.canWrite)
+            Button("停止") {
+                if let id { Task { await workbench.stop(id) } }
             }
-            CommandGroup(replacing: .appSettings) {
-                Button("Passkey Box 账号…") { workbench.showingPasskeyBox = true }
-                    .keyboardShortcut(",")
-                    .disabled(workbench.store == nil)
+            .keyboardShortcut(".")
+            .disabled(!running || busy)
+            Button("复制为新 Profile") { workbench.request(.clone) }
+                .keyboardShortcut("d")
+                .disabled(id == nil || !workbench.canWrite)
+            Divider()
+            Button("查找 Profile") { workbench.library.searchFocusRequest += 1 }
+                .keyboardShortcut("f")
+            Button("选择列表中的全部 Profile") { workbench.selectAllVisible() }
+                .disabled(workbench.profiles.isEmpty)
+            Button(workbench.batchSelection.isEmpty ? "平铺全部窗口" : "平铺所选窗口") {
+                Task { await workbench.tileWindows(workbench.batchSelection.isEmpty ? nil : workbench.batchSelection.map(\.id)) }
             }
-            CommandGroup(after: .newItem) {
-                Button("批量新建 Profile…") { workbench.showingBatchCreate = true }
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
-                    .disabled(workbench.store == nil)
-                Button("保存 Profile") { workbench.save() }
-                    .keyboardShortcut("s")
-                    .disabled(!workbench.hasChanges)
-                Divider()
-                Button("导入 Profile…") { workbench.importProfiles() }
-                    .disabled(workbench.store == nil)
-                Button("导出 Profile…") { workbench.exportProfiles(includeSecrets: false) }
-                    .disabled(workbench.profiles.isEmpty)
-                Button("导出 Profile（含密码）…") { workbench.exportProfiles(includeSecrets: true) }
-                    .disabled(workbench.profiles.isEmpty)
-            }
-            CommandGroup(after: .appSettings) {
-                Button("自动化接口…") { workbench.showingAutomation = true }
-                    .disabled(workbench.automation == nil)
-            }
+            .disabled(workbench.runtime == nil)
+            Divider()
+            Button("代理库…") { workbench.library.sheet = .proxyLibrary }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+                .disabled(workbench.proxyLibrary == nil)
+            Button("回收站…") { workbench.library.sheet = .trash }
+                .disabled(workbench.store == nil)
+            Button("资料库检查…") { workbench.library.sheet = .repair }
+                .disabled(workbench.store == nil)
         }
     }
 }

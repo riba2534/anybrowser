@@ -10,7 +10,7 @@ struct Workspace: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            sidebar
+            LibrarySidebar(workbench: workbench)
                 .frame(width: 228)
             Rectangle()
                 .fill(WorkbenchPalette.rule)
@@ -61,107 +61,13 @@ struct Workspace: View {
             BatchCreateSheet(workbench: workbench)
         }
         .alert("移除 Profile？", isPresented: showRemovalAlert, presenting: removeCandidate) { candidate in
-            Button("仅移除记录") {
-                Task { await workbench.removeProfile(candidate.id, deletingBrowserData: false) }
-            }
-            Button("移除并删除浏览器资料", role: .destructive) {
+            Button("移到回收站") { workbench.trashProfiles([candidate.id]) }
+            Button("永久删除（含浏览器资料）", role: .destructive) {
                 Task { await workbench.removeProfile(candidate.id, deletingBrowserData: true) }
             }
             Button("取消", role: .cancel) {}
         } message: { candidate in
-            Text("「\(candidate.name)」将从列表移除，AnyBrowser 为它生成的扩展文件（含 Passkey Box 和代理密码）一并删除。仅移除记录会把浏览器资料留在本机；删除浏览器资料会同时清除它的 Cookie、登录状态、历史记录和扩展数据，删除后无法恢复。")
-        }
-    }
-
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            brand
-                .padding(.horizontal, 20)
-                .padding(.top, 48)
-                .padding(.bottom, 20)
-            LibrarySearchField(library: workbench.library)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 14)
-            HStack(spacing: 8) {
-                Text("Profiles")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(WorkbenchPalette.muted)
-                Spacer()
-                Text(workbench.profiles.count.formatted())
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(WorkbenchPalette.muted)
-                    .accessibilityLabel("Profile 数量 \(workbench.profiles.count)")
-                LibrarySortMenu(library: workbench.library)
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 8)
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    let sections = workbench.librarySections
-                    // Headers only help once at least one Profile has a group.
-                    let showsHeaders = sections.contains { !$0.group.isEmpty }
-                    ForEach(sections, id: \.group) { section in
-                        if showsHeaders {
-                            sectionHeader(section)
-                        }
-                        ForEach(section.profiles) { profile in
-                            profileRow(profile)
-                        }
-                    }
-                    if sections.isEmpty && !workbench.profiles.isEmpty {
-                        Text("没有匹配的 Profile")
-                            .font(.system(size: 12))
-                            .foregroundColor(WorkbenchPalette.muted)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                    }
-                    if let draft = workbench.draft, workbench.saved == nil {
-                        profileRow(draft.profile, isDraft: true)
-                    }
-                }
-                .padding(.horizontal, 12)
-            }
-            Group {
-                if workbench.batchSelection.isEmpty {
-                    Button {
-                        workbench.request(.new)
-                    } label: {
-                        Label("新建 Profile", systemImage: "plus")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(WorkbenchButtonStyle(.quiet))
-                    .disabled(workbench.store == nil)
-                    .accessibilityIdentifier("new-profile")
-                } else {
-                    LibraryBatchBar(workbench: workbench)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-
-            Rectangle().fill(WorkbenchPalette.rule).frame(height: 1)
-            VStack(spacing: 12) {
-                passkeyBoxFootnote
-                engineFootnote
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
-        }
-        .frame(maxHeight: .infinity)
-        .background(WorkbenchPalette.sidebar)
-    }
-
-    private var brand: some View {
-        HStack(spacing: 10) {
-            brandMark(size: 44)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("AnyBrowser")
-                    .font(.system(size: 16, weight: .semibold))
-                Text("浏览器工作台")
-                    .font(.system(size: 11))
-                    .foregroundColor(WorkbenchPalette.muted)
-            }
+            Text("移到回收站后，「\(candidate.name)」从列表移除，浏览器资料、端口和身份保留，\(Workbench.trashRetention) 天内可以恢复，之后自动永久删除。永久删除会立即清除它的配置、Cookie、登录状态、历史记录和扩展数据，无法恢复。")
         }
     }
 
@@ -180,127 +86,6 @@ struct Workspace: View {
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
-    }
-
-    private func sectionHeader(_ section: ProfileLibrary.Section) -> some View {
-        HStack(spacing: 6) {
-            Text(section.group.isEmpty ? "未分组" : section.group)
-                .font(.system(size: 11, weight: .semibold))
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            Text(section.profiles.count.formatted())
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-        }
-        .foregroundColor(WorkbenchPalette.muted)
-        .padding(.horizontal, 8)
-        .padding(.top, 10)
-        .padding(.bottom, 2)
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
-    }
-
-    private func profileRow(_ profile: BrowserProfile, isDraft: Bool = false) -> some View {
-        let isSelected = profile.id == workbench.selectedID
-        let isPicked = !isDraft && workbench.library.selection.contains(profile.id)
-        let state = workbench.state(for: profile.id)
-        return Button {
-            if !isDraft, NSEvent.modifierFlags.contains(.command) {
-                workbench.library.toggle(profile.id)
-            } else {
-                workbench.request(.profile(profile.id))
-            }
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: isPicked ? "checkmark" : platformIcon(profile.fingerprint.platform))
-                    .font(.system(size: 13, weight: isPicked ? .bold : .medium))
-                    .foregroundColor(isPicked ? .white : WorkbenchPalette.ink)
-                    .frame(width: 30, height: 30)
-                    .background(isPicked ? Color.accentColor : WorkbenchPalette.iconSurface,
-                                in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(profile.name.isEmpty ? "未命名 Profile" : profile.name)
-                        .font(.system(size: 13, weight: .medium))
-                        .lineLimit(1)
-                    Text(verbatim: isDraft ? "草稿" : "127.0.0.1:\(profile.port)")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(WorkbenchPalette.muted)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                Circle()
-                    .fill(state.indicator)
-                    .frame(width: 6, height: 6)
-                    .accessibilityHidden(true)
-            }
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(WorkbenchPalette.selected)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .strokeBorder(WorkbenchPalette.strongRule, lineWidth: 1)
-                        }
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            if !isDraft {
-                Button(isPicked ? "取消选择" : "加入批量选择") { workbench.library.toggle(profile.id) }
-            }
-        }
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .accessibilityValue(isPicked ? "已加入批量选择" : "")
-        .accessibilityIdentifier("profile-row-\(profile.id.uuidString)")
-        .help(isDraft ? profile.name : "\(profile.name)（按住 Command 点击可多选）")
-    }
-
-    private var passkeyBoxFootnote: some View {
-        Button {
-            workbench.showingPasskeyBox = true
-        } label: {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(workbench.passkeyBoxAccount == nil ? WorkbenchPalette.amber : WorkbenchPalette.green)
-                    .frame(width: 6, height: 6)
-                    .accessibilityHidden(true)
-                Text("Passkey Box")
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-                Spacer(minLength: 2)
-                Text(workbench.passkeyBoxAccount?.username ?? "未设置账号")
-                    .font(.system(size: 10))
-                    .foregroundColor(WorkbenchPalette.muted)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(workbench.store == nil)
-        .help("设置各 Profile 内置 Passkey Box 使用的账号")
-        .accessibilityIdentifier("passkey-box-account")
-    }
-
-    private var engineFootnote: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(workbench.engineVersion == nil ? WorkbenchPalette.amber : WorkbenchPalette.green)
-                .frame(width: 6, height: 6)
-                .accessibilityHidden(true)
-            Text("内置引擎")
-                .font(.system(size: 11, weight: .medium))
-                .lineLimit(1)
-            Spacer(minLength: 2)
-            Text(workbench.engineVersion ?? "不可用")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(WorkbenchPalette.muted)
-                .lineLimit(1)
-        }
     }
 
     private func profileHeader(_ value: BrowserProfile) -> some View {
@@ -501,14 +286,5 @@ struct Workspace: View {
             get: { removeCandidate != nil },
             set: { showing in if !showing { removeCandidate = nil } }
         )
-    }
-
-    private func platformIcon(_ platform: BrowserPlatform?) -> String {
-        switch platform {
-        case .macOS: return "laptopcomputer"
-        case .windows: return "macwindow"
-        case .linux: return "terminal"
-        case nil: return "globe"
-        }
     }
 }
