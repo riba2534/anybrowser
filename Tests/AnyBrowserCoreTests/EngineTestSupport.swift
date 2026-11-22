@@ -159,7 +159,7 @@ final class CountingServer: @unchecked Sendable {
                 let (headers, body): (String, String) = switch path {
                 case "/asset.js": ("Content-Type: text/javascript\r\nCache-Control: public, max-age=86400", "window.loaded = 1;")
                 case "/favicon.ico": ("Content-Type: text/plain", "")
-                default: ("Content-Type: text/html\r\nCache-Control: no-store", "<!doctype html><title>AnyBrowser test \(path)</title>")
+                default: ("Content-Type: text/html\r\nCache-Control: no-store", "<!doctype html><title>AnyBrowser runtime \(path)</title>")
                 }
                 let response = Data("HTTP/1.1 200 OK\r\n\(headers)\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)".utf8)
                 queue.asyncAfter(deadline: .now() + (path == "/slow" ? delay : 0)) {
