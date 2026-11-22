@@ -10,6 +10,9 @@ private let transient = sqliteTransient
 /// A removed Profile in the recycle bin. It keeps its row, id, port and seed until it is purged,
 /// so restoring it reconnects its browser data.
 public struct TrashedProfile: Identifiable, Equatable, Sendable {
+    /// Days an entry stays before launch maintenance purges it.
+    public static let retentionDays = 30
+
     public var profile: BrowserProfile
     public var deletedAt: Date
     public var id: UUID { profile.id }
@@ -88,12 +91,11 @@ public final class ProfileStore: ObservableObject {
     public init(directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
-        guard let canonical = realpath(directory.path, nil) else {
+        guard let canonical = ProcessInspection.canonicalURL(directory, isDirectory: true) else {
             throw ProfileError.invalid("无法定位本机 Profile 资料目录。")
         }
-        defer { free(canonical) }
-        self.directory = URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
-        let path = self.directory.appendingPathComponent("profiles.sqlite3")
+        self.directory = canonical
+        let path = canonical.appendingPathComponent(Self.databaseFileName)
         var opened: OpaquePointer?
         guard sqlite3_open_v2(path.path, &opened, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK,
               let opened else {
@@ -467,7 +469,7 @@ public final class ProfileStore: ObservableObject {
     }
 
     /// Trashed Profiles removed at least `days` days before `now`, for the caller to purge.
-    public func expiredTrash(olderThan days: Int = 30, now: Date = Date()) -> [UUID] {
+    public func expiredTrash(olderThan days: Int = TrashedProfile.retentionDays, now: Date = Date()) -> [UUID] {
         trashed.filter { now.timeIntervalSince($0.deletedAt) >= Double(days) * 86400 }.map(\.id)
     }
 

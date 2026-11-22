@@ -672,10 +672,3 @@ final class Workbench: ObservableObject {
         notice = Notice(text: error.localizedDescription, isError: true)
     }
 }
-
-extension BrowserRunState {
-    var isRunning: Bool {
-        if case .running = self { return true }
-        return false
-    }
-}

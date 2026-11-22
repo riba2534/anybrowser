@@ -131,10 +131,8 @@ enum SingleInstance {
         guard let located = try? ProfileStore.defaultDirectory(),
               (try? FileManager.default.createDirectory(at: located, withIntermediateDirectories: true,
                                                         attributes: [.posixPermissions: 0o700])) != nil,
-              let resolved = realpath(located.path, nil) else { return nil }
-        // The lock wants the real path, as the database does: a folder in the path may be a link.
-        let directory = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
-        free(resolved)
+              // The lock wants the real path, as the database does: a folder in the path may be a link.
+              let directory = ProcessInspection.canonicalURL(located, isDirectory: true) else { return nil }
         do {
             return Claim(directory: directory, lock: try ProfileStore.acquireInstanceLock(in: directory))
         } catch {

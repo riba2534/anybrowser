@@ -67,7 +67,7 @@ struct Workspace: View {
             }
             Button("取消", role: .cancel) {}
         } message: { candidate in
-            Text("移到回收站后，「\(candidate.name)」从列表移除，浏览器资料、端口和身份保留，\(Workbench.trashRetention) 天内可以恢复，之后自动永久删除。永久删除会立即清除它的配置、Cookie、登录状态、历史记录和扩展数据，无法恢复。")
+            Text("移到回收站后，「\(candidate.name)」从列表移除，浏览器资料、端口和身份保留，\(TrashedProfile.retentionDays) 天内可以恢复，之后自动永久删除。永久删除会立即清除它的配置、Cookie、登录状态、历史记录和扩展数据，无法恢复。")
         }
     }
 

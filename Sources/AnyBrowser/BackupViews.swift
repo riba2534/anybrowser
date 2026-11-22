@@ -443,8 +443,8 @@ enum DatabaseRestore {
 
     /// The data directory as `SingleInstance` locks it, for when the database could not be opened.
     static func dataDirectory() -> URL? {
-        guard let located = try? ProfileStore.defaultDirectory(), let path = canonicalPath(located) else { return nil }
-        return URL(fileURLWithPath: path, isDirectory: true)
+        guard let located = try? ProfileStore.defaultDirectory() else { return nil }
+        return ProcessInspection.canonicalURL(located, isDirectory: true)
     }
 
     /// Restores the backup named on the command line, if any. Runs before the store opens.
@@ -457,25 +457,19 @@ enum DatabaseRestore {
         }
         // Only a backup this data directory made: the argument is not a way to load any file.
         let folder = claim.directory.appendingPathComponent("Backups", isDirectory: true)
-        guard let parent = canonicalPath(backup.deletingLastPathComponent()), parent == canonicalPath(folder),
+        guard let parent = ProcessInspection.canonicalURL(backup.deletingLastPathComponent(), isDirectory: true),
+              parent.path == ProcessInspection.canonicalURL(folder)?.path,
               let described = DatabaseBackup(backup) else {
             outcome = "未能恢复数据库备份：「\(backup.lastPathComponent)」不是本机资料目录里的备份。"
             return
         }
         do {
             // SQLite refuses a path through a symbolic link, such as /tmp.
-            let canonical = URL(fileURLWithPath: parent, isDirectory: true).appendingPathComponent(backup.lastPathComponent)
-            try ProfileStore.restoreBackup(canonical, into: claim.directory)
+            try ProfileStore.restoreBackup(parent.appendingPathComponent(backup.lastPathComponent), into: claim.directory)
             outcome = "已恢复 \(DatabaseBackupsSheet.date.string(from: described.createdAt)) 的 Profile 数据库备份。恢复前的数据库已另存为一份备份，需要时可在「资料库备份」里恢复回去。"
         } catch {
             outcome = "未能恢复数据库备份：\(error.localizedDescription)当前数据库没有改动。"
         }
-    }
-
-    private static func canonicalPath(_ url: URL) -> String? {
-        guard let resolved = realpath(url.path, nil) else { return nil }
-        defer { free(resolved) }
-        return String(cString: resolved)
     }
 
     /// Starts the waiting shell, then quits. The shell gives up after a minute, in case quitting

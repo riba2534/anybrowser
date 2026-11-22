@@ -626,20 +626,21 @@ public enum ProfileBackup {
             throw ProfileError.invalid("「\(file.lastPathComponent)」不是有效的 AnyBrowser 备份文件，或已损坏。")
         }
     }
+}
 
-    private nonisolated static func ditto(_ arguments: [String]) -> Bool {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        process.arguments = arguments
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return false
-        }
-        process.waitUntilExit()
-        return process.terminationStatus == 0
+/// Runs /usr/bin/ditto without input or output; whether it succeeded.
+func ditto(_ arguments: [String]) -> Bool {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+    process.arguments = arguments
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    do {
+        try process.run()
+    } catch {
+        return false
     }
+    process.waitUntilExit()
+    return process.terminationStatus == 0
 }

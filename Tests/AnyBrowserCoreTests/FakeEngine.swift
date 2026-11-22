@@ -407,11 +407,7 @@ struct FakeEngineFixture {
     }
 
     func lockHolder(_ profile: BrowserProfile) -> Int32? {
-        let lock = runtime.dataDirectory(for: profile.id).appendingPathComponent("SingletonLock").path
-        guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: lock),
-              let pid = target.split(separator: "-").last.flatMap({ Int32($0) }),
-              ProcessStamp.read(pid) != nil else { return nil }
-        return pid
+        ProcessInspection.lockHolder(runtime.dataDirectory(for: profile.id))
     }
 
     /// Waits up to `seconds` for `condition`, refreshing nothing on its own.

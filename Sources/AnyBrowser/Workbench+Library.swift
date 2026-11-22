@@ -428,15 +428,12 @@ extension Workbench {
         var text: String
         switch moved.count {
         case 0: text = ""
-        case 1: text = "已将「\(moved[0])」移到回收站，\(Self.trashRetention) 天内可在回收站恢复。"
-        default: text = "已将 \(moved.count) 个 Profile 移到回收站，\(Self.trashRetention) 天内可在回收站恢复。"
+        case 1: text = "已将「\(moved[0])」移到回收站，\(TrashedProfile.retentionDays) 天内可在回收站恢复。"
+        default: text = "已将 \(moved.count) 个 Profile 移到回收站，\(TrashedProfile.retentionDays) 天内可在回收站恢复。"
         }
         if !refused.isEmpty { text += "\(refused.count) 个未移动：\(refused.joined(separator: "；"))" }
         notice = Notice(text: text, isError: !refused.isEmpty)
     }
-
-    /// How long trashed Profiles stay; launch maintenance purges them after that.
-    static let trashRetention = 30
 
     func restoreFromTrash(_ id: UUID) {
         guard let store, let entry = store.trashed.first(where: { $0.id == id }) else { return }

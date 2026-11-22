@@ -16,16 +16,27 @@ struct ProcessStamp: Codable, Equatable {
     }
 }
 
-enum ProcessInspection {
+public enum ProcessInspection {
     struct Image {
         let executablePath: String
         let arguments: [String]
     }
 
-    static func canonicalURL(_ url: URL, isDirectory: Bool = false) -> URL? {
+    /// `url` with every link in its path resolved, as SQLite and the instance lock want it (/tmp
+    /// is /private/tmp); nil when it does not exist.
+    public static func canonicalURL(_ url: URL, isDirectory: Bool = false) -> URL? {
         guard let path = realpath(url.path, nil) else { return nil }
         defer { free(path) }
         return URL(fileURLWithPath: String(cString: path), isDirectory: isDirectory)
+    }
+
+    /// The live process `directory`'s SingletonLock (`<host>-<pid>`) names.
+    static func lockHolder(_ directory: URL) -> Int32? {
+        let lock = directory.appendingPathComponent("SingletonLock").path
+        guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: lock),
+              let suffix = target.split(separator: "-").last, let pid = Int32(suffix),
+              ProcessStamp.read(pid) != nil else { return nil }
+        return pid
     }
 
     static func executable(_ pid: Int32) -> URL? {

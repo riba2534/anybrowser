@@ -384,7 +384,8 @@ extension AutomationHTTP {
             try call.allow("GET", "PATCH", "DELETE")
             let entry = try proxyEntry(path[1], backend)
             switch call.method {
-            case "GET": return .json(200, Body(["proxy": proxyObject(entry, secrets: try call.flag("secrets"), backend)]))
+            case "GET":
+                return .json(200, Body(["proxy": proxyObject(entry, secrets: try call.flag("secrets"), users: proxyUsers(backend))]))
             case "PATCH": return try updateProxy(entry, call, backend)
             default:
                 try backend.proxyLibrary.remove([entry.id])
@@ -554,8 +555,8 @@ extension AutomationHTTP {
                 }
                 return ids.count == 1 ? Array(repeating: urls[0], count: count) : urls
             case .unused:
-                let used = Set((backend.store.profiles + backend.store.trashed.map(\.profile)).compactMap(normalizedProxy))
-                let free = entries.filter { !used.contains($0.url) }
+                let used = proxyUsers(backend)
+                let free = entries.filter { used[$0.url] == nil }
                 guard free.count >= count else {
                     throw Failure(409, "conflict", "代理库中只有 \(free.count) 条没有 Profile 使用的代理，不够 \(count) 个。")
                 }
@@ -564,8 +565,14 @@ extension AutomationHTTP {
         }
     }
 
-    private static func normalizedProxy(_ profile: BrowserProfile) -> String? {
-        (try? ProxyEndpoint.parse(profile.proxy)).flatMap { $0 }?.url
+    /// The saved and trashed Profiles using each proxy, by normalized address, in store order.
+    private static func proxyUsers(_ backend: AutomationBackend) -> [String: [UUID]] {
+        var users: [String: [UUID]] = [:]
+        for profile in backend.store.profiles + backend.store.trashed.map(\.profile) {
+            guard let url = (try? ProxyEndpoint.parse(profile.proxy)).flatMap({ $0 })?.url else { continue }
+            users[url, default: []].append(profile.id)
+        }
+        return users
     }
 
     /// Whether `fields` sets the language or time zone itself, so the exit need not be looked up.
@@ -999,18 +1006,17 @@ extension AutomationHTTP {
         return entry
     }
 
-    private static func proxyObject(_ entry: ProxyEntry, secrets: Bool, _ backend: AutomationBackend) -> ProxyObject {
-        let users = (backend.store.profiles + backend.store.trashed.map(\.profile))
-            .filter { normalizedProxy($0) == entry.url }.map(\.id)
-        return ProxyObject(id: entry.id, url: secrets ? entry.url : entry.endpoint?.server ?? "",
+    private static func proxyObject(_ entry: ProxyEntry, secrets: Bool, users: [String: [UUID]]) -> ProxyObject {
+        ProxyObject(id: entry.id, url: secrets ? entry.url : entry.endpoint?.server ?? "",
                            hasCredentials: entry.endpoint?.hasCredentials ?? false, label: entry.label, tags: entry.tags,
                            note: entry.note, createdAt: entry.createdAt, lastExit: entry.lastExit,
-                           lastCheckedAt: entry.lastCheckedAt, profiles: users)
+                           lastCheckedAt: entry.lastCheckedAt, profiles: users[entry.url] ?? [])
     }
 
     private static func listProxies(_ call: Call, _ backend: AutomationBackend) throws -> Response {
         let secrets = try call.flag("secrets")
-        return .json(200, Body(["proxies": backend.proxyLibrary.entries.map { proxyObject($0, secrets: secrets, backend) }]))
+        let users = proxyUsers(backend)
+        return .json(200, Body(["proxies": backend.proxyLibrary.entries.map { proxyObject($0, secrets: secrets, users: users) }]))
     }
 
     /// Adds `{text}` (one address per line, as pasted in the window) or `{urls}`, with an optional
@@ -1042,7 +1048,8 @@ extension AutomationHTTP {
         } catch {
             throw Failure.invalid(error.localizedDescription)
         }
-        return .json(added.isEmpty ? 200 : 201, Body(["added": added.map { proxyObject($0, secrets: false, backend) },
+        let users = proxyUsers(backend)
+        return .json(added.isEmpty ? 200 : 201, Body(["added": added.map { proxyObject($0, secrets: false, users: users) },
                                                        "duplicates": urls.count - added.count, "rejected": rejected]))
     }
 
@@ -1069,7 +1076,7 @@ extension AutomationHTTP {
             throw Failure.invalid(error.localizedDescription)
         }
         let saved = backend.proxyLibrary.entries.first { $0.id == entry.id } ?? value
-        return .json(200, Body(["proxy": proxyObject(saved, secrets: try call.flag("secrets"), backend)]))
+        return .json(200, Body(["proxy": proxyObject(saved, secrets: try call.flag("secrets"), users: proxyUsers(backend))]))
     }
 
     /// Looks up the exit of each proxy in `ids` (default: all), eight at a time, and records it.
@@ -1107,6 +1114,7 @@ extension AutomationHTTP {
                 enqueue()
             }
         }
+        let users = proxyUsers(backend)
         var results: [Body] = []
         for entry in entries {
             var error: String?
@@ -1120,7 +1128,7 @@ extension AutomationHTTP {
                 error = "未能检测。"
             }
             let current = library.entries.first { $0.id == entry.id } ?? entry
-            results.append(Body(["proxy": proxyObject(current, secrets: false, backend), "error": error]))
+            results.append(Body(["proxy": proxyObject(current, secrets: false, users: users), "error": error]))
         }
         return .json(200, Body(["results": results]))
     }

@@ -118,7 +118,7 @@ public struct SelfCheckReport: Codable, Equatable, Sendable {
 /// Nothing is sent to an outside service.
 public enum SelfCheck {
     public static func run(endpoint: URL, profile: BrowserProfile, exit: ProxyExit?) async throws -> SelfCheckReport {
-        let value = try await evaluate(probeScript(language: primaryLanguage(of: profile.fingerprint)), endpoint: endpoint)
+        let value = try await evaluate(probeScript(language: profile.fingerprint.primaryLanguage), endpoint: endpoint)
         guard JSONSerialization.isValidJSONObject(value) else {
             throw ProfileError.invalid("自检脚本没有返回结果。")
         }
@@ -169,10 +169,6 @@ public enum SelfCheck {
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         throw ProfileError.invalid("自检页面没有加载完成。")
-    }
-
-    private static func primaryLanguage(of fingerprint: FingerprintSettings) -> String {
-        fingerprint.language.isEmpty ? (fingerprint.languages?.first ?? "") : fingerprint.language
     }
 
     // MARK: Comparison
@@ -280,15 +276,14 @@ public enum SelfCheck {
                 judge(gpu.cpuCounts.contains(seen.hardwareConcurrency) && gpu.deviceMemory.contains(readMemory)))
         }
 
-        let language = primaryLanguage(of: fingerprint)
+        let language = fingerprint.primaryLanguage
         let realms = [observation.worker.map { ("Worker", $0.locale, $0.dateString) },
                       observation.frame.map { ("iframe", $0.locale, $0.dateString) }].compactMap { $0 }
         if language.isEmpty {
             add("languages", "语言列表", expected: nil, observed: seen.languages.joined(separator: ", "), .info)
         } else {
             let base = language.split(separator: "-").first.map(String.init) ?? language
-            let expected = fingerprint.languages?.first == language ? fingerprint.languages!
-                : (base == language ? [language] : [language, base])
+            let expected = fingerprint.acceptLanguages
             add("languages", "语言列表", expected: expected.joined(separator: ", "),
                 observed: seen.languages.joined(separator: ", "),
                 judge(seen.language == language && seen.languages == expected
@@ -519,7 +514,7 @@ private final class ProbePage: @unchecked Sendable {
             }
         }
         let port: UInt16 = try await withCheckedThrowingContinuation { continuation in
-            let once = ResumeOnce()
+            let once = Once()
             listener.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
@@ -546,18 +541,5 @@ private final class ProbePage: @unchecked Sendable {
     func stop() {
         listener.stateUpdateHandler = nil
         listener.cancel()
-    }
-
-    private final class ResumeOnce: @unchecked Sendable {
-        private let lock = NSLock()
-        private var claimed = false
-
-        func claim() -> Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            guard !claimed else { return false }
-            claimed = true
-            return true
-        }
     }
 }

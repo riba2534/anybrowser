@@ -274,19 +274,7 @@ public enum SharedExtensions {
 
     private static func extract(_ archive: URL, to directory: URL) throws {
         // ditto keeps entries such as "../x" or "/x" inside the destination.
-        let ditto = Process()
-        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        ditto.arguments = ["-x", "-k", archive.path, directory.path]
-        ditto.standardInput = FileHandle.nullDevice
-        ditto.standardOutput = FileHandle.nullDevice
-        ditto.standardError = FileHandle.nullDevice
-        do {
-            try ditto.run()
-        } catch {
-            throw ProfileError.invalid("无法解压 CRX 扩展文件。")
-        }
-        ditto.waitUntilExit()
-        guard ditto.terminationStatus == 0 else { throw ProfileError.invalid("无法解压 CRX 扩展文件。") }
+        guard ditto(["-x", "-k", archive.path, directory.path]) else { throw ProfileError.invalid("无法解压 CRX 扩展文件。") }
     }
 
     /// Writes the CRX's public key into manifest.json so the unpacked copy keeps the Web Store ID.

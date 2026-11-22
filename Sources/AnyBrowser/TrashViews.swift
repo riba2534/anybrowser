@@ -14,7 +14,7 @@ struct TrashSheet: View {
 
     var body: some View {
         WorkbenchSheet(title: "回收站",
-                       caption: "移到回收站的 Profile 保留浏览器资料、端口和身份，\(Workbench.trashRetention) 天后自动永久删除。恢复后回到原来的位置，浏览器资料照常使用。",
+                       caption: "移到回收站的 Profile 保留浏览器资料、端口和身份，\(TrashedProfile.retentionDays) 天后自动永久删除。恢复后回到原来的位置，浏览器资料照常使用。",
                        width: 620) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -62,7 +62,7 @@ struct TrashSheet: View {
     }
 
     private func row(_ entry: TrashedProfile) -> some View {
-        let days = entry.daysRemaining(retention: Workbench.trashRetention)
+        let days = entry.daysRemaining(retention: TrashedProfile.retentionDays)
         return HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(entry.profile.name.isEmpty ? "未命名 Profile" : entry.profile.name)

@@ -8,6 +8,13 @@ public struct ConsistencyIssue: Identifiable, Equatable, Sendable {
         self.id = id
         self.message = message
     }
+
+    /// The warning for Profiles that leave through the same exit IP as `names`, without a full stop.
+    public static func sharedExit(_ names: [String]) -> String {
+        let listed = names.prefix(3).map { "「\($0)」" }.joined(separator: "、")
+        let more = names.count > 3 ? "等 \(names.count) 个 Profile " : ""
+        return "与\(listed)\(more)使用同一个出口 IP，网站可以据此把它们关联起来"
+    }
 }
 
 /// Facts about other Profiles and the engine that a single Profile cannot know by itself.
@@ -172,11 +179,7 @@ extension BrowserProfile {
                     : "当前内核没有 \(fontProfile.title)表，网页会读到本机 macOS 字体；打开「字体」改写也只会按种子增删这些字体，同样不像 \(platform)。"))
         }
         if !context.profilesSharingExit.isEmpty {
-            let names = context.profilesSharingExit
-            let listed = names.prefix(3).map { "「\($0)」" }.joined(separator: "、")
-            let more = names.count > 3 ? "等 \(names.count) 个 Profile " : ""
-            issues.append(ConsistencyIssue(id: "exit-shared",
-                                           message: "与\(listed)\(more)使用同一个出口 IP，网站可以据此把它们关联起来"))
+            issues.append(ConsistencyIssue(id: "exit-shared", message: ConsistencyIssue.sharedExit(context.profilesSharingExit)))
         }
 
         guard let exit else { return issues }

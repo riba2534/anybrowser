@@ -152,11 +152,7 @@ public final class ProxyLibrary: ObservableObject {
     }
 
     /// Records the result of checking an entry: its exit, or nil when the check failed.
-    public func recordCheck(_ id: UUID, exit: ProxyExit?) throws {
-        try recordCheck(id, exit: exit, at: Date())
-    }
-
-    public func recordCheck(_ id: UUID, exit: ProxyExit?, at date: Date) throws {
+    public func recordCheck(_ id: UUID, exit: ProxyExit?, at date: Date = Date()) throws {
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
         var value = entries[index]
         value.lastExit = exit
@@ -175,11 +171,7 @@ public final class ProxyLibrary: ObservableObject {
         profileExits[id].map { ($0.exit, $0.checkedAt) }
     }
 
-    public func recordExit(_ exit: ProxyExit, forProfile id: UUID) throws {
-        try recordExit(exit, forProfile: id, at: Date())
-    }
-
-    public func recordExit(_ exit: ProxyExit, forProfile id: UUID, at date: Date) throws {
+    public func recordExit(_ exit: ProxyExit, forProfile id: UUID, at date: Date = Date()) throws {
         let payload = try JSONEncoder().encode(exit)
         try run("""
             INSERT INTO profile_exits(id, exit, checked_at) VALUES(?, ?, ?)
