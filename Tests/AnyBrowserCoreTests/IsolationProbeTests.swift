@@ -6,7 +6,7 @@ import Testing
 /// marker, the Profile's own language everywhere, and hardware that exists. These are the engine
 /// upgrade gate for the shim, `-AppleLanguages` and `EngineHardwareTable`.
 ///
-/// Debug ports 9330–9339 (plus `ANYBROWSER_TEST_PORT_OFFSET`). The probes use their own background tab.
+/// Debug ports 9340–9349 (plus `ANYBROWSER_TEST_PORT_OFFSET`). The probes use their own background tab.
 @Suite(.serialized, .enabled(if: testAppPath != nil,
                              "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the isolation probes."))
 struct IsolationProbeTests {
@@ -84,8 +84,8 @@ struct IsolationProbeTests {
     @MainActor
     func noMarkersAndRealTextMetrics() async throws {
         let profiles = [
-            try profile("Marker A", port: 9330, seed: 4244, platform: .macOS),
-            try profile("Marker B", port: 9331, seed: 22223, platform: .macOS, language: "de-DE", timeZone: "Europe/Berlin"),
+            try profile("Marker A", port: 9340, seed: 4244, platform: .macOS),
+            try profile("Marker B", port: 9341, seed: 22223, platform: .macOS, language: "de-DE", timeZone: "Europe/Berlin"),
         ]
         for (report, extra) in try await probe(profiles, label: "isolation-markers", extra: Self.lies) {
             let seen = report.observation
@@ -120,7 +120,7 @@ struct IsolationProbeTests {
             ("de-DE", "Europe/Berlin", "Mitteleuropäische Normalzeit", ["de", "de-DE"]),
         ]
         let profiles = try cases.enumerated().map { index, item in
-            try profile("Language \(item.language)", port: 9330 + index, seed: index == 0 ? 1000 : 105,
+            try profile("Language \(item.language)", port: 9340 + index, seed: index == 0 ? 1000 : 105,
                         platform: .macOS, language: item.language, timeZone: item.zone)
         }
         let results = try await probe(profiles, label: "isolation-language")
@@ -145,7 +145,7 @@ struct IsolationProbeTests {
             .init(status: 200, body: "<!doctype html><title>proxied</title>")
         }
         defer { stub.stop() }
-        var proxied = try profile("Proxied", port: 9330, seed: 4244, platform: .macOS,
+        var proxied = try profile("Proxied", port: 9340, seed: 4244, platform: .macOS,
                                   language: "de-DE", timeZone: "Europe/Berlin")
         proxied.proxy = "http://127.0.0.1:\(stub.port)"
         let storage = try scratchDirectory("isolation-proxy")
@@ -180,14 +180,14 @@ struct IsolationProbeTests {
         // Both macOS GPUs and all three memory sizes; Windows GPUs 2, 5, 11 and 12; one Profile
         // without a CPU count, for which the engine reports ((seed % 13) + 4) * 2.
         let profiles = [
-            try profile("M4 32", port: 9332, seed: 4244, platform: .macOS),
-            try profile("M2 16", port: 9333, seed: 4243, platform: .macOS),
-            try profile("M2 8", port: 9334, seed: 105, platform: .macOS),
-            try profile("M4 16", port: 9335, seed: 1000, platform: .macOS),
-            try profile("RTX 4060", port: 9336, seed: 44445, platform: .windows),
-            try profile("RTX 3060", port: 9337, seed: 33334, platform: .windows, cpuCount: .some(nil)),
-            try profile("Radeon", port: 9338, seed: 4243, platform: .windows),
-            try profile("UHD A78B", port: 9339, seed: 1000, platform: .windows),
+            try profile("M4 32", port: 9342, seed: 4244, platform: .macOS),
+            try profile("M2 16", port: 9343, seed: 4243, platform: .macOS),
+            try profile("M2 8", port: 9344, seed: 105, platform: .macOS),
+            try profile("M4 16", port: 9345, seed: 1000, platform: .macOS),
+            try profile("RTX 4060", port: 9346, seed: 44445, platform: .windows),
+            try profile("RTX 3060", port: 9347, seed: 33334, platform: .windows, cpuCount: .some(nil)),
+            try profile("Radeon", port: 9348, seed: 4243, platform: .windows),
+            try profile("UHD A78B", port: 9349, seed: 1000, platform: .windows),
         ]
         let results = try await probe(profiles, label: "isolation-hardware")
         for (profile, result) in zip(profiles, results) {
@@ -214,7 +214,7 @@ struct IsolationProbeTests {
     @Test("Edge sends a reduced Edg/<major>.0.0.0 token and a released build in UA-CH")
     @MainActor
     func edgeUserAgentIsReduced() async throws {
-        let edge = try profile("Edge", port: 9330, seed: 44445, platform: .windows, brand: .edge)
+        let edge = try profile("Edge", port: 9340, seed: 44445, platform: .windows, brand: .edge)
         #expect(edge.fingerprint.brandVersion.isEmpty)
         let report = try #require(try await probe([edge], label: "isolation-edge").first?.report)
         let seen = report.observation
@@ -230,7 +230,7 @@ struct IsolationProbeTests {
     func generatedIdentityPassesSelfCheck() async throws {
         var fingerprint = IdentitySampler.sample(seed: FingerprintSettings.newSeed(excluding: []))
         fingerprint.apply(try #require(IdentitySampler.LocaleHint(language: "ja-JP", timeZone: "Asia/Tokyo")))
-        let generated = try BrowserProfile(name: "Generated", port: testPort(9331), fingerprint: fingerprint,
+        let generated = try BrowserProfile(name: "Generated", port: testPort(9349), fingerprint: fingerprint,
                                            proxy: "").validated()
         let report = try #require(try await probe([generated], label: "isolation-selfcheck").first?.report)
         #expect(report.passed, "\(report.items.filter { $0.status == .fail })")
