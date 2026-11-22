@@ -80,6 +80,98 @@ struct CookieEngineTests {
         }
     }
 
+    @Test(
+        "Partitioned cookies round-trip, other tools' files import, and evictions are counted",
+        .enabled(
+            if: testAppPath != nil,
+            "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test."
+        )
+    )
+    @MainActor
+    func importsOtherFormatsAndPartitions() async throws {
+        let engine = try testEngine()
+        let directory = try scratchDirectory("cookie-formats")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        var profile = try store.makeDraft()
+        profile.port = testPort(9306)
+        profile.proxy = ""
+        try store.save(profile)
+
+        let runtime = BrowserRuntime(engine: engine, storage: store.directory)
+        try await runtime.start(profile)
+        do {
+            let endpoint = try #require(await runtime.devToolsEndpoint(for: profile.id))
+            let client = try DevToolsClient(endpoint: endpoint)
+            defer { client.close() }
+            let expiry = Int(Date().timeIntervalSince1970) + 3600
+            let shop = "https://shop.example.com"
+            // Chromium keeps the partition as a site: scheme and registrable domain.
+            let site = "https://example.com"
+
+            // Cookie-Editor's JSON array, with a CHIPS cookie and a session cookie written as expiry 0.
+            let editor = """
+            [{"domain": "widget.example.com", "hostOnly": true, "name": "chips", "value": "1", "path": "/",
+              "secure": true, "sameSite": "no_restriction", "session": true, "storeId": "0",
+              "partitionKey": {"topLevelSite": "\(shop)", "hasCrossSiteAncestor": false}},
+             {"domain": ".example.com", "hostOnly": false, "name": "editor", "value": "2", "path": "/",
+              "expirationDate": 0, "secure": false, "sameSite": "lax"}]
+            """
+            #expect(try await CookieTransfer.importCookies(Data(editor.utf8), into: endpoint)
+                == CookieTransfer.ImportResult(imported: 2, skipped: 0))
+            // Playwright's storage state.
+            let playwright = """
+            {"cookies": [{"name": "playwright", "value": "3", "domain": "app.example.org", "path": "/x",
+                          "expires": \(expiry), "httpOnly": true, "secure": true, "sameSite": "Strict"}], "origins": []}
+            """
+            #expect(try await CookieTransfer.importCookies(Data(playwright.utf8), into: endpoint).imported == 1)
+            // A Netscape cookies.txt.
+            let netscape = "# Netscape HTTP Cookie File\n.netscape.example.net\tTRUE\t/\tFALSE\t\(expiry)\tnetscape\t4\n"
+                + "#HttpOnly_host.example.net\tFALSE\t/\tFALSE\t0\thidden\t5\n"
+            #expect(try await CookieTransfer.importCookies(Data(netscape.utf8), into: endpoint).imported == 2)
+
+            let stored = try await browserCookies(client)
+            let chips = try #require(stored["chips"])
+            #expect((chips["partitionKey"] as? [String: Any])?["topLevelSite"] as? String == site)
+            #expect(stored["editor"]?["domain"] as? String == ".example.com" && stored["editor"]?["session"] as? Bool == true)
+            #expect(stored["playwright"]?["httpOnly"] as? Bool == true && stored["playwright"]?["sameSite"] as? String == "Strict")
+            #expect(stored["playwright"]?["expires"] as? Double == Double(expiry))
+            #expect(stored["netscape"]?["domain"] as? String == ".netscape.example.net")
+            #expect(stored["hidden"]?["domain"] as? String == "host.example.net" && stored["hidden"]?["httpOnly"] as? Bool == true)
+
+            // Out and back in, the partitioned cookie keeps its partition.
+            let export = try await CookieTransfer.exportCookies(from: endpoint)
+            #expect(export.count == 5 && export.skipped == 0)
+            _ = try await client.send("Storage.clearCookies")
+            #expect(try await browserCookies(client).isEmpty)
+            #expect(try await CookieTransfer.importCookies(export.data, into: endpoint)
+                == CookieTransfer.ImportResult(imported: 5, skipped: 0))
+            let restored = try await browserCookies(client)
+            #expect(Set(restored.keys) == ["chips", "editor", "playwright", "netscape", "hidden"])
+            #expect((restored["chips"]?["partitionKey"] as? [String: Any])?["topLevelSite"] as? String == site)
+
+            // Chromium keeps at most 180 cookies per site; the import says how many it dropped.
+            let many = try JSONSerialization.data(withJSONObject: (0..<200).map {
+                ["name": "c\($0)", "value": "\($0)", "domain": "evict.example.edu", "expirationDate": expiry] as [String: Any]
+            })
+            let crowded = try await CookieTransfer.importCookies(many, into: endpoint)
+            let kept = try await client.send("Storage.getCookies")["cookies"] as? [[String: Any]] ?? []
+            #expect(crowded.evicted > 0 && crowded.imported + crowded.evicted == 200, "\(crowded)")
+            #expect(kept.filter { $0["domain"] as? String == "evict.example.edu" }.count == crowded.imported)
+            #expect(crowded.displaced == 0)
+            try await runtime.stop(profile.id)
+        } catch {
+            try? await runtime.stop(profile.id)
+            throw error
+        }
+    }
+
+    /// The Profile's cookies by name.
+    private func browserCookies(_ client: DevToolsClient) async throws -> [String: [String: Any]] {
+        let cookies = try await client.send("Storage.getCookies")["cookies"] as? [[String: Any]] ?? []
+        return Dictionary(cookies.compactMap { cookie in (cookie["name"] as? String).map { ($0, cookie) } }) { first, _ in first }
+    }
+
     private func documentCookies(_ page: DevToolsPage) async throws -> Set<String> {
         let value = try #require(try await page.evaluate("document.cookie") as? String)
         return Set(value.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) })
