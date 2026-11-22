@@ -125,7 +125,8 @@ public enum ProfileLibrary {
                 profile.port = port
             }
             if seeds.contains(profile.fingerprint.seed) {
-                profile.fingerprint.seed = FingerprintSettings.newSeed(excluding: seeds)
+                profile.fingerprint.seed = FingerprintSettings.newSeed(excluding: seeds,
+                                                                       sameHardwareAs: profile.fingerprint.seed)
             }
             ports.insert(profile.port)
             seeds.insert(profile.fingerprint.seed)
@@ -153,7 +154,7 @@ public enum ProfileLibrary {
         copy.id = UUID()
         copy.name = copyName(of: profile.name, existing: existingNames)
         copy.port = try freePort(excluding: takenPorts)
-        copy.fingerprint.seed = FingerprintSettings.newSeed(excluding: takenSeeds)
+        copy.fingerprint.seed = FingerprintSettings.newSeed(excluding: takenSeeds, sameHardwareAs: profile.fingerprint.seed)
         return try copy.validated()
     }
 

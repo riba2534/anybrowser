@@ -3,7 +3,27 @@ import Darwin
 import Foundation
 import Testing
 
-// The fake engine listens on ports 11410–11449; the port probes use 11450–11499.
+// Several worktrees run the unit tests at the same time, so these tests take a free port per run
+// instead of fixed ones; a port handed out once is never handed out again in this process.
+private final class PortPool: @unchecked Sendable {
+    static let shared = PortPool()
+    private let lock = NSLock()
+    private var used: Set<Int> = []
+
+    func take() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        while true {
+            let port = Int.random(in: 20_000...59_999)
+            if !used.contains(port), ProcessInspection.portAvailable(port) {
+                used.insert(port)
+                return port
+            }
+        }
+    }
+}
+
+func freeTestPort() -> Int { PortPool.shared.take() }
 
 /// Runs `body`, then ends whatever the fixture started, also when `body` throws.
 @MainActor
@@ -35,7 +55,7 @@ struct RuntimeLaunchTests {
     @Test("Start pages open over DevTools once the browser is ready, not as engine arguments")
     func startPagesOpenOverDevTools() async throws {
         let fixture = try FakeEngineFixture("runtime-pages")
-        var profile = fixture.profile(port: 11410)
+        var profile = fixture.profile(port: freeTestPort())
         profile.launch.startURLs = ["https://first.example/", "https://second.example/", "https://third.example/"]
         try fixture.configure(profile, ["targets": newTabPage])
         try await run(fixture, [profile]) {
@@ -77,10 +97,10 @@ struct RuntimeLaunchTests {
             [{"targetId":"p1","type":"page","url":"http://(de-de)/","title":"(de-de)"},
              {"targetId":"p2","type":"page","url":"chrome-error://chromewebdata/","title":"(fr-fr)"}]
             """#.replacingOccurrences(of: "\n", with: "")
-        var withPages = fixture.profile(port: 11411)
+        var withPages = fixture.profile(port: freeTestPort())
         withPages.launch.startURLs = ["https://first.example/"]
-        let withoutPages = fixture.profile(port: 11412)
-        var restored = fixture.profile(port: 11413)
+        let withoutPages = fixture.profile(port: freeTestPort())
+        var restored = fixture.profile(port: freeTestPort())
         restored.launch.restoreSession = true
         try fixture.configure(withPages, ["targets": placeholders])
         try fixture.configure(withoutPages, ["targets": placeholders])
@@ -113,7 +133,7 @@ struct RuntimeLaunchTests {
     func startPageBudget() async throws {
         let fixture = try FakeEngineFixture("runtime-budget")
         fixture.runtime.startPageBudget = 0.5
-        var profile = fixture.profile(port: 11414)
+        var profile = fixture.profile(port: freeTestPort())
         profile.launch.startURLs = ["https://first.example/"]
         try fixture.configure(profile, ["targets": newTabPage, "cdp": "silent"])
         try await run(fixture, [profile]) {
@@ -132,7 +152,7 @@ struct RuntimeLaunchTests {
     @Test("Launch overrides add headless and extra switches last and replace the start pages")
     func overrides() async throws {
         let fixture = try FakeEngineFixture("runtime-overrides")
-        var profile = fixture.profile(port: 11415)
+        var profile = fixture.profile(port: freeTestPort())
         profile.launch.startURLs = ["https://saved.example/"]
         try fixture.configure(profile, ["targets": newTabPage])
         try await run(fixture, [profile]) {
@@ -154,7 +174,7 @@ struct RuntimeLaunchTests {
     @Test("Switches that change which process is the Profile's browser are refused before launching")
     func refusedOverrides() async throws {
         let fixture = try FakeEngineFixture("runtime-refused")
-        let profile = fixture.profile(port: 11416)
+        let profile = fixture.profile(port: freeTestPort())
         try await run(fixture, [profile]) {
             for argument in ["--user-data-dir=/tmp/other", "--remote-debugging-port=9", "--remote-debugging-pipe",
                              "--remote-debugging-address=0.0.0.0", "-user-data-dir=/tmp/other", "https://example.com/",
@@ -174,7 +194,7 @@ struct RuntimeLaunchTests {
     @Test("resetSiteData clears site data and the cache directory before the browser starts")
     func resetSiteDataBeforeLaunch() async throws {
         let fixture = try FakeEngineFixture("runtime-reset")
-        let profile = fixture.profile(port: 11417)
+        let profile = fixture.profile(port: freeTestPort())
         let data = fixture.runtime.dataDirectory(for: profile.id)
         let cache = fixture.runtime.cacheDirectory(for: profile.id)
         #expect(cache.path.hasPrefix(fixture.caches.path + "/"))
@@ -216,7 +236,7 @@ struct RuntimeFailureTests {
     @Test("A browser that exits before it is ready reports its exit code and last output")
     func earlyExit() async throws {
         let fixture = try FakeEngineFixture("runtime-exit")
-        let profile = fixture.profile(port: 11420)
+        let profile = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, ["output": "fake-engine: the profile is broken", "exit_ms": "100",
                                         "exit_code": "7", "ready_ms": "5000"])
         try await run(fixture, [profile]) {
@@ -241,7 +261,7 @@ struct RuntimeFailureTests {
     @Test("A browser killed by a signal before it is ready names the signal")
     func signalExit() async throws {
         let fixture = try FakeEngineFixture("runtime-signal")
-        let profile = fixture.profile(port: 11421)
+        let profile = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, ["kill_ms": "100", "kill_signal": "9", "ready_ms": "5000"])
         try await run(fixture, [profile]) {
             let error = await #expect(throws: (any Error).self) { try await fixture.runtime.start(profile) }
@@ -252,7 +272,7 @@ struct RuntimeFailureTests {
     @Test("Output is read as it comes, so a chatty browser never blocks, and only the last 64 KB is kept")
     func boundedLog() async throws {
         let fixture = try FakeEngineFixture("runtime-log")
-        let profile = fixture.profile(port: 11422)
+        let profile = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, ["spam_kb": "512"])
         try await run(fixture, [profile]) {
             try await fixture.runtime.start(profile)
@@ -270,11 +290,11 @@ struct RuntimeFailureTests {
     func readinessTimeout() async throws {
         let fixture = try FakeEngineFixture("runtime-timeout")
         fixture.runtime.readinessTimeout = 1
-        let profile = fixture.profile(port: 11423)
+        let profile = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, ["ready_ms": "60000", "ignore_term": "1"])
         try await run(fixture, [profile]) {
             let error = await #expect(throws: (any Error).self) { try await fixture.runtime.start(profile) }
-            #expect(error?.localizedDescription.contains("未能在本机端口 11423 启用调试") == true)
+            #expect(error?.localizedDescription.contains("未能在本机端口 \(profile.port) 启用调试") == true)
             let lock = fixture.runtime.dataDirectory(for: profile.id).appendingPathComponent("SingletonLock").path
             let pid = try #require(Int32(try FileManager.default.destinationOfSymbolicLink(atPath: lock)
                 .split(separator: "-").last ?? ""))
@@ -291,8 +311,8 @@ struct RuntimeFailureTests {
     @Test("A browser that ignores a normal stop can be force-stopped")
     func forceStop() async throws {
         let fixture = try FakeEngineFixture("runtime-force")
-        let profile = fixture.profile(port: 11424)
-        let other = fixture.profile(port: 11425)
+        let profile = fixture.profile(port: freeTestPort())
+        let other = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, ["ignore_term": "1"])
         try fixture.configure(other, [:])
         try await run(fixture, [profile, other]) {
@@ -333,8 +353,8 @@ struct RuntimeAdoptionTests {
     @Test("A new runtime adopts a running browser and notices when it exits")
     func adoptsAndWatches() async throws {
         let fixture = try FakeEngineFixture("runtime-adopt")
-        let profile = fixture.profile(port: 11430)
-        let started = fixture.profile(port: 11438)
+        let profile = fixture.profile(port: freeTestPort())
+        let started = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, [:])
         try fixture.configure(started, [:])
         let restarted = fixture.makeRuntime()
@@ -361,7 +381,7 @@ struct RuntimeAdoptionTests {
     @Test("A browser whose receipt is gone is adopted through SingletonLock")
     func adoptsLockHolder() async throws {
         let fixture = try FakeEngineFixture("runtime-lock")
-        let profile = fixture.profile(port: 11431)
+        let profile = fixture.profile(port: freeTestPort())
         // The session brought back an -AppleLanguages placeholder next to a real tab.
         try fixture.configure(profile, ["targets": #"[{"targetId":"p1","type":"page","url":"http://(de-de)/","title":"(de-de)"},"#
                                             + #"{"targetId":"tab","type":"page","url":"https://kept.example/","title":"Kept"}]"#])
@@ -398,8 +418,8 @@ struct RuntimeAdoptionTests {
     @Test("A browser that relaunched itself with a new pid is still the Profile's")
     func followsRelaunch() async throws {
         let fixture = try FakeEngineFixture("runtime-relaunch")
-        let profile = fixture.profile(port: 11432)
-        let refreshed = fixture.profile(port: 11433)
+        let profile = fixture.profile(port: freeTestPort())
+        let refreshed = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, ["relaunch_ms": "1500"])
         try fixture.configure(refreshed, ["relaunch_ms": "1500"])
         try await run(fixture, [profile, refreshed]) {
@@ -434,7 +454,7 @@ struct RuntimeAdoptionTests {
     @Test("SingletonLock is only followed to this engine on this directory and port")
     func refusesForeignLockHolder() async throws {
         let fixture = try FakeEngineFixture("runtime-foreign")
-        let profile = fixture.profile(port: 11434)
+        let profile = fixture.profile(port: freeTestPort())
         let directory = fixture.runtime.dataDirectory(for: profile.id)
         try fixture.configure(profile, [:])
         // Same arguments, different program.
@@ -457,7 +477,7 @@ struct RuntimeAdoptionTests {
             try FileManager.default.removeItem(atPath: lock)
             let stray = Process()
             stray.executableURL = try FakeEngine.executable()
-            stray.arguments = ["--user-data-dir=\(directory.path)", "--remote-debugging-port=11435"]
+            stray.arguments = ["--user-data-dir=\(directory.path)", "--remote-debugging-port=\(freeTestPort())"]
             stray.standardError = FileHandle.nullDevice
             try stray.run()
             defer { stray.terminate() }
@@ -473,21 +493,21 @@ struct RuntimeAdoptionTests {
     @Test("A port someone else listens on is named in the error")
     func portConflictNamesHolder() async throws {
         let fixture = try FakeEngineFixture("runtime-port")
-        let profile = fixture.profile(port: 11436)
+        let profile = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, [:])
         let socket = try listen(on: "0.0.0.0", port: profile.port)
         defer { close(socket) }
         try await run(fixture, [profile]) {
             let error = await #expect(throws: (any Error).self) { try await fixture.runtime.start(profile) }
             let message = error?.localizedDescription ?? ""
-            #expect(message.contains("调试端口 11436 已被「\(ProcessInspection.name(getpid()))」（PID \(getpid())）占用"))
+            #expect(message.contains("调试端口 \(profile.port) 已被「\(ProcessInspection.name(getpid()))」（PID \(getpid())）占用"))
         }
     }
 
     @Test("Activating needs this Profile's running browser")
     func activateNeedsOwnBrowser() async throws {
         let fixture = try FakeEngineFixture("runtime-activate")
-        let profile = fixture.profile(port: 11437)
+        let profile = fixture.profile(port: freeTestPort())
         try fixture.configure(profile, [:])
         try await run(fixture, [profile]) {
             #expect(fixture.runtime.activate(profile.id) == false)
@@ -596,10 +616,10 @@ func listen(on address: String, port: Int) throws -> Int32 {
 }
 
 struct PortProbeTests {
-    @Test("A port is taken by a listener on any loopback or wildcard address", arguments: [
-        ("127.0.0.1", 11450), ("0.0.0.0", 11451), ("::1", 11452), ("::", 11453),
-    ])
-    func listenerTakesPort(address: String, port: Int) async throws {
+    @Test("A port is taken by a listener on any loopback or wildcard address",
+          arguments: ["127.0.0.1", "0.0.0.0", "::1", "::"])
+    func listenerTakesPort(address: String) async throws {
+        let port = freeTestPort()
         #expect(ProcessInspection.portAvailable(port))
         let fd = try listen(on: address, port: port)
         #expect(!ProcessInspection.portAvailable(port))
@@ -616,7 +636,7 @@ struct PortProbeTests {
 
     @Test("Connections left in TIME_WAIT do not block the port")
     func timeWaitLeavesPortFree() async throws {
-        let port = 11454
+        let port = freeTestPort()
         let server = try listen(on: "127.0.0.1", port: port)
         let client = socket(AF_INET, SOCK_STREAM, 0)
         var address = sockaddr_in()

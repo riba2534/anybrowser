@@ -620,6 +620,19 @@ extension FingerprintSettings {
     /// A free seed for which a macOS identity can exist: the engine gives an Apple M4 (which ships
     /// with at least 16 GB) to even seeds and an M2 (at most 24 GB) to odd ones, and memory is
     /// `[8, 16, 32][seed % 3]`, so `seed % 6` 0 (M4, 8 GB) and 5 (M2, 32 GB) are skipped.
+    /// A new free seed the engine maps to the same hardware as `seed`: copies and imports keep their
+    /// CPU count, which must stay a real combination with the GPU and memory the seed selects.
+    static func newSeed(excluding seeds: Set<Int>, sameHardwareAs seed: Int) -> Int {
+        let period = EngineHardwareTable.bundled.hardwarePeriod
+        let remainder = seed % period
+        let steps = (Int(Int32.max) - remainder) / period
+        var value: Int
+        repeat {
+            value = Int.random(in: 0...steps) * period + remainder
+        } while value < 1 || seeds.contains(value)
+        return value
+    }
+
     static func newSeed(excluding seeds: Set<Int>) -> Int {
         let hardware = EngineHardwareTable.bundled
         var value: Int

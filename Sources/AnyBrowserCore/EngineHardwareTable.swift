@@ -67,6 +67,18 @@ public struct EngineHardwareTable: Equatable, Sendable {
             && gpu.deviceMemory.contains(deviceMemory(seed: seed))
     }
 
+    /// Seeds that agree modulo this period get the same GPU on every platform, the same memory and
+    /// the same default CPU count, so a Profile can change seed without changing machine.
+    var hardwarePeriod: Int {
+        [macOS.count, windows.count, deviceMemoryValues.count, 13].filter { $0 > 0 }.reduce(1) { lcm($0, $1) }
+    }
+
+    private func lcm(_ a: Int, _ b: Int) -> Int {
+        var (x, y) = (a, b)
+        while y != 0 { (x, y) = (y, x % y) }
+        return a / x * b
+    }
+
     /// Whether a macOS identity with this seed can get a real machine at all: its GPU and memory
     /// are fixed by the seed, only the CPU count can still be chosen.
     func macOSSeedExists(_ seed: Int) -> Bool {
