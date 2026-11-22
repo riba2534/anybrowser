@@ -9,7 +9,7 @@ struct FingerprintCard: View {
     @State private var showRandomizer = false
     @State private var showPresets = false
     @State private var randomFields: Set<FingerprintField> = [.seed]
-    @State private var regenerating = false
+    @State private var confirmingRegeneration = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -38,18 +38,27 @@ struct FingerprintCard: View {
                         randomizer
                     }
                     Button {
-                        regenerating = true
-                        Task {
-                            _ = await workbench.regenerateIdentity()
-                            regenerating = false
+                        // A Profile that was never saved has no site data to lose.
+                        if workbench.saved == nil {
+                            Task { await workbench.regenerateIdentity() }
+                        } else {
+                            confirmingRegeneration = true
                         }
                     } label: {
-                        Label(regenerating ? "生成中…" : "整套重新生成",
+                        Label(workbench.isRegenerating(draft.profile.id) ? "生成中…" : "整套重新生成",
                               systemImage: "arrow.triangle.2.circlepath")
                     }
                     .buttonStyle(WorkbenchButtonStyle(.neutral))
-                    .disabled(regenerating)
+                    .disabled(workbench.isBusy(draft.profile.id))
                     .accessibilityIdentifier("regenerate-identity")
+                    .alert("整套重新生成身份？", isPresented: $confirmingRegeneration) {
+                        Button("生成新身份", role: .destructive) {
+                            Task { await workbench.regenerateIdentity() }
+                        }
+                        Button("取消", role: .cancel) {}
+                    } message: {
+                        Text(regenerationWarning)
+                    }
                 }
                 fingerprintFields
                 identitySummary
@@ -67,7 +76,7 @@ struct FingerprintCard: View {
                             .accessibilityIdentifier("adjustment-\(adjustment.rawValue)")
                     }
                 }
-                Text("新建 Profile 会自动生成一套身份；「整套重新生成」会换种子、语言/时区、CPU 与字体表。屏幕、色深、设备内存与字体表需要引擎补丁，当前跟随本机。")
+                Text("新建 Profile 会自动生成一套身份；「整套重新生成」会换种子、语言/时区、CPU 与字体表，保存时清除此 Profile 的网站数据。屏幕、色深、设备内存与字体表需要引擎补丁，当前跟随本机。")
                     .font(.system(size: 12))
                     .foregroundColor(WorkbenchPalette.muted)
             }
@@ -78,6 +87,16 @@ struct FingerprintCard: View {
         .onChange(of: draft.profile.fingerprint.brand) { brand in
             if brand == nil { draft.profile.fingerprint.brandVersion = "" }
         }
+    }
+
+    /// What saving a new identity deletes, and when: a running browser is cleared only once it has quit.
+    private var regenerationWarning: String {
+        let when = workbench.state(for: draft.profile.id).isRunning
+            ? "点击「保存并重启」后，浏览器先退出，再清除"
+            : "保存后立即清除"
+        return "将换掉种子、语言/时区、CPU 与字体表。\(when)此 Profile 的全部网站数据：Cookie、Local Storage 与 Session Storage、"
+            + "IndexedDB、Service Worker、HTTP 缓存和 Code Cache，所有网站都要重新登录；扩展数据和偏好设置保留。"
+            + "放弃修改则不删除任何数据。"
     }
 
     private var fingerprintFields: some View {

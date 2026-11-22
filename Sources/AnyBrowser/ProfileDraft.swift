@@ -6,6 +6,9 @@ struct ProfileDraft: Equatable {
     var portText: String
     var seedText: String
     var cpuText: String
+    /// Set by "整套重新生成": saving deletes the old identity's site data. Discarding the draft
+    /// discards this too, and nothing is deleted.
+    var resetsSiteData = false
 
     init(_ profile: BrowserProfile) {
         self.profile = profile

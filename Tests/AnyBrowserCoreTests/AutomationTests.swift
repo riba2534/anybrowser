@@ -413,7 +413,7 @@ struct AutomationTests {
         profile.proxy = ""
         try store.save(profile)
         let runtime = BrowserRuntime(engine: engine, storage: store.directory)
-        let backend = RuntimeBackend(store: store, runtime: runtime)
+        let backend = LaunchCoordinator(store: store, runtime: runtime)
         try await serve(backend) { port in
             do {
                 let started = await request(port, "POST", "/api/v1/profiles/\(profile.id)/start")
@@ -521,32 +521,6 @@ private final class FakeBackend: AutomationBackend {
         guard endpointAvailable, case let .running(_, port, true) = state(for: id) else { return nil }
         return URL(string: "ws://127.0.0.1:\(port)/devtools/browser/\(id.uuidString.lowercased())")
     }
-}
-
-/// The runtime alone, without the app's Workbench.
-@MainActor
-private final class RuntimeBackend: AutomationBackend {
-    let store: ProfileStore
-    let runtime: BrowserRuntime
-
-    init(store: ProfileStore, runtime: BrowserRuntime) {
-        self.store = store
-        self.runtime = runtime
-    }
-
-    var profiles: [BrowserProfile] { store.profiles }
-
-    func state(for id: UUID) -> BrowserRunState { runtime.status(for: id) }
-
-    func isBusy(_ id: UUID) -> Bool { [.starting, .stopping].contains(runtime.status(for: id)) }
-
-    func start(_ profile: BrowserProfile) async throws { try await runtime.start(profile) }
-
-    func stop(_ id: UUID) async throws { try await runtime.stop(id) }
-
-    func devToolsEndpoint(for id: UUID) async -> URL? { await runtime.devToolsEndpoint(for: id) }
-
-    func refresh(_ id: UUID) async { await runtime.refresh(store.profiles.filter { $0.id == id }) }
 }
 
 /// A blocking HTTP client over BSD sockets, so tests control every byte of the request.
