@@ -102,7 +102,8 @@ struct FingerprintCard: View {
             ? "点击「保存并重启」后，浏览器先退出，再清除"
             : "保存后立即清除"
         return "将换掉种子、语言/时区、CPU 与字体表。\(when)此 Profile 的全部网站数据：Cookie、Local Storage 与 Session Storage、"
-            + "IndexedDB、Service Worker、HTTP 缓存和 Code Cache，所有网站都要重新登录；扩展数据和偏好设置保留。"
+            + "IndexedDB、Service Worker、HTTP 缓存和 Code Cache，所有网站都要重新登录；偏好设置，以及扩展存放在 chrome.storage、"
+            + "IndexedDB 和 Cache Storage 里的数据保留，扩展的 Local Storage 和文件系统（OPFS）数据会一并清除。"
             + "放弃修改则不删除任何数据。"
     }
 
