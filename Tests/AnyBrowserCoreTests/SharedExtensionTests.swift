@@ -50,6 +50,34 @@ struct SharedExtensionTests {
         #expect(try hidden(in: library) == [".lock"])
     }
 
+    /// Pins the trade-off in `SharedExtensions`: a key per Profile would change the IDs, and with them
+    /// the extension data, of entries Profiles already use.
+    @Test("A folder keeps its manifest as it is, so without a key every Profile loads it under one path-based ID")
+    func foldersKeepTheirManifest() throws {
+        let (root, storage) = try scratch()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plain = #"{"manifest_version":3,"name":"Wallet","version":"1"}"#
+        let keyed = #"{"manifest_version":3,"name":"Keyed","version":"1","key":"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A"}"#
+        let wallet = try SharedExtensions.add(folder: makeExtension(at: root.appendingPathComponent("Wallet"), manifest: plain),
+                                              in: storage)
+        let own = try SharedExtensions.add(folder: makeExtension(at: root.appendingPathComponent("Keyed"), manifest: keyed),
+                                           in: storage)
+        let manifest = { (entry: SharedExtension) in
+            try String(contentsOf: entry.directory.appendingPathComponent("manifest.json"), encoding: .utf8)
+        }
+        #expect(try manifest(wallet) == plain)
+        #expect(try manifest(own) == keyed)
+
+        let profiles = (1...2).map { seed in
+            var profile = BrowserProfile(name: "P\(seed)", port: 9300 + seed, fingerprint: FingerprintSettings(seed: seed))
+            profile.launch.loadPasskeyBox = false
+            profile.launch.sharedExtensions = [wallet.name]
+            return profile
+        }
+        #expect(profiles.map { ProfileExtensions.paths(for: $0, in: storage).map(\.path) }
+            == [[wallet.directory.path], [wallet.directory.path]])
+    }
+
     @Test("Localized names come from the default locale, else the folder name stands in")
     func localizedNames() throws {
         let (root, storage) = try scratch()

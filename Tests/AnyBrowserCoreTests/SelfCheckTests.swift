@@ -118,10 +118,72 @@ struct SelfCheckTests {
         #expect(try failures(observation(), exit: berlin).isEmpty)
     }
 
-    @Test("The probe script embeds the Profile language as JSON and parses date zone names")
+    /// `observation()` as the engine reads a Profile in `language`, whose UI localization is `locale`.
+    private func observation(language: String, locale: String, timeZone: String, zoneName: String) -> SelfCheckObservation {
+        var seen = observation()
+        let base = String(language.prefix { $0 != "-" })
+        seen.main.language = language
+        seen.main.languages = [language, base]
+        seen.main.locale = locale
+        seen.main.timeZone = timeZone
+        seen.main.dateString = "Thu Jan 15 2026 12:00:00 GMT+0000 (\(zoneName))"
+        seen.worker = seen.main
+        seen.frame?.locale = locale
+        seen.frame?.dateString = seen.main.dateString
+        seen.expectedZoneName = zoneName
+        return seen
+    }
+
+    @Test("Chromium's localization of a regional language and ICU's name of a renamed zone pass; this Mac's language fails")
+    func regionalLanguagesAndRenamedZones() throws {
+        // What an identity generated for an Indian exit reads: Chromium has no en-IN localization,
+        // and ICU calls Asia/Kolkata by its old name.
+        var india = try profile()
+        india.fingerprint.apply(try #require(IdentitySampler.LocaleHint(language: "en-IN", timeZone: "Asia/Kolkata")))
+        let exit = ProxyExit(ip: "203.0.113.9", countryCode: "IN", timeZone: "Asia/Kolkata", languages: ["en-IN", "hi-IN"])
+        var seen = observation(language: "en-IN", locale: "en-GB", timeZone: "Asia/Calcutta", zoneName: "India Standard Time")
+        seen.timeZoneNames = ["Asia/Kolkata": "Asia/Calcutta"]
+        let report = SelfCheck.report(for: india, exit: exit, observation: seen)
+        #expect(report.passed, "\(report.items.filter { $0.status == .fail })")
+        #expect(report.item("locale")?.expected == "en-IN（Chromium 读作 en-GB）")
+        #expect(report.item("time-zone")?.expected == "Asia/Kolkata（Chromium 读作 Asia/Calcutta）")
+        #expect(report.item("exit-time-zone")?.status == .pass)
+
+        // Another zone, or no names from the page, is still a different zone.
+        var elsewhere = seen
+        elsewhere.main.timeZone = "Asia/Shanghai"
+        elsewhere.worker?.timeZone = "Asia/Shanghai"
+        #expect(try failures(elsewhere, profile: india, exit: exit) == ["time-zone", "exit-time-zone"])
+        var unnamed = seen
+        unnamed.timeZoneNames = nil
+        #expect(try failures(unnamed, profile: india, exit: exit) == ["time-zone", "exit-time-zone"])
+
+        // The locale Chromium picks for each language passes, this Mac's language fails: within the
+        // same base language too, so a zh-HK Profile that came back in zh-CN is caught.
+        let cases: [(language: String, locale: String, host: String)] = [
+            ("en-AU", "en-GB", "en-US"), ("en-NZ", "en-GB", "zh-CN"), ("es-AR", "es-MX", "es-ES"), ("es-ES", "es-ES", "es-MX"),
+            ("zh-HK", "zh-HK", "zh-CN"), ("zh-MO", "zh-HK", "zh-CN"), ("zh-SG", "zh-CN", "zh-TW"), ("pt-BR", "pt-BR", "pt-PT"),
+            ("pt-AO", "pt-PT", "pt-BR"), ("de-AT", "de", "zh-CN"), ("fr-CA", "fr-CA", "fr"), ("ja-JP", "ja", "en-US"),
+        ]
+        for item in cases {
+            var regional = try profile()
+            regional.fingerprint.language = item.language
+            let read = observation(language: item.language, locale: item.locale, timeZone: "Europe/Berlin",
+                                   zoneName: "Mitteleuropäische Normalzeit")
+            #expect(try failures(read, profile: regional).isEmpty, "\(item.language) read as \(item.locale)")
+            let restarted = observation(language: item.language, locale: item.host, timeZone: "Europe/Berlin",
+                                        zoneName: "Mitteleuropäische Normalzeit")
+            #expect(try failures(restarted, profile: regional) == ["locale"], "\(item.language) read as \(item.host)")
+        }
+    }
+
+    @Test("The probe script embeds the Profile language and time zones as JSON and parses date zone names")
     func probeScript() {
         #expect(SelfCheck.probeScript(language: "de-DE").contains("const [profileLanguage] = [\"de-DE\"];"))
         #expect(SelfCheck.probeScript(language: "x'];alert(1)//").contains("[\"x'];alert(1)\\/\\/\"]"))
+        #expect(SelfCheck.probeScript(language: "en-IN", timeZones: ["Asia/Kolkata", ""])
+            .contains("const timeZones = [\"Asia\\/Kolkata\"];"))
+        #expect(SelfCheck.probeScript(language: "en-IN").contains("const timeZones = [];"))
         #expect(SelfCheck.zoneName("Thu Jan 15 2026 12:00:00 GMT-0500 (Eastern Standard Time)") == "Eastern Standard Time")
         #expect(SelfCheck.zoneName("Invalid Date") == nil)
     }
