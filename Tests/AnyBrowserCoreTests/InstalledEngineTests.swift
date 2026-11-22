@@ -168,6 +168,13 @@ struct InstalledEngineTests {
             changed = first
             changed.proxy = ""
             #expect(restored.matchesRunningConfiguration(changed) == false)
+            // Start pages open over DevTools, so editing them needs no restart.
+            changed = first
+            changed.launch.startURLs = ["https://example.com/"]
+            #expect(restored.matchesRunningConfiguration(changed) == true)
+            changed = first
+            changed.name = "Renamed"
+            #expect(restored.matchesRunningConfiguration(changed) == false)
 
             let firstPage = try await DevToolsPage.open(port: first.port, url: page.url)
             let secondPage = try await DevToolsPage.open(port: second.port, url: page.url)

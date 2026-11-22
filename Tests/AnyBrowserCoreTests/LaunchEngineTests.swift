@@ -1,4 +1,4 @@
-import AnyBrowserCore
+@testable import AnyBrowserCore
 import Foundation
 import Testing
 
@@ -37,9 +37,15 @@ struct LaunchEngineTests {
         let runtime = BrowserRuntime(engine: engine, storage: root.appendingPathComponent("Storage", isDirectory: true))
         try await runtime.start(profile)
         do {
+            // The start page opens over DevTools in the tab Chromium starts with, not from the arguments.
+            guard case let .running(pid, _, true) = runtime.status(for: profile.id) else {
+                throw VerificationFailure.message("Not running: \(runtime.status(for: profile.id))")
+            }
+            #expect(ProcessInspection.arguments(pid)?.contains(page.url.absoluteString) == false)
             let opened = try await waitForTarget(port: profile.port) {
                 $0["type"] as? String == "page" && $0["url"] as? String == page.url.absoluteString
             }
+            #expect(try await DevToolsPage.pageCount(port: profile.port) == 1)
             let extensionWorker = try await waitForTarget(port: profile.port) {
                 $0["type"] as? String == "service_worker"
                     && ($0["url"] as? String).map { $0.hasPrefix("chrome-extension://") && $0.hasSuffix("/" + worker) } == true

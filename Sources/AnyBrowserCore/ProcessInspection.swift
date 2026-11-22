@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import Foundation
 
@@ -105,42 +106,99 @@ enum ProcessInspection {
         return hasIPv4Loopback
     }
 
+    /// True when nothing on this Mac listens on `port`. Chromium binds 127.0.0.1 only, but a
+    /// listener on a wildcard address takes loopback traffic too and binding a specific address
+    /// beside it succeeds, so each address is tried on its own. SO_REUSEADDR keeps connections a
+    /// stopped browser left in TIME_WAIT from blocking an immediate restart.
     static func portAvailable(_ port: Int) -> Bool {
         guard (1...65_535).contains(port) else { return false }
-        let v4 = socket(AF_INET, SOCK_STREAM, 0)
-        guard v4 >= 0 else { return false }
-        defer { close(v4) }
+        return canBind(port: port, ipv4: INADDR_LOOPBACK) && canBind(port: port, ipv4: INADDR_ANY)
+            && canBind(port: port, ipv6: in6addr_loopback) && canBind(port: port, ipv6: in6addr_any)
+    }
+
+    private static func canBind(port: Int, ipv4 address: UInt32) -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
         var reuse: Int32 = 1
-        guard setsockopt(v4, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+        guard setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
             return false
         }
         var ipv4 = sockaddr_in()
         ipv4.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         ipv4.sin_family = sa_family_t(AF_INET)
         ipv4.sin_port = UInt16(port).bigEndian
-        ipv4.sin_addr.s_addr = UInt32(INADDR_LOOPBACK).bigEndian
-        guard withUnsafePointer(to: &ipv4, { pointer in
+        ipv4.sin_addr.s_addr = address.bigEndian
+        return withUnsafePointer(to: &ipv4) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(v4, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
-        }) == 0 else { return false }
+        } == 0
+    }
 
-        let v6 = socket(AF_INET6, SOCK_STREAM, 0)
-        if v6 < 0 { return errno == EAFNOSUPPORT || errno == EPROTONOSUPPORT }
-        defer { close(v6) }
-        guard setsockopt(v6, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+    private static func canBind(port: Int, ipv6 address: in6_addr) -> Bool {
+        let fd = socket(AF_INET6, SOCK_STREAM, 0)
+        if fd < 0 { return errno == EAFNOSUPPORT || errno == EPROTONOSUPPORT }
+        defer { close(fd) }
+        var on: Int32 = 1
+        // IPv4 listeners are checked on their own; a dual-stack bind would mix the two up.
+        guard setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size)) == 0,
+              setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &on, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
             return false
         }
         var ipv6 = sockaddr_in6()
         ipv6.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
         ipv6.sin6_family = sa_family_t(AF_INET6)
         ipv6.sin6_port = UInt16(port).bigEndian
-        ipv6.sin6_addr = in6addr_loopback
+        ipv6.sin6_addr = address
         let result = withUnsafePointer(to: &ipv6) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(v6, $0, socklen_t(MemoryLayout<sockaddr_in6>.size))
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size))
             }
         }
         return result == 0 || errno == EADDRNOTAVAIL
+    }
+
+    /// A process of this user that listens on `port` on any address, to tell the user what holds
+    /// the port. Other users' processes cannot be inspected and are never found.
+    static func listener(onPort port: Int) -> (pid: Int32, name: String)? {
+        let capacity = Int(proc_listallpids(nil, 0)) + 64
+        guard capacity > 64 else { return nil }
+        var pids = [Int32](repeating: 0, count: capacity)
+        let count = pids.withUnsafeMutableBytes { Int(proc_listallpids($0.baseAddress, Int32($0.count))) }
+        for pid in pids.prefix(max(0, min(count, capacity))) where pid > 0 && listeningPorts(pid).contains(port) {
+            return (pid, name(pid))
+        }
+        return nil
+    }
+
+    /// The application's name for `pid`, or else its process name.
+    static func name(_ pid: Int32) -> String {
+        if let name = NSRunningApplication(processIdentifier: pid)?.localizedName, !name.isEmpty { return name }
+        var buffer = [CChar](repeating: 0, count: Int(MAXCOMLEN) * 2 + 1)
+        guard proc_name(pid, &buffer, UInt32(buffer.count)) > 0 else { return "PID \(pid)" }
+        return String(cString: buffer)
+    }
+
+    private static func listeningPorts(_ pid: Int32) -> [Int] {
+        let needed = Int(proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0))
+        let stride = MemoryLayout<proc_fdinfo>.stride
+        guard needed > 0, needed <= 1_048_576 else { return [] }
+        var descriptors = [proc_fdinfo](repeating: proc_fdinfo(), count: needed / stride + 32)
+        let got = descriptors.withUnsafeMutableBytes {
+            proc_pidinfo(pid, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count))
+        }
+        guard got > 0 else { return [] }
+        let socketSize = Int32(MemoryLayout<socket_fdinfo>.stride)
+        var ports: [Int] = []
+        for descriptor in descriptors.prefix(Int(got) / stride) where descriptor.proc_fdtype == PROX_FDTYPE_SOCKET {
+            var metadata = socket_fdinfo()
+            guard proc_pidfdinfo(pid, descriptor.proc_fd, PROC_PIDFDSOCKETINFO, &metadata, socketSize) == socketSize,
+                  metadata.psi.soi_kind == SOCKINFO_TCP,
+                  metadata.psi.soi_proto.pri_tcp.tcpsi_state == TSI_S_LISTEN else { continue }
+            let local = metadata.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport
+            ports.append(Int(UInt16(bigEndian: UInt16(truncatingIfNeeded: local))))
+        }
+        return ports
     }
 }
