@@ -452,26 +452,13 @@ struct LibraryTests {
         #expect(ProfileLibrary.removalBlocker(state: .failed("x"), busy: false, batchRunning: false) == nil)
     }
 
-    @Test("Batches look each Profile up again before its turn and skip ones removed meanwhile")
-    func batchRunnerLooksUpEachProfile() async {
-        let first = BrowserProfile(name: "A", port: 9222, fingerprint: FingerprintSettings(seed: 1))
-        let removed = BrowserProfile(name: "B", port: 9223, fingerprint: FingerprintSettings(seed: 2))
-        let renamed = BrowserProfile(name: "C", port: 9224, fingerprint: FingerprintSettings(seed: 3))
-        let running = BrowserProfile(name: "D", port: 9225, fingerprint: FingerprintSettings(seed: 4))
-        var saved = [first.id: first, removed.id: removed, renamed.id: renamed, running.id: running]
-        var acted: [String] = []
-        let outcome = await ProfileLibrary.runBatch([first, removed, renamed, running].map(\.id),
-                                                    lookup: { saved[$0] }, applies: { $0.name != "D" }) { profile in
-            acted.append(profile.name)
-            if profile.id == first.id {
-                saved[removed.id] = nil
-                saved[renamed.id]?.name = "C2"
-                return "代理不可达"
-            }
-            throw ProfileError.invalid("端口已占用")
-        }
-        #expect(acted == ["A", "C2"])
-        #expect(outcome.succeeded == 1 && outcome.skipped == 2)
+    @Test("A batch's outcome is summed up in one notice")
+    func batchSummary() {
+        var outcome = ProfileLibrary.BatchOutcome()
+        outcome.succeeded = 1
+        outcome.skipped = 2
+        outcome.failures = ["C2：端口已占用"]
+        outcome.warnings = ["A：代理不可达"]
         #expect(outcome.summary(verb: "启动") == "已启动 1 个 Profile，跳过 2 个。1 个未能启动：C2：端口已占用。提醒：A：代理不可达")
     }
 

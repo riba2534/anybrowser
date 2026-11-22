@@ -264,28 +264,6 @@ public enum ProfileLibrary {
         }
     }
 
-    /// Runs `action` on one Profile at a time. Each Profile is looked up again right before its turn,
-    /// so one removed or changed while earlier ones ran is skipped or used as it is now.
-    /// `action` may return a warning to report.
-    @MainActor
-    public static func runBatch(_ ids: [UUID], lookup: (UUID) -> BrowserProfile?, applies: (BrowserProfile) -> Bool,
-                                action: (BrowserProfile) async throws -> String?) async -> BatchOutcome {
-        var outcome = BatchOutcome()
-        for id in ids {
-            guard let profile = lookup(id), applies(profile) else {
-                outcome.skipped += 1
-                continue
-            }
-            do {
-                if let warning = try await action(profile) { outcome.warnings.append("\(profile.name)：\(warning)") }
-                outcome.succeeded += 1
-            } catch {
-                outcome.failures.append("\(profile.name)：\(error.localizedDescription)")
-            }
-        }
-        return outcome
-    }
-
     // MARK: Sidebar
 
     /// A sidebar search. `tag:`, `status:` and `group:` terms (quoted when the value has spaces)

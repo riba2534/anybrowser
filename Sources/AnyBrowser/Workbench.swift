@@ -404,14 +404,6 @@ final class Workbench: ObservableObject {
         }
     }
 
-    /// Language/time zone from the Profile's proxy exit; the Mac itself when no proxy is set.
-    func localeHint(for proxy: String) async -> IdentitySampler.LocaleHint? {
-        let proxy = proxy.trimmingCharacters(in: .whitespacesAndNewlines)
-        if proxy.isEmpty { return .host }
-        guard let exit = await proxyCenter.lookup(proxy) else { return nil }
-        return IdentitySampler.LocaleHint(exit: exit)
-    }
-
     /// A new Profile starts with a random locale; align it with the proxy exit as soon as
     /// the lookup returns, without overwriting edits the user made in the meantime.
     private func alignNewProfileWithProxy() {
