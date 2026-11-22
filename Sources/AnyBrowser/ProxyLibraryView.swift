@@ -189,7 +189,7 @@ struct ProxyLibrarySheet: View {
     }
 
     private var list: some View {
-        let usage = ProxyAssignment.usage(of: library.entries, by: workbench.profiles)
+        let usage = ProxyAssignment.usage(of: library.entries, users: workbench.proxyUsers)
         let shown = self.shown
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {

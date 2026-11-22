@@ -31,6 +31,10 @@ public final class LibraryIndex {
     public private(set) var tags: [String] = []
     /// For each Profile whose last exit IP other Profiles share, those Profiles in store order.
     public private(set) var sharedExits: [UUID: [UUID]] = [:]
+    /// Each Profile's name, for naming the ones in `sharedExits`.
+    public private(set) var names: [UUID: String] = [:]
+    /// The Profiles using each proxy, as `ProxyAssignment.users(of:)` lists them.
+    public private(set) var proxyUsers: [String: [UUID]] = [:]
     /// How many times the sections were worked out, for tests.
     public private(set) var computations = 0
     private var inputs: Inputs?
@@ -50,6 +54,8 @@ public final class LibraryIndex {
         if previous?.profiles != inputs.profiles {
             groups = ProfileLibrary.groups(inputs.profiles)
             tags = Self.tags(inputs.profiles)
+            names = Dictionary(inputs.profiles.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+            proxyUsers = ProxyAssignment.users(of: inputs.profiles)
         }
         if previous?.profiles != inputs.profiles || previous?.exits != inputs.exits {
             sharedExits = Self.sharedExits(inputs.exits, among: inputs.profiles.map(\.id))

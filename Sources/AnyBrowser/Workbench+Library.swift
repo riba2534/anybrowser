@@ -91,6 +91,12 @@ extension Workbench {
         return library.index.visibleIDs
     }
 
+    /// The saved Profiles using each proxy, by normalized address.
+    var proxyUsers: [String: [UUID]] {
+        refreshIndex()
+        return library.index.proxyUsers
+    }
+
     private func refreshIndex() {
         library.index.update(.init(profiles: profiles, query: library.query, sort: library.sort,
                                    lastLaunched: store?.lastLaunched ?? [:], exits: proxyLibrary?.profileExits ?? [:]))
@@ -109,7 +115,7 @@ extension Workbench {
     func exitSummary(for id: UUID) -> (country: String, ip: String, sharedWith: [String])? {
         guard let record = proxyLibrary?.profileExits[id] else { return nil }
         refreshIndex()
-        let names = (library.index.sharedExits[id] ?? []).compactMap { other in profiles.first { $0.id == other }?.name }
+        let names = (library.index.sharedExits[id] ?? []).compactMap { library.index.names[$0] }
         return (record.exit.countryCode, record.exit.ip, names)
     }
 

@@ -468,7 +468,7 @@ extension AutomationHTTP {
     /// whole group name (empty for ungrouped), `tag` a whole tag and may repeat (all must match),
     /// `status` the browser state and `accountStatus` the recorded account state (`none` for unset).
     private static func list(_ call: Call, _ backend: AutomationBackend) throws -> Response {
-        let query = call.value("q")
+        let search = call.value("q").map(ProfileLibrary.Query.init)
         let groups = call.values("group").map { $0.trimmingCharacters(in: .whitespaces) }
         let tags = call.values("tag")
         let states = call.values("status")
@@ -481,7 +481,7 @@ extension AutomationHTTP {
             throw Failure.invalid("参数 accountStatus 须为 \(known.joined(separator: "、")) 之一：\(unknown.prefix(40))")
         }
         let objects = backend.profiles.filter { profile in
-            (query.map { ProfileLibrary.matches(profile, query: $0) } ?? true)
+            (search?.matches(profile) ?? true)
                 && (groups.isEmpty || groups.contains(profile.group))
                 && tags.allSatisfy { tag in profile.tags.contains { $0.caseInsensitiveCompare(tag) == .orderedSame } }
                 && (accounts.isEmpty || accounts.contains(profile.accountStatus?.rawValue ?? "none"))
@@ -567,12 +567,7 @@ extension AutomationHTTP {
 
     /// The saved and trashed Profiles using each proxy, by normalized address, in store order.
     private static func proxyUsers(_ backend: AutomationBackend) -> [String: [UUID]] {
-        var users: [String: [UUID]] = [:]
-        for profile in backend.store.profiles + backend.store.trashed.map(\.profile) {
-            guard let url = (try? ProxyEndpoint.parse(profile.proxy)).flatMap({ $0 })?.url else { continue }
-            users[url, default: []].append(profile.id)
-        }
-        return users
+        ProxyAssignment.users(of: backend.store.profiles + backend.store.trashed.map(\.profile))
     }
 
     /// Whether `fields` sets the language or time zone itself, so the exit need not be looked up.

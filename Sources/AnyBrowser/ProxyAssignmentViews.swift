@@ -36,7 +36,7 @@ extension Workbench {
             return Array(repeating: source.address.trimmingCharacters(in: .whitespacesAndNewlines), count: count)
         case .library(let order):
             let pool = proxyPool(tag: source.tag)
-            let usage = ProxyAssignment.usage(of: pool, by: profiles.filter { !ids.contains($0.id) })
+            let usage = ProxyAssignment.usage(of: pool, users: proxyUsers, excluding: ids)
             return try ProxyAssignment.pick(count, from: pool, order: order, usage: usage)
         }
     }
@@ -89,7 +89,7 @@ struct ProxySourceFields: View {
 
     @ViewBuilder private var poolSummary: some View {
         let pool = workbench.proxyPool(tag: source.tag)
-        let usage = ProxyAssignment.usage(of: pool, by: workbench.profiles.filter { !replacing.contains($0.id) })
+        let usage = ProxyAssignment.usage(of: pool, users: workbench.proxyUsers, excluding: replacing)
         let free = pool.filter { (usage[$0.id] ?? 0) == 0 }.count
         VStack(alignment: .leading, spacing: 4) {
             Text(pool.isEmpty ? "代理库里没有\(source.tag.isEmpty ? "" : "带这个标签的")代理，请先在代理库添加。"
