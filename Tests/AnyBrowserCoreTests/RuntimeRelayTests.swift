@@ -237,3 +237,41 @@ struct RuntimeRelayTests {
     }
 }
 
+@MainActor
+struct RuntimeOwnershipTests {
+    @Test("After AnyBrowser restarts it still knows a browser whose recorded path names the engine through a link")
+    func recognizesLinkedEnginePaths() async throws {
+        let fake = try FakeEngineFixture("runtime-linked")
+        let folder = fake.root.appendingPathComponent("Engine", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let binary = folder.appendingPathComponent("fake-chromium")
+        try FileManager.default.copyItem(at: try FakeEngine.executable(), to: binary)
+        let engine = BrowserEngine(version: "test", executable: try #require(ProcessInspection.canonicalURL(binary)),
+                                   passkeyBoxDirectory: fake.engine.passkeyBoxDirectory)
+        let runtime = BrowserRuntime(engine: engine, storage: fake.storage, applicationSupport: fake.applicationSupport,
+                                     caches: fake.caches)
+        let restored = BrowserRuntime(engine: engine, storage: fake.storage, applicationSupport: fake.applicationSupport,
+                                      caches: fake.caches)
+        let profile = fake.profile(port: 11446)
+        try fake.configure(profile, [:])
+        do {
+            try await runtime.start(profile)
+            guard case let .running(pid, _, _) = runtime.status(for: profile.id) else {
+                throw VerificationFailure.message("Not running: \(runtime.status(for: profile.id))")
+            }
+            // Process records /var/… for /private/var/…; once the running file has moved, as Chromium's
+            // code-signing clone makes it look, only that recorded path still names the engine.
+            #expect(ProcessInspection.image(pid)?.executablePath != engine.executable.path)
+            try FileManager.default.moveItem(at: binary, to: folder.appendingPathComponent("fake-chromium-moved"))
+            try FileManager.default.copyItem(at: folder.appendingPathComponent("fake-chromium-moved"), to: binary)
+            #expect(ProcessInspection.executable(pid) != engine.executable)
+            await restored.refresh([profile])
+            #expect(restored.status(for: profile.id) == runtime.status(for: profile.id))
+            #expect(restored.matchesRunningConfiguration(profile) == true)
+        } catch {
+            await fake.cleanUp([profile], runtimes: [runtime, restored])
+            throw error
+        }
+        await fake.cleanUp([profile], runtimes: [runtime, restored])
+    }
+}

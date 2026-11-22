@@ -654,7 +654,9 @@ public final class BrowserRuntime: ObservableObject {
         let trackedChild = child?.processIdentifier == receipt.pid && child?.isRunning == true
         // macOS can report a code-signing clone through proc_pidpath. The initial
         // executable path in the process argument area still identifies the bundle we launched.
+        // The recorded path may name it through a link, such as /tmp for /private/tmp.
         let executableConfirmed = trackedChild || image.executablePath == engine.executable.path
+            || ProcessInspection.canonicalURL(URL(fileURLWithPath: image.executablePath)) == engine.executable
             || ProcessInspection.executable(receipt.pid) == engine.executable
         return executableConfirmed && ProcessStamp.read(receipt.pid) == receipt.stamp
     }
