@@ -60,7 +60,7 @@ private final class CountingServer: @unchecked Sendable {
     func url(_ path: String) -> String { base.absoluteString + path.dropFirst() }
 }
 
-// Debug ports 9320–9323 belong to this suite.
+// Debug ports 9320–9324 belong to this suite.
 @Suite(.serialized)
 @MainActor
 struct RuntimeEngineTests {
@@ -199,6 +199,53 @@ struct RuntimeEngineTests {
             try await runtime.stop(profile.id)
         } catch {
             try? await runtime.stop(profile.id, force: true)
+            throw error
+        }
+    }
+
+    @Test(
+        "A browser restarted from its settings page is adopted again and can be stopped",
+        .enabled(if: testAppPath != nil, "Set ANYBROWSER_TEST_APP to a packaged AnyBrowser.app to run the local browser test.")
+    )
+    func restartFromSettings() async throws {
+        let (runtime, root) = try prepare("runtime-restart")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let profile = BrowserProfile(name: "Restart", port: testPort(9324), fingerprint: FingerprintSettings(seed: 9324), proxy: "")
+        try await runtime.start(profile)
+        var relaunched: Int32?
+        do {
+            guard case let .running(first, _, true) = runtime.status(for: profile.id) else {
+                throw VerificationFailure.message("Not running: \(runtime.status(for: profile.id))")
+            }
+            let settings = try #require(URL(string: "chrome://settings/"))
+            let page = try await DevToolsPage.open(port: profile.port, url: settings)
+            // The settings page's own restart, as after changing the UI language; chrome://restart does the same.
+            _ = try? await page.evaluate("setTimeout(() => chrome.send('restart'), 100); true")
+            page.socket.cancel(with: .normalClosure, reason: nil)
+            for _ in 0..<100 {
+                await runtime.refresh([profile])
+                if case let .running(pid, _, true) = runtime.status(for: profile.id), pid != first {
+                    relaunched = pid
+                    break
+                }
+                try await Task.sleep(nanoseconds: 200_000_000)
+            }
+            let pid = try #require(relaunched)
+            // Chromium rebuilds the arguments, so the browser no longer runs the saved configuration.
+            #expect(ProcessInspection.arguments(pid)?.last == "--restart")
+            #expect(runtime.matchesRunningConfiguration(profile) == false)
+            try await runtime.stop(profile.id)
+            #expect(runtime.status(for: profile.id) == .stopped)
+            #expect(ProcessStamp.read(pid) == nil)
+        } catch {
+            try? await runtime.stop(profile.id, force: true)
+            // A relaunched browser that was not adopted still holds this test's data directory.
+            let directory = runtime.dataDirectory(for: profile.id)
+            let lock = try? FileManager.default.destinationOfSymbolicLink(atPath: directory.appendingPathComponent("SingletonLock").path)
+            if let holder = relaunched ?? lock.flatMap({ $0.split(separator: "-").last.flatMap { Int32($0) } }),
+               ProcessInspection.arguments(holder)?.contains("--user-data-dir=\(directory.path)") == true {
+                kill(holder, SIGKILL)
+            }
             throw error
         }
     }
