@@ -55,6 +55,8 @@ final class FakeBackend: AutomationBackend {
 
     var states: [UUID: BrowserRunState] = [:]
     var busy: Set<UUID> = []
+    /// A batch action is in progress, which blocks removals as the coordinator's does.
+    var batchRunning = false
     var startError: Error?
     var stopError: Error?
     var startWarnings: [String] = []
@@ -76,6 +78,8 @@ final class FakeBackend: AutomationBackend {
     var removeProblem: String?
     /// Runs inside every start, before the browser counts as running.
     var duringStart: (UUID) async -> Void = { _ in }
+    /// Runs inside every exit lookup for a new Profile, before it answers.
+    var duringLookup: (String) async -> Void = { _ in }
 
     private(set) var started: [UUID] = []
     private(set) var restarted: [UUID] = []
@@ -87,9 +91,10 @@ final class FakeBackend: AutomationBackend {
     private(set) var checked: [UUID] = []
     private(set) var arranged: [(ids: [UUID], columns: Int?)] = []
 
-    init() throws {
-        directory = try scratchDirectory("automation-backend")
-        store = try ProfileStore(directory: directory)
+    /// With `directory`, the store already there, such as one a test made read-only.
+    init(directory: URL? = nil) throws {
+        self.directory = try directory ?? scratchDirectory("automation-backend")
+        store = try ProfileStore(directory: self.directory)
         proxyLibrary = ProxyLibrary(store: store)
     }
 
@@ -151,7 +156,7 @@ final class FakeBackend: AutomationBackend {
     func lastExit(for id: UUID) -> (exit: ProxyExit, checkedAt: Date)? { exits[id].map { ($0, Date()) } }
 
     func removalBlocker(_ id: UUID) -> String? {
-        ProfileLibrary.removalBlocker(state: state(for: id), busy: isBusy(id), batchRunning: false)
+        ProfileLibrary.removalBlocker(state: state(for: id), busy: isBusy(id), batchRunning: batchRunning)
     }
 
     func trash(_ id: UUID) throws {
@@ -173,6 +178,7 @@ final class FakeBackend: AutomationBackend {
 
     func lookUpExit(through proxy: String) async -> ProxyExit? {
         lookedUp.append(proxy)
+        await duringLookup(proxy)
         return lookups[proxy]
     }
 

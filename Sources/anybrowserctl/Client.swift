@@ -8,13 +8,15 @@ enum Failure: Error {
     case usage(String)
     /// The API answered with an error (exit 1).
     case api(status: Int, code: String, message: String)
+    /// No Profile, or more than one, has the name given (exit 1, as for an id the API does not know).
+    case name(String)
     /// No token, no connection, or a local file problem (exit 3).
     case local(String)
 
     var status: Int32 {
         switch self {
         case .usage: return 2
-        case .api: return 1
+        case .api, .name: return 1
         case .local: return 3
         }
     }
@@ -23,7 +25,7 @@ enum Failure: Error {
         switch self {
         case .usage(let text): return "\(text)\n运行 anybrowserctl help 查看用法。"
         case let .api(status, code, message): return "\(message)（HTTP \(status)，\(code)）"
-        case .local(let text): return text
+        case .name(let text), .local(let text): return text
         }
     }
 }
@@ -65,8 +67,11 @@ struct Connection {
 
     /// The automation settings in the database under `directory`, or nil without one.
     static func savedSettings(in directory: URL?) throws -> AutomationConfiguration? {
-        guard let path = directory?.appendingPathComponent(ProfileStore.databaseFileName).path,
-              FileManager.default.fileExists(atPath: path) else { return nil }
+        // SQLITE_OPEN_NOFOLLOW refuses a symbolic link anywhere in the path, such as /tmp, so the
+        // directory is resolved first, as AnyBrowser resolves it before opening the database.
+        guard let directory, let root = ProcessInspection.canonicalURL(directory, isDirectory: true) else { return nil }
+        let path = root.appendingPathComponent(ProfileStore.databaseFileName).path
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
         var database: OpaquePointer?
         defer { sqlite3_close(database) }
         guard sqlite3_open_v2(path, &database, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK else {
@@ -151,16 +156,20 @@ final class Client {
         return object
     }
 
-    /// The id of the Profile named `text` (an id is taken as it is), among saved Profiles or, with
-    /// `trash`, those in the recycle bin.
-    func profileID(_ text: String, inTrash trash: Bool = false) async throws -> String {
+    /// The id of the Profile named `text` (an id is taken as it is), among the saved Profiles, those
+    /// in the recycle bin, or both. A name has to be unique across every list searched, so one shared
+    /// by a saved and a trashed Profile is refused rather than read as either.
+    func profileID(_ text: String, saved: Bool = true, trashed: Bool = false) async throws -> String {
         if let id = UUID(uuidString: text) { return id.uuidString }
-        let list = try await object("GET", trash ? "/api/v1/trash" : "/api/v1/profiles")
-        let matches = (list["profiles"] as? [[String: Any]] ?? []).filter { $0["name"] as? String == text }
-        guard let first = matches.first, let id = first["id"] as? String else {
-            throw Failure.local("找不到名为「\(text)」的 Profile\(trash ? "（回收站中）" : "")。")
+        var matches: [String] = []
+        for (searched, path) in [(saved, "/api/v1/profiles"), (trashed, "/api/v1/trash")] where searched {
+            let list = try await object("GET", path)
+            matches += (list["profiles"] as? [[String: Any]] ?? []).filter { $0["name"] as? String == text }
+                .compactMap { $0["id"] as? String }
         }
-        guard matches.count == 1 else { throw Failure.local("有 \(matches.count) 个名为「\(text)」的 Profile，请改用 id。") }
+        let place = trashed ? (saved ? "（含回收站）" : "（回收站中）") : ""
+        guard let id = matches.first else { throw Failure.name("找不到名为「\(text)」的 Profile\(place)。") }
+        guard matches.count == 1 else { throw Failure.name("有 \(matches.count) 个名为「\(text)」的 Profile\(place)，请改用 id。") }
         return id
     }
 }

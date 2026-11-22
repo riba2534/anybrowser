@@ -338,6 +338,40 @@ extension AutomationHTTP {
         backend.isBusy(id) || temporaryRuns[ObjectIdentifier(backend)]?.contains(id) == true
     }
 
+    /// Creations waiting for the one in progress, by backend; an entry, even an empty one, means a
+    /// creation is in progress. A creation picks its port, seed and unused proxy before the exit
+    /// lookup awaits and holds them only once saved, so two at a time would pick the same ones.
+    private static var creationQueues: [ObjectIdentifier: [CheckedContinuation<Void, Never>]] = [:]
+
+    /// Runs `body` once no other creation on `backend` is running, in the order the requests came.
+    private static func oneCreationAtATime<Value>(_ backend: AutomationBackend,
+                                                  _ body: () async throws -> Value) async throws -> Value {
+        let key = ObjectIdentifier(backend)
+        if creationQueues[key] == nil {
+            creationQueues[key] = []
+        } else {
+            await withCheckedContinuation { creationQueues[key, default: []].append($0) }
+        }
+        defer {
+            if let next = creationQueues[key]?.first {
+                creationQueues[key]?.removeFirst()
+                next.resume()
+            } else {
+                creationQueues[key] = nil
+            }
+        }
+        return try await body()
+    }
+
+    /// Refuses a change before any of it is done when a newer AnyBrowser wrote the database.
+    private static func requireWritable(_ backend: AutomationBackend) throws {
+        do {
+            try backend.store.requireWritable()
+        } catch {
+            throw Failure(409, "read_only", error.localizedDescription)
+        }
+    }
+
     static func route(_ request: Request, backend: AutomationBackend) async -> Response {
         guard let call = Call(request) else { return notFound }
         do {
@@ -354,10 +388,13 @@ extension AutomationHTTP {
         switch (path.first, path.count) {
         case ("profiles", 1):
             try call.allow("GET", "POST")
-            return call.method == "GET" ? try list(call, backend) : try await create(call, backend)
+            guard call.method == "POST" else { return try list(call, backend) }
+            try requireWritable(backend)
+            return try await oneCreationAtATime(backend) { try await create(call, backend) }
         case ("profiles", 2) where path[1] == "batch":
             try call.allow("POST")
-            return try await createBatch(call, backend)
+            try requireWritable(backend)
+            return try await oneCreationAtATime(backend) { try await createBatch(call, backend) }
         case ("profiles", 2):
             try call.allow("GET", "PATCH", "DELETE")
             switch call.method {
@@ -388,6 +425,7 @@ extension AutomationHTTP {
                 return .json(200, Body(["proxy": proxyObject(entry, secrets: try call.flag("secrets"), users: proxyUsers(backend))]))
             case "PATCH": return try updateProxy(entry, call, backend)
             default:
+                try requireWritable(backend)
                 try backend.proxyLibrary.remove([entry.id])
                 return .json(200, Body(["id": entry.id, "removed": true]))
             }
@@ -409,12 +447,19 @@ extension AutomationHTTP {
             return try await stop(try saved(id, backend), call, backend)
         case "clone":
             try call.allow("POST")
-            return try clone(try saved(id, backend), call, backend)
+            _ = try saved(id, backend)
+            try requireWritable(backend)
+            // The original is read again once it is this clone's turn.
+            return try await oneCreationAtATime(backend) { try clone(try saved(id, backend), call, backend) }
         case "restore":
             try call.allow("POST")
             guard let uuid = UUID(uuidString: id), backend.store.trashed.contains(where: { $0.id == uuid }) else {
                 throw Failure(404, "not_found", "回收站中没有这个 Profile。")
             }
+            try requireWritable(backend)
+            // A purge deletes the browser data before the record; restoring meanwhile would bring
+            // the Profile back without it.
+            guard !isBusy(uuid, backend) else { throw Failure(busy) }
             try backend.restore(uuid)
             return try show(try saved(id, backend), call, backend)
         case "log":
@@ -626,14 +671,21 @@ extension AutomationHTTP {
         let store = backend.store
         let checked: [BrowserProfile]
         do {
-            checked = try profiles.map { try $0.validated() }
+            checked = try profiles.map { profile in
+                // Spaces around these are dropped, as the editor drops them, rather than refused.
+                var value = profile
+                for field in [\FingerprintSettings.language, \.timeZone, \.platformVersion, \.brandVersion] {
+                    let text = value.fingerprint[keyPath: field]
+                    value.fingerprint[keyPath: field] = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                return try value.validated()
+            }
         } catch {
             throw Failure.invalid(error.localizedDescription)
         }
         do {
             return try store.saveAll(checked)
         } catch {
-            if store.isReadOnly { throw Failure(409, "read_only", error.localizedDescription) }
             let others = store.profiles + store.trashed.map(\.profile)
             let collides = checked.contains { profile in
                 others.contains { $0.id != profile.id && ($0.port == profile.port || $0.fingerprint.seed == profile.fingerprint.seed) }
@@ -725,6 +777,7 @@ extension AutomationHTTP {
     /// until it restarts, which `pendingRestart` reports.
     private static func update(_ profile: BrowserProfile, _ call: Call, _ backend: AutomationBackend) throws -> Response {
         let id = profile.id
+        try requireWritable(backend)
         guard !isBusy(id, backend) else { throw Failure(busy) }
         var patch = try call.object()
         if let given = patch["id"] {
@@ -752,8 +805,13 @@ extension AutomationHTTP {
         guard let uuid = UUID(uuidString: id) else { throw Failure(notFound) }
         let saved = backend.profiles.contains { $0.id == uuid }
         guard saved || backend.store.trashed.contains(where: { $0.id == uuid }) else { throw Failure(notFound) }
+        try requireWritable(backend)
         guard !isBusy(uuid, backend) else { throw Failure(busy) }
-        if let blocker = backend.removalBlocker(uuid) { throw Failure(409, "running", blocker) }
+        if let blocker = backend.removalBlocker(uuid) {
+            // Only a running browser is for the caller to stop; a batch in progress is another operation.
+            let running = ProfileLibrary.removalBlocker(state: backend.state(for: uuid), busy: false, batchRunning: false)
+            throw Failure(409, blocker == running ? "running" : "busy", blocker)
+        }
         guard purge else {
             guard saved else { throw Failure(409, "trashed", "该 Profile 已在回收站中；永久删除请加 purge=1。") }
             try backend.trash(uuid)
@@ -1017,6 +1075,7 @@ extension AutomationHTTP {
     /// Adds `{text}` (one address per line, as pasted in the window) or `{urls}`, with an optional
     /// `label`. Addresses already in the library are counted as duplicates.
     private static func addProxies(_ call: Call, _ backend: AutomationBackend) throws -> Response {
+        try requireWritable(backend)
         let body = try call.object()
         try only(["text", "urls", "label"], in: body)
         let text = try string(body["text"], "text")
@@ -1049,6 +1108,7 @@ extension AutomationHTTP {
     }
 
     private static func updateProxy(_ entry: ProxyEntry, _ call: Call, _ backend: AutomationBackend) throws -> Response {
+        try requireWritable(backend)
         let body = try call.object()
         try only(["url", "label", "tags", "note"], in: body)
         var value = entry

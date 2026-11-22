@@ -205,9 +205,12 @@ struct ControlCLITests {
             #expect(notRunning.errors == "anybrowserctl：自检需要 Profile 正在运行，请先启动它。（HTTP 409，not_running）\n")
             let invalid = await ctl("update", "Alpha", "--json", #"{"port": 80}"#)
             #expect(invalid.status == 1 && invalid.errors.contains("调试端口须为 1024–65535。（HTTP 400，invalid）"))
+            // A name that matches no Profile or several exits 1, as an unknown id does.
             let ambiguous = await ctl("show", "Dup")
-            #expect(ambiguous.status == 3 && ambiguous.errors.contains("有 2 个名为「Dup」的 Profile，请改用 id。"))
-            #expect((await ctl("start", "Ghost")).errors.contains("找不到名为「Ghost」的 Profile。"))
+            #expect(ambiguous.status == 1 && ambiguous.errors.contains("有 2 个名为「Dup」的 Profile，请改用 id。"))
+            let missing = await ctl("start", "Ghost")
+            #expect(missing.status == 1 && missing.errors.contains("找不到名为「Ghost」的 Profile。"))
+            #expect((await ctl("show", UUID().uuidString)).status == 1)
             for usage in [["frob"], ["start"], ["update", "Alpha"], ["list", "--bogus"], ["create", "--prefix", "x"],
                           ["delete", "Alpha", "--delete-data"], ["cookies", "copy", "Alpha"], ["create", "--json", "[1]"]] {
                 let run = await ControlRun.run(usage, environment: environment)
@@ -226,6 +229,42 @@ struct ControlCLITests {
         #expect(unreachable.status == 3 && unreachable.errors.contains("无法连接 127.0.0.1:1"))
         let tokenless = await ControlRun.run(["list"], environment: sandbox.environment())
         #expect(tokenless.status == 3 && tokenless.errors.contains("没有访问令牌"))
+    }
+
+    @Test("delete --purge looks a name up among saved and trashed Profiles together, and never guesses between namesakes")
+    func purgeByName() async throws {
+        let sandbox = try Sandbox()
+        defer { sandbox.remove() }
+        let backend = try FakeBackend()
+        _ = try backend.add("Dup", port: 9401)
+        _ = try backend.add("Dup", port: 9402)
+        let trashedDup = try backend.add("Dup", port: 9403)
+        let pair = try backend.add("Pair", port: 9404)
+        let trashedPair = try backend.add("Pair", port: 9405)
+        let old = try backend.add("Old", port: 9406)
+        for id in [trashedDup.id, trashedPair.id, old.id] { try backend.trash(id) }
+        try await serveAutomation(backend) { port in
+            let environment = sandbox.environment(["ANYBROWSER_TOKEN": automationTestToken, "ANYBROWSER_PORT": String(port)])
+            func ctl(_ arguments: String...) async -> ControlRun { await ControlRun.run(arguments, environment: environment) }
+
+            let crowded = await ctl("delete", "Dup", "--purge", "--delete-data")
+            #expect(crowded.status == 1 && crowded.output.isEmpty)
+            #expect(crowded.errors.contains("有 3 个名为「Dup」的 Profile（含回收站），请改用 id。"))
+            // One saved and one trashed is just as ambiguous.
+            let split = await ctl("delete", "Pair", "--purge")
+            #expect(split.status == 1 && split.errors.contains("有 2 个名为「Pair」的 Profile（含回收站），请改用 id。"))
+            #expect(backend.removed.isEmpty)
+            #expect(Set(backend.store.trashed.map(\.id)) == [trashedDup.id, trashedPair.id, old.id])
+            #expect(backend.profiles.contains { $0.id == pair.id })
+            // Without --purge only saved Profiles are searched, so the trashed namesake does not count.
+            #expect((await ctl("delete", "Pair")).json?["result"] as? String == "trashed")
+
+            let missing = await ctl("delete", "Ghost", "--purge")
+            #expect(missing.status == 1 && missing.errors.contains("找不到名为「Ghost」的 Profile（含回收站）。"))
+            let purged = await ctl("delete", "Old", "--purge", "--delete-data")
+            #expect(purged.status == 0, "\(purged.errors)")
+            #expect(backend.removed.map(\.id) == [old.id] && backend.removed.map(\.browserData) == [true])
+        }
     }
 
     @Test("Without a token it reads AnyBrowser's saved settings read-only, and options win over the environment")
@@ -256,6 +295,12 @@ struct ControlCLITests {
             defer { try? FileManager.default.removeItem(at: elsewhere) }
             #expect((await ControlRun.run(["list", "--data-dir", sandbox.data.path],
                                           environment: ["HOME": elsewhere.path, "ANYBROWSER_DATA_DIR": elsewhere.path])).status == 0)
+            // A data directory reached through a symbolic link, as anything under /tmp is.
+            let link = elsewhere.appendingPathComponent("link")
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: sandbox.data)
+            let linked = await ControlRun.run(["list", "--data-dir", link.path], environment: ["HOME": elsewhere.path])
+            #expect(linked.status == 0, "\(linked.errors)")
+            #expect(try snapshot(sandbox.data) == before)
 
             try store.saveAutomationConfiguration(AutomationConfiguration(enabled: false, port: port, token: automationTestToken))
             let disabled = await ControlRun.run(["list"], environment: sandbox.environment())
