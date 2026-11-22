@@ -8,19 +8,26 @@ on:
 jobs:
   test:
     runs-on: macos-15
+    # The real-browser suites take about a minute, one of them waiting out a Service Worker.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      # Pinned so that a runner image update cannot switch compilers without a commit.
       - name: Toolchain
-        run: swift --version
-      - name: Build and test
-        run: swift test --arch arm64
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app
+          swift --version
       - uses: actions/cache@v4
         with:
           path: .build/engine-cache
-          key: engine-${{ hashFiles('scripts/build-app.sh') }}
+          key: engine-${{ hashFiles('scripts/versions.env') }}
       - name: Package the app
         run: ./scripts/build-app.sh
+      - name: Test, with the real-browser suites on the packaged app
+        run: ./scripts/test.sh --engine dist/AnyBrowser.app
       - name: Check the package
         run: |
           /usr/bin/codesign --verify --deep --strict dist/AnyBrowser.app
           test -f dist/AnyBrowser.app/Contents/Resources/Extensions/PasskeyBox/manifest.json
+          test -x dist/AnyBrowser.app/Contents/MacOS/AnyBrowserRelay
+          test -x dist/AnyBrowser.app/Contents/MacOS/anybrowserctl

@@ -46,7 +46,13 @@ AnyBrowser 是一个原生 macOS 应用。每个 Profile 对应一份 Chromium �
 
 ## 快速开始
 
-需要 **Apple Silicon Mac 和 macOS 12+**。可以下载 [GitHub Release](https://github.com/riba2534/anybrowser/releases/latest) 的 ARM64 安装包。自行构建需要 Swift 5.9+；只装了 Command Line Tools 时，在命令前加 `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`。
+需要 **Apple Silicon Mac 和 macOS 12+**。可以下载 [GitHub Release](https://github.com/riba2534/anybrowser/releases/latest) 的 ARM64 安装包。安装包只有 ad-hoc 签名，没有经过 Apple 公证，首次打开时：
+
+1. 解压后先把 `AnyBrowser.app` 移到「应用程序」文件夹（`/Applications`）再打开。在「下载」等位置直接打开时，macOS 会把它放到随机的只读路径运行。
+2. 被 macOS 拦下时，到「系统设置 → 隐私与安全性」点击「仍要打开」。macOS 15 起，右键「打开」已不能放行。
+3. 也可以在终端去掉下载带来的隔离属性，之后正常打开：`xattr -dr com.apple.quarantine /Applications/AnyBrowser.app`。
+
+自行构建需要 Swift 5.9+。只装了 Command Line Tools 时，构建脚本会自动选择能编译 SwiftUI 的 SDK。
 
 ```bash
 git clone https://github.com/riba2534/anybrowser.git
@@ -55,7 +61,7 @@ cd anybrowser
 open dist/AnyBrowser.app
 ```
 
-首次构建会下载并校验固定版本的引擎和扩展，随后复用本地缓存。构建产物 `dist/AnyBrowser.app` 内置 [Fingerprint Chromium 148.0.7778.215](https://github.com/adryfish/fingerprint-chromium/releases/tag/148.0.7778.215) 和 [Passkey Box v0.4.0](https://github.com/riba2534/passkey-box/releases/tag/v0.4.0)，采用本机 ad-hoc 签名。
+首次构建会下载并校验固定版本的引擎和扩展，随后复用本地缓存。构建产物 `dist/AnyBrowser.app` 内置 [Fingerprint Chromium 148.0.7778.215](https://github.com/adryfish/fingerprint-chromium/releases/tag/148.0.7778.215) 和 [Passkey Box v0.4.0](https://github.com/riba2534/passkey-box/releases/tag/v0.4.0)，采用本机 ad-hoc 签名。自己构建的应用没有隔离属性，可以直接打开。
 
 ## 日常使用
 
@@ -137,20 +143,22 @@ Profile 对象为 `{"id","name","group","port","status","debugReady"}`，`status
 | [Resources/](Resources/) | Logo、应用元数据和引擎许可 |
 | [Tests/](Tests/) | 单元测试和真实浏览器集成测试 |
 
-测试使用 swift-testing，只装了 Command Line Tools 也能运行（同样需要上面的 `SDKROOT`）。Command Line Tools 在测试文件改动后的首次编译偶尔报 `plugin for module 'TestingMacros' not found`，再运行一次即可。
+测试使用 swift-testing，需要 Swift 6 工具链（Xcode 16 或更新版本，或同等版本的 Command Line Tools）。推荐用 `scripts/test.sh` 运行：它执行 `swift test --arch arm64` 并原样传入其余参数（例如 `--filter LibraryTests`）。只装了 Command Line Tools 时，脚本会自动选择能编译 SwiftUI 的 SDK，并为编译器指明 swift-testing 的宏插件目录，否则编译会随机报 `plugin for module 'TestingMacros' not found`。
 
 ```bash
-swift test --arch arm64
-ANYBROWSER_TEST_APP="$PWD/dist/AnyBrowser.app" swift test --arch arm64
+./scripts/test.sh
+./scripts/test.sh --engine dist/AnyBrowser.app
 ```
 
-第二条命令需要提前构建应用、登录 macOS 图形会话，并预留本机端口 9222、9223 和 9301–9312。它用临时资料目录启动真实浏览器，验证调试端点、代理与代理账号密码、站点存储隔离、Passkey Box 预填地址与 Profile 级账号、启动网址与窗口、额外扩展、Cookie 导入导出，以及通过自动化接口启停，还有重启恢复。
+第二条命令把 `ANYBROWSER_TEST_APP` 设为指定的应用，对它运行真实浏览器测试。需要先用 `./scripts/build-app.sh` 构建应用、登录 macOS 图形会话，并预留本机端口 9222、9223 和 9301–9313。它用临时资料目录启动真实浏览器，验证调试端点、代理与代理账号密码、站点存储隔离、Passkey Box 预填地址与 Profile 级账号、启动网址与窗口、额外扩展、Cookie 导入导出，以及通过自动化接口启停，还有重启恢复。
+
+这些端口被占用时（例如自己的 Profile 正开着 9222），或要在多个工作目录里同时运行时，设置 `ANYBROWSER_TEST_PORT_OFFSET`，测试使用的调试端口整体加上这个偏移。例如 `ANYBROWSER_TEST_PORT_OFFSET=1000 ./scripts/test.sh --engine dist/AnyBrowser.app` 改用 10222、10223 和 10301–10313。
 
 若只验证合成指纹的校验流程，可在第二条命令后加 `--filter VerificationFixtureTests`（使用端口 9307、9308）。该用例通过 `127.0.0.1` 上的测试页验证指纹不变、变化、重试和 Profile 隔离；只传入合成值，不读取或修改实际浏览器指纹，也不调用外部校验服务。
 
 再设置 `ANYBROWSER_TEST_PASSKEY_SERVER`、`ANYBROWSER_TEST_PASSKEY_USERNAME`、`ANYBROWSER_TEST_PASSKEY_PASSWORD` 和 `ANYBROWSER_TEST_PASSKEY_RP`（[passkey-box](https://github.com/riba2534/passkey-box) 的 `e2e/rp` 测试网站，例如 `http://localhost:18422`），会额外启动一个带账号的 Profile，在要求用户验证的网站上完成注册和登录，并确认全程没有打开其他窗口。
 
-`scripts/check-updates.sh` 对比 `build-app.sh` 固定的引擎、Passkey Box 版本与上游最新发布。CI 在每次推送和 PR 上编译、测试并打包；推送 `v*` tag 时自动发布 ZIP 和 `SHA256SUMS`。
+内置引擎和 Passkey Box 的版本与 SHA-256 统一写在 `scripts/versions.env`，构建脚本从这里读取，单元测试检查 `BundledVersions` 与它一致。`scripts/check-updates.sh` 把它们与上游最新发布对比，并列出 Chrome 稳定版和内核相差几个大版本；已是最新时以 0 退出，有可用更新或内核落后 2 个及以上大版本时以 10 退出，并给出新版本的 SHA-256 和需要修改的文件。CI 在每次推送和 PR 上打包应用，再对这个包跑全部测试（含真实浏览器测试）；推送 `v*` tag 时对即将发布的包跑同样的测试，通过后发布 ZIP 和 `SHA256SUMS`。每周一次的定时任务运行 `check-updates.sh`，有更新时开一个 issue，已有未关闭的同名 issue 时追加评论。
 
 ## 贡献
 
