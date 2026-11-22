@@ -2,14 +2,10 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-engine_version=148.0.7778.215
-engine_sha256=b72f091e2e1a7583eed389c4b8e3534ed355e568af8c8bbf8fc30a25e23ca679
-engine_filename="ungoogled-chromium_${engine_version}-1.1_macos.dmg"
+# shellcheck source=scripts/versions.env
+source "$root/scripts/versions.env"
+engine_filename="ungoogled-chromium_${engine_version}-${engine_revision}_macos.dmg"
 engine_url="https://github.com/adryfish/fingerprint-chromium/releases/download/${engine_version}/${engine_filename}"
-
-passkey_version=0.4.0
-passkey_sha256=86526d33f27f047af3ce8963b15994fbc03745a817c391c838df43f6df0da130
-passkey_id=gfejlnakeokbjdhoionfappnfepjoili
 passkey_filename="passkey-box-extension-anybrowser-v${passkey_version}.zip"
 passkey_url="https://github.com/riba2534/passkey-box/releases/download/v${passkey_version}/${passkey_filename}"
 
@@ -77,9 +73,18 @@ prepare_asset "$dmg" "$engine_sha256" "$engine_url" "Fingerprint Chromium $engin
 prepare_asset "$passkey_zip" "$passkey_sha256" "$passkey_url" "Passkey Box $passkey_version for AnyBrowser"
 
 printf 'Building AnyBrowser for ARM64…\n'
-swift build --configuration release --arch arm64 --product AnyBrowser
+# shellcheck source=scripts/toolchain.sh
+source "$root/scripts/toolchain.sh"
+select_swiftui_sdk || fail "no installed SDK can compile SwiftUI; install Xcode"
+# The app, the proxy relay helper and the command-line client.
+products=(AnyBrowser AnyBrowserRelay anybrowserctl)
+for product in "${products[@]}"; do
+    swift build --configuration release --arch arm64 --product "$product"
+done
 bin_path="$(swift build --configuration release --arch arm64 --show-bin-path)"
-[[ "$(/usr/bin/lipo -archs "$bin_path/AnyBrowser")" == arm64 ]] || fail "SwiftPM did not produce an ARM64 executable"
+for product in "${products[@]}"; do
+    [[ "$(/usr/bin/lipo -archs "$bin_path/$product")" == arm64 ]] || fail "SwiftPM did not produce an ARM64 $product"
+done
 
 staging="$(mktemp -d "$root/dist/.anybrowser-stage.XXXXXX")"
 mount_dir="$staging/engine"
@@ -133,7 +138,10 @@ for size in 16 32 128 256 512; do
         --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 /usr/bin/iconutil -c icns "$iconset" -o "$contents/Resources/AnyBrowser.icns"
-/usr/bin/install -m 755 "$bin_path/AnyBrowser" "$contents/MacOS/AnyBrowser"
+# The helpers keep the ad-hoc signature the linker gave them; the bundle signature seals them.
+for product in "${products[@]}"; do
+    /usr/bin/install -m 755 "$bin_path/$product" "$contents/MacOS/$product"
+done
 /usr/bin/plutil -insert AnyBrowserEngineVersion -string "$engine_version" "$contents/Info.plist"
 /usr/bin/plutil -insert AnyBrowserEngineSHA256 -string "$engine_sha256" "$contents/Info.plist"
 /usr/bin/plutil -insert AnyBrowserPasskeyBoxVersion -string "$passkey_version" "$contents/Info.plist"
