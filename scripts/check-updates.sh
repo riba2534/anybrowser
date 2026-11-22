@@ -1,11 +1,12 @@
 #!/bin/bash
-# Compares the engine and Passkey Box pinned in build-app.sh with the latest upstream releases.
+# Compares the engine and Passkey Box pinned in scripts/versions.env with the latest upstream releases.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-pinned() { sed -n "s/^$1=//p" "$root/scripts/build-app.sh"; }
-engine=$(pinned engine_version)
-passkey=$(pinned passkey_version)
+# shellcheck source=scripts/versions.env
+source "$root/scripts/versions.env"
+engine=$engine_version
+passkey=$passkey_version
 
 # Authenticated through gh when available: anonymous API calls are rate limited.
 github() {
@@ -31,4 +32,4 @@ latest_passkey=$(github "repos/riba2534/passkey-box/releases/latest" |
 
 printf 'Fingerprint Chromium  pinned %-16s latest macOS %s\n' "$engine" "${latest_engine:-none}"
 printf 'Passkey Box           pinned %-16s latest %s\n' "$passkey" "$latest_passkey"
-[[ "${latest_engine%% *}" == "$engine" && "$latest_passkey" == "$passkey" ]] && echo "Up to date." || echo "Updates available: change the versions and SHA-256 digests in scripts/build-app.sh."
+[[ "${latest_engine%% *}" == "$engine" && "$latest_passkey" == "$passkey" ]] && echo "Up to date." || echo "Updates available: change the versions and SHA-256 digests in scripts/versions.env."

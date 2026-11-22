@@ -2,14 +2,10 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-engine_version=148.0.7778.215
-engine_sha256=b72f091e2e1a7583eed389c4b8e3534ed355e568af8c8bbf8fc30a25e23ca679
-engine_filename="ungoogled-chromium_${engine_version}-1.1_macos.dmg"
+# shellcheck source=scripts/versions.env
+source "$root/scripts/versions.env"
+engine_filename="ungoogled-chromium_${engine_version}-${engine_revision}_macos.dmg"
 engine_url="https://github.com/adryfish/fingerprint-chromium/releases/download/${engine_version}/${engine_filename}"
-
-passkey_version=0.4.0
-passkey_sha256=86526d33f27f047af3ce8963b15994fbc03745a817c391c838df43f6df0da130
-passkey_id=gfejlnakeokbjdhoionfappnfepjoili
 passkey_filename="passkey-box-extension-anybrowser-v${passkey_version}.zip"
 passkey_url="https://github.com/riba2534/passkey-box/releases/download/v${passkey_version}/${passkey_filename}"
 
