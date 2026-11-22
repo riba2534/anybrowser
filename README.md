@@ -128,8 +128,8 @@ Profile 里保存的仍是代理地址，代理库只是批量新建和批量设
 
 - Profile 按勾选的顺序加载这些扩展，排在 Profile 自己的扩展目录之前。两处是同一个扩展时，以 Profile 自己的目录为准。
 - 扩展库只存放扩展文件。登录状态、钱包等扩展数据保存在各个 Profile 自己的浏览器资料里，Profile 之间不共享。
-- 从 CRX 添加时，AnyBrowser 把 CRX 里的公钥写进 `manifest.json`，扩展 ID 与 Chrome 应用商店一致。从文件夹添加的扩展，ID 由它在扩展库里的名称决定。AnyBrowser 不校验 CRX 的签名。
-- 扩展库里的扩展不会自动更新。更新时先删除旧版本，再添加新版本。CRX 扩展的 ID 始终不变；文件夹扩展只要名称没变，ID 就不变，各 Profile 里的扩展数据可以继续使用。
+- 从 CRX 添加时，AnyBrowser 把 CRX 里的公钥写进 `manifest.json`，扩展 ID 与 Chrome 应用商店一致。从文件夹添加的扩展，manifest.json 里有 `key` 时 ID 由它决定；没有时由扩展在本机的完整路径决定（包含用户目录），勾选它的所有 Profile 共用这个只属于这台 Mac 的 ID。网站一旦能探测到这个扩展，就能据此把这些 Profile 关联起来；需要隔离时请用 CRX，或在各 Profile 里分别填写扩展目录。AnyBrowser 不校验 CRX 的签名。
+- 扩展库里的扩展不会自动更新。更新时先删除旧版本，再添加新版本。CRX 扩展的 ID 始终不变；文件夹扩展只要名称和 AnyBrowser 数据目录的位置没变，ID 就不变，各 Profile 里的扩展数据可以继续使用。
 - 删除扩展后，仍勾选它的 Profile 启动时会提示，取消勾选或重新添加后才能启动。
 
 ### 自动化接口

@@ -24,6 +24,14 @@ public struct SharedExtension: Identifiable, Equatable, Sendable {
 /// entry keeps its folder for good, and an imported CRX keeps its Web Store key, so the ID, and with
 /// it the data in every Profile, stays the same. Adding and removing block on file copies; call
 /// them off the main thread.
+///
+/// Every Profile loads an entry from the same folder, so it has one ID in all of them. For a CRX that
+/// is the Web Store ID, which every Chrome with the extension shares and which says nothing about
+/// this Mac. A folder without a `key` gets the SHA-256 of its full path, home folder included: an ID
+/// no other Mac has, so a site that can detect the extension can link the Profiles that load it. A
+/// copy or a key per Profile would separate them, but it changes the ID, leaving each Profile's data
+/// for the extension behind, and a new version could no longer be added once for every Profile; the
+/// README and the library sheet point to CRX files, or one extension directory per Profile, instead.
 public enum SharedExtensions {
     public static func root(in storage: URL) -> URL {
         storage.appendingPathComponent("Extensions", isDirectory: true)
@@ -49,7 +57,8 @@ public enum SharedExtensions {
     }
 
     /// Copies an unpacked extension folder (with manifest.json at its top) into the library. Adding
-    /// one the library already holds returns that entry; see `duplicate(of:at:in:)`.
+    /// one the library already holds returns that entry; see `duplicate(of:at:in:)`. The manifest is
+    /// copied as it is: without a `key`, the ID comes from the entry's path (see the type's note).
     @discardableResult
     public static func add(folder source: URL, in storage: URL) throws -> SharedExtension {
         let folder = source.resolvingSymlinksInPath()

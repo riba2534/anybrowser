@@ -113,7 +113,7 @@ struct SharedExtensionsSheet: View {
 
     var body: some View {
         WorkbenchSheet(title: "共享扩展库",
-                       caption: "扩展库里的扩展可以在各个 Profile 的「启动选项」里勾选加载。扩展数据（登录状态、钱包等）保存在各个 Profile 自己的浏览器资料里，Profile 之间不共享。扩展库里的扩展不会自动更新：更新时先删除旧版本，再添加新版本。",
+                       caption: "扩展库里的扩展可以在各个 Profile 的「启动选项」里勾选加载。扩展数据（登录状态、钱包等）保存在各个 Profile 自己的浏览器资料里，Profile 之间不共享。扩展库里的扩展不会自动更新：更新时先删除旧版本，再添加新版本。从文件夹添加、manifest.json 不含 key 的扩展，ID 由本机路径决定，勾选它的 Profile 共用这个 ID；网站探测到该扩展时能据此关联这些 Profile，需要隔离时请用 CRX。",
                        width: 560) {
             entryList
             if let message {
