@@ -1,0 +1,50 @@
+name: Check upstream updates
+
+on:
+  schedule:
+    - cron: '23 3 * * 1' # Mondays at 03:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare the pinned versions with upstream
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=0
+          ./scripts/check-updates.sh > report.txt || status=$?
+          cat report.txt
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          # 10 reports an update or an outdated engine; any other failure is a broken check.
+          [ "$status" = 0 ] || [ "$status" = 10 ]
+      - name: Open the issue, or comment on the open one
+        if: steps.check.outputs.status == '10'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: 内置引擎或 Passkey Box 需要更新
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "\`scripts/check-updates.sh\` 在[这次运行]($RUN_URL)中的输出："
+            echo
+            echo '```'
+            cat report.txt
+            echo '```'
+          } > body.md
+          number=$(gh issue list --state open --limit 200 --json number,title \
+            --jq 'map(select(.title == env.TITLE)) | first | .number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file body.md
+          else
+            gh issue create --title "$TITLE" --body-file body.md
+          fi
