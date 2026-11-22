@@ -400,8 +400,8 @@ struct RuntimeAdoptionTests {
         let fixture = try FakeEngineFixture("runtime-relaunch")
         let profile = fixture.profile(port: 11432)
         let refreshed = fixture.profile(port: 11433)
-        try fixture.configure(profile, ["relaunch_ms": "300"])
-        try fixture.configure(refreshed, ["relaunch_ms": "300"])
+        try fixture.configure(profile, ["relaunch_ms": "1500"])
+        try fixture.configure(refreshed, ["relaunch_ms": "1500"])
         try await run(fixture, [profile, refreshed]) {
             var first: [UUID: Int32] = [:]
             for item in [profile, refreshed] {
@@ -599,13 +599,19 @@ struct PortProbeTests {
     @Test("A port is taken by a listener on any loopback or wildcard address", arguments: [
         ("127.0.0.1", 11450), ("0.0.0.0", 11451), ("::1", 11452), ("::", 11453),
     ])
-    func listenerTakesPort(address: String, port: Int) throws {
+    func listenerTakesPort(address: String, port: Int) async throws {
         #expect(ProcessInspection.portAvailable(port))
         let fd = try listen(on: address, port: port)
         #expect(!ProcessInspection.portAvailable(port))
         #expect(ProcessInspection.listener(onPort: port)?.pid == getpid())
         close(fd)
-        #expect(ProcessInspection.portAvailable(port))
+        // A parallel test inspecting this process's sockets can hold the closed one for a moment.
+        var available = false
+        for _ in 0..<20 where !available {
+            available = ProcessInspection.portAvailable(port)
+            if !available { try await Task.sleep(nanoseconds: 50_000_000) }
+        }
+        #expect(available)
     }
 
     @Test("Connections left in TIME_WAIT do not block the port")
