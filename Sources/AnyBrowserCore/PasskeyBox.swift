@@ -80,27 +80,45 @@ public struct PasskeyBoxAccount: Codable, Equatable, Sendable {
     /// The managed-config.json the extension reads at startup (see the Passkey Box README).
     func managedConfiguration() throws -> Data {
         let account = try validated()
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        return try encoder.encode(["serverUrl": account.serverURL, "username": account.username, "password": account.password])
+        return try PasskeyBoxInstall.encode([
+            "autoLogin": PasskeyBoxInstall.autoLogin,
+            "serverUrl": account.serverURL, "username": account.username, "password": account.password,
+        ])
     }
 }
 
 /// The unpacked Passkey Box a Profile loads: a copy of the bundled extension under the Profile's
-/// extension root, plus managed-config.json when it has an account. The app bundle stays untouched.
+/// extension root, plus managed-config.json with the sign-in policy and, when it has one, the
+/// account. The app bundle stays untouched.
 enum PasskeyBoxInstall {
     static let managedConfigFile = "managed-config.json"
+    /// Passkey Box signs in on its own only with a passkey this Profile registered or used before,
+    /// and shows the account picker for any other. Profiles share the global account, so without this
+    /// a Profile would silently sign in to a site as whichever Profile registered there.
+    static let autoLogin = "owned-only"
 
     static func directory(in storage: URL, for id: UUID) -> URL {
         ProfileExtensions.root(in: storage, for: id).appendingPathComponent("PasskeyBox", isDirectory: true)
     }
 
-    /// `enabled` is the Profile's `launch.loadPasskeyBox`.
+    /// `enabled` is the Profile's `launch.loadPasskeyBox`; a Profile that leaves Passkey Box out has
+    /// its copy, and the account in it, removed.
     static func prepare(bundled source: URL, in storage: URL, for id: UUID, account: PasskeyBoxAccount?,
                         enabled: Bool = true) throws {
         let target = directory(in: storage, for: id)
         let parent = try ProfileExtensions.prepareRoot(in: storage, for: id)
         var details = stat()
+        // An interrupted install leaves staged or retired copies, whose managed-config.json holds an
+        // old password, and staged account files. A Profile starts under its runtime lock, so none of
+        // them belongs to an install still in progress.
+        for name in try FileManager.default.contentsOfDirectory(atPath: parent.path)
+        where name.hasPrefix(".PasskeyBox-") || name.hasPrefix(".\(managedConfigFile)-") {
+            try FileManager.default.removeItem(at: parent.appendingPathComponent(name))
+        }
+        guard enabled else {
+            if lstat(target.path, &details) == 0 { try FileManager.default.removeItem(at: target) }
+            return
+        }
 
         guard let bundled = files(in: source) else {
             throw ProfileError.invalid("内置 Passkey Box 不可用，请重新安装 AnyBrowser。")
@@ -125,14 +143,19 @@ enum PasskeyBoxInstall {
             try? FileManager.default.removeItem(at: retired)
         }
 
-        let config = target.appendingPathComponent(managedConfigFile)
-        guard let account else {
-            if lstat(config.path, &details) == 0 { try FileManager.default.removeItem(at: config) }
-            return
-        }
+        // Written without an account too: the extension stays signed in to the account it last had,
+        // and the policy has to cover that account as well. Passkey Box only signs in with a file
+        // that holds a complete account.
+        let configuration = try account?.managedConfiguration() ?? encode(["autoLogin": autoLogin])
         // Staged outside the extension, whose files must match the bundled copy.
-        try PrivateFile.update(account.managedConfiguration(), at: config, stagingIn: parent,
+        try PrivateFile.update(configuration, at: target.appendingPathComponent(managedConfigFile), stagingIn: parent,
                                failure: "无法写入 Passkey Box 账号配置。")
+    }
+
+    static func encode(_ configuration: [String: String]) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(configuration)
     }
 
     /// Relative path → contents of every regular file, or nil when the tree is missing or holds links.
