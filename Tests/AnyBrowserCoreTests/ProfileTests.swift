@@ -80,6 +80,23 @@ struct ProfileTests {
         #expect(Array(arguments.suffix(2)) == ["-AppleLanguages", "<array><string>zh-CN</string></array>"])
     }
 
+    @Test("Device memory accepts what the engine reports and what older versions saved")
+    func deviceMemoryValues() throws {
+        var fingerprint = FingerprintSettings(seed: 88)
+        for value in [16, 32, 6, 1, 8] {
+            fingerprint.deviceMemory = value
+            #expect(throws: Never.self, "\(value)") {
+                try BrowserProfile(name: "M", port: 9301, fingerprint: fingerprint).validated()
+            }
+        }
+        for value in [64, 12, 0] {
+            fingerprint.deviceMemory = value
+            #expect(throws: (any Error).self, "\(value)") {
+                try BrowserProfile(name: "M", port: 9301, fingerprint: fingerprint).validated()
+            }
+        }
+    }
+
     @Test("Proxy addresses are validated and legacy profiles decode")
     func proxyAddressesAndLegacyProfiles() throws {
         let home = URL(fileURLWithPath: "/tmp/AnyBrowser Profile")
@@ -148,7 +165,8 @@ struct ProfileTests {
             #expect(changed.fingerprint.platform != nil)
             #expect(!changed.fingerprint.platformVersion.isEmpty)
             #expect(changed.fingerprint.brand != nil)
-            #expect(!changed.fingerprint.brandVersion.isEmpty)
+            // Edge keeps its version empty: an explicit one would be sent unreduced in the UA.
+            #expect(changed.fingerprint.brandVersion.isEmpty == (changed.fingerprint.brand == .edge))
             #expect(changed.fingerprint.seed == draft.fingerprint.seed)
             #expect(throws: Never.self) { try changed.validated() }
         }

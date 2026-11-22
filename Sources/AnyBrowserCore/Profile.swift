@@ -101,7 +101,8 @@ public struct FingerprintSettings: Codable, Equatable, Sendable {
     public var availHeight: Int? = nil
     public var colorDepth: Int? = nil
     public var deviceScaleFactor: Double? = nil
-    /// `navigator.deviceMemory`; Chromium caps this at 8.
+    /// `navigator.deviceMemory` as the engine reports it from the seed (see `EngineHardwareTable`);
+    /// recorded for display, not passed to the engine.
     public var deviceMemory: Int? = nil
     public var touch: Bool? = nil
     public var fontProfile: FontProfile? = nil
@@ -405,8 +406,9 @@ extension FingerprintSettings {
         if let deviceScaleFactor, !(1.0...3.0).contains(deviceScaleFactor) {
             throw ProfileError.invalid("设备像素比须在 1–3 之间。")
         }
-        if let deviceMemory, !(1...8).contains(deviceMemory) {
-            throw ProfileError.invalid("设备内存须在 1–8 GB 之间。")
+        // The engine reports 8, 16 or 32 by seed; older versions saved any value from 1 to 8.
+        if let deviceMemory, !((1...8).contains(deviceMemory) || deviceMemory == 16 || deviceMemory == 32) {
+            throw ProfileError.invalid("设备内存须为 1–8、16 或 32 GB。")
         }
         if let fontProfile {
             guard let platform else {
@@ -429,20 +431,28 @@ extension FingerprintSettings {
     }
 
     mutating func randomize(_ fields: Set<FingerprintField>, excluding seeds: Set<Int>) {
-        if fields.contains(.seed) {
-            seed = Self.newSeed(excluding: seeds.union([seed]))
-        }
-        if fields.contains(.platform) {
-            platform = BrowserPlatform.allCases.randomElement()
-            // These values belonged to the old platform and cannot follow it.
-            screenWidth = nil
-            screenHeight = nil
-            availWidth = nil
-            availHeight = nil
-            colorDepth = nil
-            deviceScaleFactor = nil
-            deviceMemory = nil
-            touch = false
+        // Platform and brand are drawn with the whole-identity weights, so the field randomizer
+        // ends up on the same engine-supported combinations; a kept field narrows the draw.
+        if fields.contains(.platform) || fields.contains(.brand) {
+            let keptPlatform = fields.contains(.platform) ? nil : platform
+            let keptBrand = fields.contains(.brand) || brand == .opera || brand == .vivaldi ? nil : brand
+            let preset = IdentitySampler.weightedPreset {
+                (keptPlatform == nil || $0.platform == keptPlatform) && (keptBrand == nil || $0.brand == keptBrand)
+            }
+            if fields.contains(.platform) {
+                platform = preset.platform
+                // These values belonged to the old platform and cannot follow it.
+                screenWidth = nil
+                screenHeight = nil
+                availWidth = nil
+                availHeight = nil
+                colorDepth = nil
+                deviceScaleFactor = nil
+                touch = false
+            }
+            if fields.contains(.brand) {
+                brand = preset.brand
+            }
         }
         // A version kept from the previous platform or brand would contradict the new one.
         if fields.contains(.platformVersion) || fields.contains(.platform) && !platformVersion.isEmpty {
@@ -453,18 +463,12 @@ extension FingerprintSettings {
         } else if fields.contains(.platformVersion), let platform, fontProfile != nil {
             fontProfile = FontProfile.default(for: platform, version: platformVersion)
         }
-        if fields.contains(.brand) {
-            brand = BrowserBrand.allCases.randomElement()
-        }
         if fields.contains(.brandVersion) {
-            brandVersion = Self.randomBrandVersion(for: brand)
+            brandVersion = Self.randomBrandVersion(for: brand, platform: platform)
         } else if fields.contains(.brand) {
             // Opera and Vivaldi have no engine default; an empty Chrome or Edge version follows the engine.
             brandVersion = brand == .opera || brand == .vivaldi || !brandVersion.isEmpty
-                ? Self.randomBrandVersion(for: brand) : ""
-        }
-        if fields.contains(.cpuCount) {
-            cpuCount = IdentitySampler.randomCPUCount(for: platform)
+                ? Self.randomBrandVersion(for: brand, platform: platform) : ""
         }
         // Language and time zone are one identity: randomizing either moves both.
         if fields.contains(.language) || fields.contains(.timeZone) {
@@ -490,6 +494,26 @@ extension FingerprintSettings {
             }
         }
         adaptToPlatform()
+
+        // The seed fixes the GPU and memory, so hardware is settled last. A CPU count the user
+        // keeps on the same platform gets a seed whose GPU ships with it; a new platform or seed
+        // otherwise gets a CPU count of its own.
+        let hardware = EngineHardwareTable.bundled
+        let spoofsGPU = adjustments.contains(.gpu)
+        let keepsCPU = !fields.contains(.cpuCount) && !fields.contains(.platform) && cpuCount != nil
+        if fields.contains(.seed) {
+            let taken = seeds.union([seed])
+            seed = Self.newSeed(excluding: taken)
+            if keepsCPU, spoofsGPU {
+                for _ in 0..<64 where !hardware.exists(platform: platform, seed: seed, cpuCount: cpuCount) {
+                    seed = Self.newSeed(excluding: taken)
+                }
+            }
+        }
+        if fields.contains(.cpuCount) || fields.contains(.platform) && cpuCount != nil {
+            cpuCount = IdentitySampler.randomCPUCount(for: platform, seed: seed, spoofsGPU: spoofsGPU)
+        }
+        deviceMemory = hardware.deviceMemory(seed: seed)
     }
 
     /// Applies a validated locale from the proxy exit or the Mac itself.
@@ -511,7 +535,10 @@ extension FingerprintSettings {
             availHeight = nil
             colorDepth = nil
             deviceScaleFactor = nil
-            deviceMemory = nil
+        }
+        // The engine reports memory by seed on every platform; a recorded value follows it.
+        if deviceMemory != nil {
+            deviceMemory = EngineHardwareTable.bundled.deviceMemory(seed: seed)
         }
         if platform == .linux {
             adjustments.remove(.gpu)
@@ -522,28 +549,42 @@ extension FingerprintSettings {
         }
     }
 
+    /// A released version of the platform, drawn through the presets' versions and weights.
     private static func randomPlatformVersion(for platform: BrowserPlatform?) -> String {
-        switch platform {
-        case .macOS: return ["15.7.1", "26.2.0", "26.4.1"].randomElement()!
-        case .windows: return "19.0.0"
-        case .linux: return ["6.8.0", "6.14.0"].randomElement()!
-        case nil: return ""
-        }
+        guard let platform else { return "" }
+        return IdentitySampler.weightedPreset { $0.platform == platform }.platformVersions.randomElement() ?? ""
     }
 
-    private static func randomBrandVersion(for brand: BrowserBrand?) -> String {
+    private static func randomBrandVersion(for brand: BrowserBrand?, platform: BrowserPlatform?) -> String {
         switch brand {
-        case .chrome: return ["148.0.7778.215", "148.0.7778.217", "148.0.7778.168"].randomElement()!
-        case .edge: return ["148.0.3967.54", "148.0.3967.96", "148.0.3967.73"].randomElement()!
-        case .opera: return ["120.0", "121.0"].randomElement()!
+        case .chrome:
+            // The builds the engine itself picks from, all released for Windows and macOS;
+            // .215 was released for macOS and Linux only.
+            var builds = ["148.0.7778.217", "148.0.7778.179", "148.0.7778.168", "148.0.7778.97"]
+            if platform != .windows { builds.append("148.0.7778.215") }
+            let current = builds.filter { $0.hasPrefix("\(BundledVersions.engineMajor).") }
+            return current.randomElement() ?? ""
+        case .edge:
+            // Given a version the engine sends it unreduced (Edg/148.0.3967.54), unlike real Edge;
+            // left empty it picks a released build for UA-CH and sends Edg/148.0.0.0.
+            return ""
+        case .opera:
+            // Opera numbers its releases 16 below the Chromium they are built on (Opera 132 on 148).
+            return "\(BundledVersions.engineMajor - 16).0.0.0"
         case .vivaldi: return ["7.5", "7.6"].randomElement()!
         case nil: return ""
         }
     }
 
+    /// A free seed for which a macOS identity can exist: the engine gives an Apple M4 (which ships
+    /// with at least 16 GB) to even seeds and an M2 (at most 24 GB) to odd ones, and memory is
+    /// `[8, 16, 32][seed % 3]`, so `seed % 6` 0 (M4, 8 GB) and 5 (M2, 32 GB) are skipped.
     static func newSeed(excluding seeds: Set<Int>) -> Int {
+        let hardware = EngineHardwareTable.bundled
         var value: Int
-        repeat { value = Int.random(in: 1...Int(Int32.max)) } while seeds.contains(value)
+        repeat {
+            value = Int.random(in: 1...Int(Int32.max))
+        } while seeds.contains(value) || !hardware.macOSSeedExists(value)
         return value
     }
 }
