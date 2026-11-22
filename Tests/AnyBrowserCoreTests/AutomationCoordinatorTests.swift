@@ -130,4 +130,43 @@ struct AutomationCoordinatorTests {
             }
         }
     }
+
+    /// One request straight to the router, so it runs while the coordinator is suspended mid-operation.
+    private func route(_ coordinator: LaunchCoordinator, _ method: String, _ path: String) async -> (status: Int, code: String?) {
+        let response = await AutomationHTTP.route(AutomationHTTP.Request(method: method, target: path, headers: [:]),
+                                                  backend: coordinator)
+        let error = (try? JSONSerialization.jsonObject(with: response.body) as? [String: Any])?["error"] as? [String: Any]
+        return (response.status, error?["code"] as? String)
+    }
+
+    @Test("A restore waits for a purge in progress, and a batch in progress makes removals busy")
+    func purgeAndBatch() async throws {
+        let fixture = try CoordinatorFixture("api-purge")
+        defer { try? FileManager.default.removeItem(at: fixture.fake.root) }
+        // Neither is started; their ports are only records.
+        let purged = try fixture.add(9400)
+        let other = try fixture.add(9401)
+        try fixture.writeSiteData(purged)
+        try fixture.store.trash(purged.id)
+        let coordinator = fixture.coordinator
+        let purging = Task { @MainActor in try await coordinator.purge(purged.id) }
+        // The purge marks the Profile busy, then awaits deleting its data before the record goes.
+        var turns = 0
+        while !coordinator.removing.contains(purged.id) && turns < 1000 {
+            await Task.yield()
+            turns += 1
+        }
+        try #require(coordinator.removing.contains(purged.id))
+        let restore = await route(coordinator, "POST", "/api/v1/profiles/\(purged.id)/restore")
+        #expect(restore.status == 409 && restore.code == "busy")
+        try await purging.value
+        #expect(!fixture.store.profiles.contains { $0.id == purged.id } && fixture.store.trashed.isEmpty)
+        #expect(!fixture.exists(fixture.data(purged, "Default/Network/Cookies")))
+
+        coordinator.batch = BatchProgress(action: .start, completed: 0, total: 1, canCancel: true)
+        let delete = await route(coordinator, "DELETE", "/api/v1/profiles/\(other.id)")
+        coordinator.batch = nil
+        #expect(delete.status == 409 && delete.code == "busy")
+        #expect(fixture.store.profiles.map(\.id) == [other.id])
+    }
 }

@@ -321,6 +321,30 @@ struct AutomationAPITests {
         }
     }
 
+    @Test("Creations sent at once each get their own port, seed and unused proxy")
+    func overlappingCreations() async throws {
+        let backend = try FakeBackend()
+        let original = try backend.add("Alpha", port: 9222)
+        let entries = try backend.proxyLibrary.add(["one.example:1", "two.example:2", "three.example:3", "four.example:4"])
+        // Every exit lookup takes a while, so the requests overlap.
+        backend.duringLookup = { _ in try? await Task.sleep(nanoseconds: 200_000_000) }
+        try await serveAutomation(backend) { port in
+            async let plain = call(port, "POST", "/api/v1/profiles")
+            // Ports of their own, so only the proxy could be picked twice.
+            async let first = call(port, "POST", "/api/v1/profiles", ["port": 9501, "proxyFromLibrary": "unused"])
+            async let second = call(port, "POST", "/api/v1/profiles", ["port": 9502, "proxyFromLibrary": "unused"])
+            async let batch = call(port, "POST", "/api/v1/profiles/batch", ["count": 2, "proxyFromLibrary": "unused"])
+            async let copy = call(port, "POST", "/api/v1/profiles/\(original.id)/clone")
+            let replies = await [plain, first, second, batch, copy]
+            #expect(replies.map(\.status) == [201, 201, 201, 201, 201], "\(replies.map { $0.errorMessage ?? "" })")
+            let profiles = backend.profiles
+            #expect(profiles.count == 7)
+            #expect(Set(profiles.map(\.port)).count == 7 && Set(profiles.map(\.fingerprint.seed)).count == 7)
+            // Four unused proxies for four Profiles: one each.
+            #expect(Set(profiles.map(\.proxy)) == Set(entries.map(\.url) + [BrowserProfile.defaultProxy]))
+        }
+    }
+
     // MARK: Changing
 
     @Test("PATCH merges any field into the saved configuration and reports a pending restart")
@@ -388,6 +412,28 @@ struct AutomationAPITests {
         }
     }
 
+    @Test("Spaces around the language, time zone and versions are dropped, as the editor drops them")
+    func spacesDropped() async throws {
+        let backend = try FakeBackend()
+        let profile = try backend.add("Alpha", port: 9401)
+        let fingerprint = profile.fingerprint
+        try await serveAutomation(backend) { port in
+            let patched = await call(port, "PATCH", "/api/v1/profiles/\(profile.id)", ["fingerprint": [
+                "language": " en-US", "timeZone": " Asia/Tokyo ",
+                "platformVersion": " \(fingerprint.platformVersion) ", "brandVersion": "\(fingerprint.brandVersion)\n",
+            ]])
+            #expect(patched.status == 200, "\(patched.errorMessage ?? "")")
+            let saved = try #require(backend.profiles.first { $0.id == profile.id }?.fingerprint)
+            #expect(saved.language == "en-US" && saved.timeZone == "Asia/Tokyo")
+            #expect(saved.platformVersion == fingerprint.platformVersion && saved.brandVersion == fingerprint.brandVersion)
+
+            let created = await call(port, "POST", "/api/v1/profiles", ["fingerprint": ["language": "fr-FR ", "timeZone": "\tEurope/Paris"]])
+            #expect(created.status == 201, "\(created.errorMessage ?? "")")
+            let new = try #require(createdID(created).flatMap { id in backend.profiles.first { $0.id == id } })
+            #expect(new.fingerprint.language == "fr-FR" && new.fingerprint.timeZone == "Europe/Paris")
+        }
+    }
+
     @Test("DELETE moves to the recycle bin; purge removes for good, with deleteData the browser data too")
     func deletes() async throws {
         let backend = try FakeBackend()
@@ -416,6 +462,14 @@ struct AutomationAPITests {
             backend.busy = [beta.id]
             #expect(await call(port, "DELETE", "/api/v1/profiles/\(beta.id)").errorCode == "busy")
             backend.busy = []
+            // A batch in progress is another operation, also for a running browser; stopping it would not help.
+            backend.batchRunning = true
+            for profile in [beta, gamma] {
+                let waiting = await call(port, "DELETE", "/api/v1/profiles/\(profile.id)")
+                #expect(waiting.status == 409 && waiting.errorCode == "busy")
+                #expect(waiting.errorMessage == "批量操作进行中，完成后再移除 Profile。")
+            }
+            backend.batchRunning = false
             #expect(await call(port, "DELETE", "/api/v1/profiles/\(beta.id)?deleteData=1").status == 400)
             #expect(await call(port, "DELETE", "/api/v1/profiles/\(beta.id)?purge=yes").status == 400)
             #expect(await call(port, "DELETE", "/api/v1/profiles/\(UUID())").status == 404)
@@ -447,6 +501,12 @@ struct AutomationAPITests {
         try backend.trash(alpha.id)
         try await serveAutomation(backend) { port in
             #expect(await call(port, "POST", "/api/v1/profiles/\(beta.id)/restore").status == 404)
+            // A busy Profile, such as one being purged, stays in the recycle bin.
+            backend.busy = [alpha.id]
+            let waiting = await call(port, "POST", "/api/v1/profiles/\(alpha.id)/restore")
+            #expect(waiting.status == 409 && waiting.errorCode == "busy")
+            #expect(backend.store.trashed.map(\.id) == [alpha.id])
+            backend.busy = []
             let restored = await call(port, "POST", "/api/v1/profiles/\(alpha.id)/restore")
             #expect(restored.status == 200)
             #expect((restored.json?["profile"] as? [String: Any])?["name"] as? String == "Alpha")
@@ -455,6 +515,41 @@ struct AutomationAPITests {
             #expect(backend.store.trashed.isEmpty)
             #expect(await call(port, "POST", "/api/v1/profiles/\(alpha.id)/restore").status == 404)
         }
+    }
+
+    @Test("When a newer version wrote the database, every change answers 409 read_only and changes nothing")
+    func readOnly() async throws {
+        let writable = try FakeBackend()
+        let alpha = try writable.add("Alpha", port: 9401)
+        let beta = try writable.add("Beta", port: 9402)
+        try writable.trash(beta.id)
+        let entry = try #require(try writable.proxyLibrary.add(["one.example:1"]).first)
+        try execute("PRAGMA user_version = 99", in: writable.directory)
+        let backend = try FakeBackend(directory: writable.directory)
+        #expect(backend.store.isReadOnly)
+        try await serveAutomation(backend) { port in
+            for (method, path, body) in [
+                ("POST", "/api/v1/profiles", nil),
+                ("POST", "/api/v1/profiles/batch", ["count": 1]),
+                ("POST", "/api/v1/profiles/\(alpha.id)/clone", nil),
+                ("PATCH", "/api/v1/profiles/\(alpha.id)", ["notes": "x"]),
+                ("DELETE", "/api/v1/profiles/\(alpha.id)", nil),
+                ("DELETE", "/api/v1/profiles/\(beta.id)?purge=1", nil),
+                ("POST", "/api/v1/profiles/\(beta.id)/restore", nil),
+                ("POST", "/api/v1/proxies", ["urls": ["two.example:2"]]),
+                ("PATCH", "/api/v1/proxies/\(entry.id)", ["label": "x"]),
+                ("DELETE", "/api/v1/proxies/\(entry.id)", nil),
+            ] as [(String, String, [String: Any]?)] {
+                let reply = await call(port, method, path, body)
+                #expect(reply.status == 409 && reply.errorCode == "read_only", "\(method) \(path): \(reply.errorMessage ?? "")")
+                #expect(reply.errorMessage?.contains("更新版本") == true)
+            }
+            #expect(await get(port, "/api/v1/profiles").status == 200)
+            #expect(await get(port, "/api/v1/proxies").status == 200)
+        }
+        #expect(backend.profiles == [alpha] && backend.store.trashed.map(\.id) == [beta.id])
+        #expect(backend.proxyLibrary.entries.map(\.id) == [entry.id] && backend.proxyLibrary.entries.map(\.label) == [""])
+        #expect(backend.removed.isEmpty && backend.lookedUp.isEmpty)
     }
 
     // MARK: Launches

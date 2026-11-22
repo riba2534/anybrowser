@@ -223,7 +223,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" $API/profiles -d '{
 }'
 ```
 
-`POST /api/v1/profiles/batch` 需要 `count`（1–50），可选 `prefix`（默认 `Profile`，名称为 `<前缀> <序号>`）、`preset`、`proxy`、`localeFromExit` 和 `proxyFromLibrary`。批量时 `proxyFromLibrary` 为 `"unused"` 时每个 Profile 分到一条不同的未使用代理，也可以是与 `count` 等长的 id 数组；每个 Profile 按自己代理的出口填写语言和时区，同一个地址只查询一次。请求体里的其他 Profile 字段（如 `group`、`tags`、`notes`、`launch`）应用到每一个，`name`、`port` 和 `fingerprint.seed` 除外。全部成功才保存。
+`POST /api/v1/profiles/batch` 需要 `count`（1–50），可选 `prefix`（默认 `Profile`，名称为 `<前缀> <序号>`）、`preset`、`proxy`、`localeFromExit` 和 `proxyFromLibrary`。批量时 `proxyFromLibrary` 为 `"unused"` 时每个 Profile 分到一条不同的未使用代理，也可以是与 `count` 等长的 id 数组；每个 Profile 按自己代理的出口填写语言和时区，同一个地址只查询一次。请求体里的其他 Profile 字段（如 `group`、`tags`、`notes`、`launch`）应用到每一个，`name`、`port` 和 `fingerprint.seed` 除外。全部成功才保存。同时收到的新建、批量新建和复制请求按到达顺序逐个处理，不会分到同一个端口、种子或未使用的代理。
 
 `PATCH` 按 JSON Merge Patch（RFC 7386）合并：对象逐层合并，`null` 删除字段（恢复默认值），其他值直接替换，数组整体替换。所有字段都可以改，包括 `passkeyBox`、`launch.extensionDirectories` 和 `fingerprint`；不认识的字段返回 400。运行中照样保存，浏览器在重启前继续用原来的配置，这时 `pendingRestart` 为 `true`。把不含密码的 `config` 原样改了发回时，与它相同的 `proxy` 视为未修改，已保存的账号密码保留；不用代理请写 `"proxy": ""`。
 
