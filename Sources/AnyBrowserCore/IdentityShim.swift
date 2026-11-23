@@ -593,7 +593,7 @@ enum IdentityShim {
         const size = fake.screen;
         const dpr = fake.dpr;
         const coarse = fake.touch === true;
-        const feature = /^\(\s*(min-|max-)?(width|height|resolution)\s*:\s*(\d*\.?\d+)\s*(px|dppx|dpi)?\s*\)$/i;
+        const feature = /^\(\s*(min-|max-)?(device-width|device-height|width|height|resolution)\s*:\s*(\d*\.?\d+)\s*(px|dppx|dpi)?\s*\)$/i;
         const pointerFeature = /^\(\s*(any-)?pointer\s*:\s*(fine|coarse|none)\s*\)$/i;
         // `undefined` means the clause is outside the guard and the native answer decides.
         const evaluate = (query) => {
@@ -619,9 +619,16 @@ enum IdentityShim {
             if (name === 'resolution') {
               if (unit === 'px' || typeof dpr !== 'number') return undefined;
               actual = unit === 'dpi' ? dpr * 96 : dpr;
+            } else if (name === 'width' || name === 'height') {
+              // A viewport query follows the real viewport, as CSS does.
+              if (unit && unit !== 'px') return undefined;
+              const viewport = name === 'width' ? globalThis.innerWidth : globalThis.innerHeight;
+              actual = typeof viewport === 'number' ? viewport
+                : name === 'width' ? size && size.width : size && size.height;
             } else {
+              // A device query follows the claimed screen.
               if (!size || (unit && unit !== 'px')) return undefined;
-              actual = size[name];
+              actual = name === 'device-width' ? size.width : size.height;
             }
             const ok = range === 'min-' ? actual >= value : range === 'max-' ? actual <= value
               : actual === value;
