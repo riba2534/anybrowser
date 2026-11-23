@@ -37,13 +37,13 @@ public enum DeviceIdentity {
 
     /// A lowercase UUIDv4 in canonical 8-4-4-4-12 form.
     public static func isValid(_ text: String) -> Bool {
-        text.range(of: #"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"#,
+        text.range(of: #"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}([0-9a-f]{6})?$"#,
                     options: .regularExpression) == text.startIndex..<text.endIndex
     }
 
     private static func format(_ bytes: [UInt8]) -> String {
         let hex = bytes.map { String(format: "%02x", $0) }.joined()
-        let cuts = [8, 13, 18, 23]
+        let cuts = [8, 12, 16, 20]
         var result = ""
         for (index, character) in hex.enumerated() {
             if cuts.contains(index) { result.append("-") }
