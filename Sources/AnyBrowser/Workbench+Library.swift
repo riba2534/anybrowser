@@ -393,7 +393,8 @@ extension Workbench {
             return
         }
         guard let screen = NSApp.keyWindow?.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
-        let outcomes = await runtime.arrangeWindows(targets, in: WindowArrangement.visibleArea(of: screen))
+        let chosen = profiles.filter { targets.contains($0.id) }
+        let outcomes = await runtime.arrangeWindows(chosen, in: WindowArrangement.visibleArea(of: screen))
         let placed = outcomes.filter { $0.failure == nil }.count
         let failures = outcomes.compactMap { outcome in
             outcome.failure.map { "\(profiles.first { $0.id == outcome.id }?.name ?? "Profile")：\($0)" }

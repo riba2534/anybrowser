@@ -1,5 +1,30 @@
 import Foundation
 
+/// The display and font a Profile presents, hashed as one key: two Profiles that share it look
+/// alike to a page even when their seeds differ, while sharing only the screen or only the font
+/// says little. A Profile that claims neither shares the host display and fonts and is not compared.
+public struct ScreenFontCombination: Hashable, Sendable {
+    public var width: Int
+    public var height: Int
+    public var scale: Double?
+    public var font: FontProfile?
+
+    /// nil when the fingerprint claims neither a display nor a font.
+    init?(_ fingerprint: FingerprintSettings) {
+        guard fingerprint.screenWidth != nil || fingerprint.screenHeight != nil
+                || fingerprint.deviceScaleFactor != nil || fingerprint.fontProfile != nil else { return nil }
+        width = fingerprint.screenWidth ?? 0
+        height = fingerprint.screenHeight ?? 0
+        scale = fingerprint.deviceScaleFactor
+        font = fingerprint.fontProfile
+    }
+
+    /// The one combination as a set, or the empty set.
+    static func set(_ combination: ScreenFontCombination?) -> Set<Self> {
+        combination.map { [$0] } ?? []
+    }
+}
+
 /// Profile import and export, cloning, batch creation and sidebar arrangement.
 public enum ProfileLibrary {
     public static let format = "anybrowser-profiles"
@@ -34,6 +59,8 @@ public enum ProfileLibrary {
         public var skipped: Int
         /// "第 <n> 条：<reason>" for each skipped entry, in file order.
         public var skippedReasons: [String] = []
+        /// "第 <n> 条：<reason>" for imported entries that could not get a fresh display and font.
+        public var warnings: [String] = []
     }
 
     public struct BatchRequest: Sendable {
@@ -78,20 +105,111 @@ public enum ProfileLibrary {
         return value
     }
 
-    /// New Profiles from an export file: each gets a new id, and a new port or seed when it collides
-    /// with `takenPorts`/`takenSeeds` or an earlier entry. Entries that fail validation are skipped
-    /// with the reason.
-    /// A copy must not inherit the original's device: the id goes, and the memory follows the seed
-    /// the copy ends up with. Call after the id or seed was reassigned.
-    static func renewDevice(in profile: inout BrowserProfile) {
+    /// A copy must not inherit the original's device: the id goes, the memory follows the seed the
+    /// copy ends up with, and the display and font move away from `combinations`. A combination that
+    /// cannot be avoided is returned as a warning instead. Call after the id or seed was reassigned.
+    @discardableResult
+    static func renewDevice(in profile: inout BrowserProfile, excluding combinations: Set<ScreenFontCombination>,
+                            seeds: Set<Int> = []) -> String? {
         profile.deviceIdentity = nil
         // A Profile that records no memory keeps it unset; one that does follows the new seed.
         if profile.fingerprint.deviceMemory != nil {
             profile.fingerprint.deviceMemory = EngineHardwareTable.bundled.deviceMemory(seed: profile.fingerprint.seed)
         }
+        var used = seeds
+        for round in 0..<combinationRounds {
+            if round > 0 {
+                // Every display and font is in use for now: another seed moves the rest of the
+                // device as well, then the draw is tried again.
+                used.insert(profile.fingerprint.seed)
+                // The same hardware keeps the CPU count, which the seed's GPU has to match.
+                profile.fingerprint.seed = FingerprintSettings.newSeed(excluding: used,
+                                                                       sameHardwareAs: profile.fingerprint.seed)
+                if profile.fingerprint.deviceMemory != nil {
+                    profile.fingerprint.deviceMemory = EngineHardwareTable.bundled.deviceMemory(seed: profile.fingerprint.seed)
+                }
+            }
+            if freshCombination(in: &profile.fingerprint, excluding: combinations) { return nil }
+        }
+        return exhaustedCombinations
     }
 
-    public static func importProfiles(from data: Data, takenPorts: Set<Int>, takenSeeds: Set<Int>) throws -> ImportResult {
+    static let exhaustedCombinations = "屏幕与字体组合已用尽，只能与已有 Profile 相同。"
+
+    /// Displays a draw tries before the catalogue is taken as used up. The smallest catalogue has
+    /// three entries, the rarest of which a draw misses well under once in a hundred times.
+    static let combinationDraws = 256
+    /// How often the seed is changed and the draw tried again.
+    static let combinationRounds = 3
+
+    /// Replaces `fingerprint`'s display and font with a combination outside `taken`, when one is
+    /// free; false when all are taken and the drawn one repeats. The platform version follows a
+    /// font that changed, because validation derives the font from it.
+    @discardableResult
+    static func freshCombination(in fingerprint: inout FingerprintSettings,
+                                 excluding taken: Set<ScreenFontCombination>) -> Bool {
+        // A Profile without a platform shares the host Mac's display and claims no font.
+        let platform = fingerprint.platform ?? .macOS
+        let fonts = Self.fonts(for: platform, claimed: fingerprint.platform != nil)
+        let (drawn, isFree) = drawDisplay(for: platform, fonts: fonts, excluding: taken)
+        fingerprint.screenWidth = drawn.screenWidth
+        fingerprint.screenHeight = drawn.screenHeight
+        fingerprint.availWidth = drawn.availWidth
+        fingerprint.availHeight = drawn.availHeight
+        fingerprint.colorDepth = drawn.colorDepth
+        fingerprint.deviceScaleFactor = drawn.deviceScaleFactor
+        fingerprint.fontProfile = drawn.fontProfile
+        if let platform = fingerprint.platform, let font = drawn.fontProfile {
+            fingerprint.platformVersion = version(of: fingerprint.platformVersion, for: font, on: platform)
+        }
+        return isFree
+    }
+
+    /// The fonts `platform` can show; nil alone for a Profile that claims none.
+    static func fonts(for platform: BrowserPlatform, claimed: Bool) -> [FontProfile?] {
+        claimed ? FontProfile.allCases.filter { $0.platform == platform } : [nil]
+    }
+
+    /// Whether `taken` leaves any display and font free for `platform`.
+    static func hasFreeCombination(for platform: BrowserPlatform, fonts: [FontProfile?],
+                                   excluding taken: Set<ScreenFontCombination>) -> Bool {
+        drawDisplay(for: platform, fonts: fonts, excluding: taken).isFree
+    }
+
+    /// One random display and font for `platform` outside `taken`, with whether a free one was
+    /// found. When every combination is taken the last draw is still returned, so the caller has
+    /// a usable display.
+    private static func drawDisplay(for platform: BrowserPlatform, fonts: [FontProfile?],
+                                    excluding taken: Set<ScreenFontCombination>) -> (fingerprint: FingerprintSettings, isFree: Bool) {
+        var last: FingerprintSettings?
+        for _ in 0..<combinationDraws {
+            var probe = FingerprintSettings(seed: 1)
+            probe.fontProfile = fonts.randomElement() ?? nil
+            IdentitySampler.applyScreen(to: &probe, for: platform)
+            if let combination = ScreenFontCombination(probe), !taken.contains(combination) {
+                return (probe, true)
+            }
+            last = probe
+        }
+        return (last ?? FingerprintSettings(seed: 1), false)
+    }
+
+    /// `version` unless validation would derive another font than `font` from it.
+    private static func version(of version: String, for font: FontProfile, on platform: BrowserPlatform) -> String {
+        guard FontProfile.default(for: platform, version: version) != font else { return version }
+        switch platform {
+        case .macOS: return font == .macos15 ? "15.0.0" : "26.0.0"
+        case .windows: return font == .windows10 ? "10.0.0" : "19.0.0"
+        case .linux: return version
+        }
+    }
+
+    /// New Profiles from an export file: each gets a new id, and a new port or seed when it collides
+    /// with `takenPorts`/`takenSeeds`, an earlier entry or `takenCombinations`. Entries that fail
+    /// validation are skipped with the reason; a display and font that cannot be avoided is reported
+    /// in `warnings` instead.
+    public static func importProfiles(from data: Data, takenPorts: Set<Int>, takenSeeds: Set<Int>,
+                                      takenCombinations: Set<ScreenFontCombination> = []) throws -> ImportResult {
         guard data.count <= maxImportBytes else {
             throw ProfileError.invalid("文件过大，不是 AnyBrowser 导出的 Profile 文件。")
         }
@@ -107,6 +225,7 @@ public enum ProfileLibrary {
         }
         var ports = takenPorts
         var seeds = takenSeeds
+        var combinations = takenCombinations
         var result = ImportResult(profiles: [], skipped: 0)
         func skip(_ index: Int, _ reason: String) {
             result.skipped += 1
@@ -127,7 +246,6 @@ public enum ProfileLibrary {
                 continue
             }
             profile.id = UUID()
-            renewDevice(in: &profile)
             if ports.contains(profile.port) {
                 guard let port = try? freePort(excluding: ports) else {
                     skip(index, "没有可分配的调试端口。")
@@ -138,8 +256,11 @@ public enum ProfileLibrary {
             if seeds.contains(profile.fingerprint.seed) {
                 profile.fingerprint.seed = FingerprintSettings.newSeed(excluding: seeds,
                                                                        sameHardwareAs: profile.fingerprint.seed)
-                renewDevice(in: &profile)
             }
+            if let warning = renewDevice(in: &profile, excluding: combinations, seeds: seeds) {
+                result.warnings.append("第 \(index + 1) 条：\(warning)")
+            }
+            combinations.formUnion(ScreenFontCombination.set(ScreenFontCombination(profile.fingerprint)))
             ports.insert(profile.port)
             seeds.insert(profile.fingerprint.seed)
             result.profiles.append(profile)
@@ -159,22 +280,28 @@ public enum ProfileLibrary {
 
     // MARK: New Profiles
 
-    /// A copy of a saved Profile with a new id, name, port and seed; everything else is kept.
+    /// A copy of a saved Profile with a new id, name, port, seed, display and font; everything else
+    /// is kept.
     public static func clone(_ profile: BrowserProfile, existingNames: Set<String>,
-                             takenPorts: Set<Int>, takenSeeds: Set<Int>) throws -> BrowserProfile {
+                             takenPorts: Set<Int>, takenSeeds: Set<Int>,
+                             takenCombinations: Set<ScreenFontCombination> = []) throws -> BrowserProfile {
         var copy = profile
         copy.id = UUID()
         copy.name = copyName(of: profile.name, existing: existingNames)
         copy.port = try freePort(excluding: takenPorts)
         copy.fingerprint.seed = FingerprintSettings.newSeed(excluding: takenSeeds, sameHardwareAs: profile.fingerprint.seed)
         // A copy with the same device id would look like the same device to Stripe.
+        renewDevice(in: &copy, excluding: takenCombinations.union(ScreenFontCombination.set(ScreenFontCombination(profile.fingerprint))),
+                    seeds: takenSeeds)
         copy.deviceIdentity = DeviceIdentity.mint()
         return try copy.validated()
     }
 
-    /// Validated Profiles named `<prefix> <n>`, skipping names already in use.
+    /// Validated Profiles named `<prefix> <n>`, skipping names already in use and moving each off
+    /// the ports, seeds and display and font combinations taken here or by an earlier Profile.
     public static func batch(_ request: BatchRequest, existingNames: Set<String>,
-                             takenPorts: Set<Int>, takenSeeds: Set<Int>) throws -> [BrowserProfile] {
+                             takenPorts: Set<Int>, takenSeeds: Set<Int>,
+                             takenCombinations: Set<ScreenFontCombination> = []) throws -> [BrowserProfile] {
         guard (1...maxBatch).contains(request.count) else {
             throw ProfileError.invalid("数量须为 1–\(maxBatch)。")
         }
@@ -184,20 +311,23 @@ public enum ProfileLibrary {
         var names = existingNames
         var ports = takenPorts
         var seeds = takenSeeds
+        var combinations = takenCombinations
         var index = 0
         var result: [BrowserProfile] = []
         for _ in 0..<request.count {
             repeat { index += 1 } while names.contains("\(prefix) \(index)")
             // Every Profile in a batch gets its own bundle, not one preset copied N times.
-            let fingerprint = IdentitySampler.sample(
+            var fingerprint = IdentitySampler.sample(
                 seed: FingerprintSettings.newSeed(excluding: seeds),
                 constraints: .init(preset: request.preset, locale: request.locale))
+            freshCombination(in: &fingerprint, excluding: combinations)
             let profile = try BrowserProfile(name: "\(prefix) \(index)", port: freePort(excluding: ports),
                                              fingerprint: fingerprint, proxy: request.proxy,
                                              group: request.group).validated()
             names.insert(profile.name)
             ports.insert(profile.port)
             seeds.insert(profile.fingerprint.seed)
+            combinations.formUnion(ScreenFontCombination.set(ScreenFontCombination(profile.fingerprint)))
             result.append(profile)
         }
         return result
@@ -432,7 +562,8 @@ extension ProfileStore {
     /// half imported, and returns them with the entries skipped and why.
     public func importProfiles(from data: Data) throws -> ProfileLibrary.ImportResult {
         try requireWritable()
-        var result = try ProfileLibrary.importProfiles(from: data, takenPorts: takenPorts, takenSeeds: takenSeeds)
+        var result = try ProfileLibrary.importProfiles(from: data, takenPorts: takenPorts, takenSeeds: takenSeeds,
+                                                      takenCombinations: takenScreenFontCombinations)
         result.profiles = try saveAll(result.profiles)
         return result
     }
@@ -449,7 +580,8 @@ extension ProfileStore {
             throw ProfileError.invalid("找不到要复制的 Profile。")
         }
         let copy = try ProfileLibrary.clone(original, existingNames: Set(profiles.map(\.name)),
-                                            takenPorts: takenPorts, takenSeeds: takenSeeds)
+                                            takenPorts: takenPorts, takenSeeds: takenSeeds,
+                                            takenCombinations: takenScreenFontCombinations)
         try save(copy)
         return copy
     }
@@ -457,7 +589,8 @@ extension ProfileStore {
     /// Validates every new Profile first, then saves them all in one transaction.
     public func saveBatch(_ request: ProfileLibrary.BatchRequest) throws -> [BrowserProfile] {
         let batch = try ProfileLibrary.batch(request, existingNames: Set(profiles.map(\.name)),
-                                             takenPorts: takenPorts, takenSeeds: takenSeeds)
+                                             takenPorts: takenPorts, takenSeeds: takenSeeds,
+                                             takenCombinations: takenScreenFontCombinations)
         try saveAll(batch)
         return batch
     }

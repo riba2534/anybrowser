@@ -270,7 +270,11 @@ struct AutomationAPITests {
             #expect(saved.count == 3)
             #expect(saved.map(\.proxy) == entries.map(\.url))
             #expect(Set(saved.map(\.port)).count == 3 && Set(saved.map(\.fingerprint.seed)).count == 3)
-            #expect(saved.allSatisfy { $0.group == "电商" && $0.tags == ["batch"] && $0.fingerprint.platformVersion.hasPrefix("26") })
+            #expect(saved.allSatisfy {
+                $0.group == "电商" && $0.tags == ["batch"] && $0.fingerprint.platform == .macOS
+                    // Each Profile gets a display and font of its own; the font follows the version.
+                    && ["26", "15"].contains(where: $0.fingerprint.platformVersion.hasPrefix)
+            })
             #expect(saved[0].fingerprint.timeZone == "Europe/Paris")
             #expect(saved[1].fingerprint.timeZone == "Asia/Tokyo")
             // Each address is looked up once, all at the same time.

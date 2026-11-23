@@ -748,7 +748,8 @@ extension AutomationHTTP {
         do {
             profiles = try ProfileLibrary.batch(
                 ProfileLibrary.BatchRequest(count: count, prefix: prefix, preset: creation.preset, proxy: ""),
-                existingNames: Set(store.profiles.map(\.name)), takenPorts: store.takenPorts, takenSeeds: store.takenSeeds)
+                existingNames: Set(store.profiles.map(\.name)), takenPorts: store.takenPorts, takenSeeds: store.takenSeeds,
+                takenCombinations: store.takenScreenFontCombinations)
         } catch {
             throw Failure.invalid(error.localizedDescription)
         }
@@ -772,7 +773,8 @@ extension AutomationHTTP {
         guard fields["id"] == nil else { throw Failure.invalid("复制 Profile 时不能指定 id。") }
         let store = backend.store
         let copy = try ProfileLibrary.clone(original, existingNames: Set(store.profiles.map(\.name)),
-                                            takenPorts: store.takenPorts, takenSeeds: store.takenSeeds)
+                                            takenPorts: store.takenPorts, takenSeeds: store.takenSeeds,
+                                            takenCombinations: store.takenScreenFontCombinations)
         let profile = try save([try merged(fields, into: copy)], backend)[0]
         return .json(201, Body(["profile": object(profile, backend: backend),
                                 "config": config(profile, secrets: try call.flag("secrets"))]))

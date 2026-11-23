@@ -177,7 +177,8 @@ extension ProfileLibrary {
     /// `locales[i]` (nil samples language and time zone freely). The request's own proxy and
     /// locale are not used.
     public static func batch(_ request: BatchRequest, proxies: [String], locales: [IdentitySampler.LocaleHint?],
-                             existingNames: Set<String>, takenPorts: Set<Int>, takenSeeds: Set<Int>) throws -> [BrowserProfile] {
+                             existingNames: Set<String>, takenPorts: Set<Int>, takenSeeds: Set<Int>,
+                             takenCombinations: Set<ScreenFontCombination> = []) throws -> [BrowserProfile] {
         guard (1...maxBatch).contains(request.count) else {
             throw ProfileError.invalid("数量须为 1–\(maxBatch)。")
         }
@@ -187,16 +188,19 @@ extension ProfileLibrary {
         var names = existingNames
         var ports = takenPorts
         var seeds = takenSeeds
+        var combinations = takenCombinations
         var result: [BrowserProfile] = []
         for index in 0..<request.count {
             var single = request
             single.count = 1
             single.proxy = proxies[index]
             single.locale = locales[index]
-            let profile = try batch(single, existingNames: names, takenPorts: ports, takenSeeds: seeds)[0]
+            let profile = try batch(single, existingNames: names, takenPorts: ports, takenSeeds: seeds,
+                                    takenCombinations: combinations)[0]
             names.insert(profile.name)
             ports.insert(profile.port)
             seeds.insert(profile.fingerprint.seed)
+            combinations.formUnion(ScreenFontCombination.set(ScreenFontCombination(profile.fingerprint)))
             result.append(profile)
         }
         return result
@@ -210,7 +214,8 @@ extension ProfileStore {
         try requireWritable()
         let batch = try ProfileLibrary.batch(request, proxies: proxies, locales: locales,
                                              existingNames: Set(profiles.map(\.name)),
-                                             takenPorts: takenPorts, takenSeeds: takenSeeds)
+                                             takenPorts: takenPorts, takenSeeds: takenSeeds,
+                                             takenCombinations: takenScreenFontCombinations)
         return try saveAll(batch)
     }
 }
