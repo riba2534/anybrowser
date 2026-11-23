@@ -324,6 +324,12 @@ struct FingerprintCard: View {
     private func apply(_ preset: IdentityPreset) {
         showPresets = false
         preset.apply(to: &draft.profile.fingerprint)
+        // The preset's own display may already be another Profile's; move off it.
+        if let store = workbench.store, let combination = ScreenFontCombination(draft.profile.fingerprint),
+           store.takenScreenFontCombinations.contains(combination) {
+            ProfileLibrary.freshCombination(in: &draft.profile.fingerprint,
+                                            excluding: store.takenScreenFontCombinations)
+        }
         draft.cpuText = draft.profile.fingerprint.cpuCount.map(String.init) ?? ""
         workbench.notice = Workbench.Notice(text: "已套用「\(preset.title)」，保存后应用。")
     }

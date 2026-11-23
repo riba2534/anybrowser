@@ -961,4 +961,19 @@ struct AutomationAPITests {
             #expect(backend.checked.count == count)
         }
     }
+
+    @Test("Repeated creation with one preset keeps finding free combinations")
+    func repeatedPresetCreation() async throws {
+        let backend = try FakeBackend()
+        try await serveAutomation(backend) { port in
+            // macOS offers ten screen and font combinations; eight never exhausts them.
+            for index in 0..<8 {
+                let created = await call(port, "POST", "/api/v1/profiles", ["preset": "macos26-chrome"])
+                #expect(created.status == 201, "第 \(index + 1) 个被拒：\(created.body)")
+            }
+            #expect(backend.profiles.count == 8)
+            let combinations = Set(backend.profiles.compactMap { ScreenFontCombination($0.fingerprint) })
+            #expect(combinations.count == backend.profiles.count)
+        }
+    }
 }

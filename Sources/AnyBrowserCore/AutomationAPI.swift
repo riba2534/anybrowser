@@ -717,6 +717,12 @@ extension AutomationHTTP {
         var draft = try backend.store.makeDraft()
         if let preset = creation.preset {
             draft.fingerprint = IdentitySampler.sample(seed: draft.fingerprint.seed, constraints: .init(preset: preset))
+            // The preset's own display may already belong to another Profile; move off it.
+            if let combination = ScreenFontCombination(draft.fingerprint),
+               backend.store.takenScreenFontCombinations.contains(combination) {
+                ProfileLibrary.freshCombination(in: &draft.fingerprint,
+                                                excluding: backend.store.takenScreenFontCombinations)
+            }
         }
         if let proxy = try creation.proxies(count: 1, backend)?.first { draft.proxy = proxy }
         var profiles = [try merged(fields, into: draft)]

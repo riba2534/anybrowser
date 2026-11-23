@@ -10,7 +10,7 @@ public struct ScreenFontCombination: Hashable, Sendable {
     public var font: FontProfile?
 
     /// nil when the fingerprint claims neither a display nor a font.
-    init?(_ fingerprint: FingerprintSettings) {
+    public init?(_ fingerprint: FingerprintSettings) {
         guard fingerprint.screenWidth != nil || fingerprint.screenHeight != nil
                 || fingerprint.deviceScaleFactor != nil || fingerprint.fontProfile != nil else { return nil }
         width = fingerprint.screenWidth ?? 0
@@ -20,7 +20,7 @@ public struct ScreenFontCombination: Hashable, Sendable {
     }
 
     /// The one combination as a set, or the empty set.
-    static func set(_ combination: ScreenFontCombination?) -> Set<Self> {
+    public static func set(_ combination: ScreenFontCombination?) -> Set<Self> {
         combination.map { [$0] } ?? []
     }
 }
@@ -146,7 +146,7 @@ public enum ProfileLibrary {
     /// free; false when all are taken and the drawn one repeats. The platform version follows a
     /// font that changed, because validation derives the font from it.
     @discardableResult
-    static func freshCombination(in fingerprint: inout FingerprintSettings,
+    public static func freshCombination(in fingerprint: inout FingerprintSettings,
                                  excluding taken: Set<ScreenFontCombination>) -> Bool {
         // A Profile without a platform shares the host Mac's display and claims no font.
         let platform = fingerprint.platform ?? .macOS
