@@ -34,6 +34,9 @@ struct CoordinatorEngineTests {
     }
 
     private static let identityCookies = ["dom", "m", "hostm", "lsid", "chips", "__stripe_mid"]
+    /// The launch seeds these on the start hosts before the first navigation, so a cleared jar
+    /// still holds them.
+    private static let seededCookies: Set<String> = ["__stripe_mid", "__stripe_sid"]
 
     /// Sets lasting cookies of a payment site's device identity, plus one of an unrelated site,
     /// and loads the cacheable asset twice.
@@ -116,7 +119,7 @@ struct CoordinatorEngineTests {
             #expect(!fixture.store.pendingIdentityReset(profile.id))
             try await coordinator.start(profile.id)
             #expect(seedArgument(fixture, profile) == "--fingerprint=\(renewed.fingerprint.seed)")
-            #expect(try await cookieNames(fixture, profile).isEmpty)
+            #expect(try await cookieNames(fixture, profile).subtracting(Self.seededCookies).isEmpty)
             try await fetchAsset(fixture, profile, server)
             #expect(server.requests("/asset.js") == 2)
             try await coordinator.stop(profile.id)
@@ -159,7 +162,7 @@ struct CoordinatorEngineTests {
             #expect(!fixture.store.pendingIdentityReset(profile.id))
             #expect(!coordinator.hasPendingRestart(profile.id))
             #expect(seedArgument(fixture, profile) == "--fingerprint=\(renewed.fingerprint.seed)")
-            #expect(try await cookieNames(fixture, profile).isEmpty)
+            #expect(try await cookieNames(fixture, profile).subtracting(Self.seededCookies).isEmpty)
             try await fetchAsset(fixture, profile, server)
             #expect(server.requests("/asset.js") == 2)
             try await coordinator.stop(profile.id)
