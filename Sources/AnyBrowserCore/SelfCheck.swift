@@ -233,8 +233,12 @@ public enum SelfCheck {
         default: nil
         }
         let uaToken = suffix.flatMap { Self.token($0, in: seen.userAgent) }
-        let brandOK = brandName.map(brands.contains) ?? !brands.contains("Google Chrome")
-        add("brand", "浏览器品牌", expected: fingerprint.brand?.rawValue ?? "引擎默认（Chromium）",
+        // A platform identity always carries a brand, so an unset brand must still read as Chrome
+        // rather than the engine's bare Chromium.
+        let brandOK = brandName.map(brands.contains)
+            ?? (fingerprint.platform == nil || brands.contains("Google Chrome"))
+        add("brand", "浏览器品牌",
+            expected: fingerprint.brand?.rawValue ?? (fingerprint.platform == nil ? "引擎默认（Chromium）" : "Google Chrome"),
             observed: ([brands.joined(separator: ", ")] + [uaToken].compactMap { $0 }).joined(separator: " · "),
             judge(brandOK && (suffix == nil || uaToken != nil)))
 

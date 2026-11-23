@@ -1,0 +1,7 @@
+{
+  "capturedAt": "2026-11-23",
+  "browser": "Google Chrome 158.0.8127.37 (headed, macOS host, 1280x800 window)",
+  "values": {"w":2560,"h":1440,"aw":2560,"ah":1410,"at":30,"al":0,"cd":24,"pd":24,"dpr":2,"ow":1280,"oh":800,"iw":1280,"ih":657},
+  "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36",
+  "note": "Chrome's Page/Runtime.evaluate over the page target WebSocket. This is the reference for availTop=30, colorDepth=24, dpr=2, and outer-inner decoration height 143."
+}

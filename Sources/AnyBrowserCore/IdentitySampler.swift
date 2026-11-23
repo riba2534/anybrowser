@@ -125,11 +125,6 @@ public enum IdentitySampler {
     /// font rendering there. Windows/Linux remain available through an explicit preset.
     private static let defaultPresetIDs = ["macos27-chrome", "macos26-chrome", "macos15-chrome"]
 
-    /// Fingerprint Chromium 148 accepts `--fingerprint-screen-*`, but in a windowed probe both
-    /// `screen.width/height` and `availWidth/Height` still reported the host display. Keep the
-    /// fields for a future engine, but do not claim a screen the browser will not report.
-    private static let screenSpoofingSupported = false
-
     /// Shared by whole identities and by the field randomizer's platform, brand and platform version.
     private static let presetWeights: [String: Int] = [
         "macos27-chrome": 30,
@@ -163,17 +158,7 @@ public enum IdentitySampler {
         var fingerprint = FingerprintSettings(seed: seed)
         preset.apply(to: &fingerprint)
 
-        if screenSpoofingSupported {
-            let screen = choose(screenProfiles(for: preset.platform))
-                ?? ScreenProfile(width: 1920, height: 1080, availWidth: 1920, availHeight: 1040,
-                                 colorDepth: 24, scale: 1, weight: 1)
-            fingerprint.screenWidth = screen.width
-            fingerprint.screenHeight = screen.height
-            fingerprint.availWidth = screen.availWidth
-            fingerprint.availHeight = screen.availHeight
-            fingerprint.colorDepth = screen.colorDepth
-            fingerprint.deviceScaleFactor = screen.scale
-        }
+        applyScreen(to: &fingerprint, for: preset.platform)
 
         let fallbackLocale = choose(localeProfiles)
             ?? LocaleProfile(language: "en-US", timeZone: "America/New_York", weight: 1)
@@ -186,6 +171,9 @@ public enum IdentitySampler {
         // Audio and client rects are seed-derived and already work in this engine; they add
         // device separation beyond Canvas/GPU without claiming an unsupported value.
         fingerprint.adjustments.insert(.audio)
+        // The font set is part of the platform identity and the preset always names a platform;
+        // without the switch every page reads this Mac's own fonts whatever the Profile claims.
+        fingerprint.adjustments.insert(.font)
         fingerprint.adaptToPlatform()
         return fingerprint
     }
@@ -241,10 +229,10 @@ public enum IdentitySampler {
         switch platform {
         case .macOS:
             return [
-                screen(1728, 1117, 1728, 1080, 30, 2, 40),
-                screen(1512, 982, 1512, 945, 30, 2, 30),
-                screen(2560, 1440, 2560, 1410, 30, 2, 20),
-                screen(1440, 900, 1440, 875, 30, 2, 10),
+                screen(1728, 1117, 1728, 1080, 24, 2, 40),
+                screen(1512, 982, 1512, 945, 24, 2, 30),
+                screen(2560, 1440, 2560, 1410, 24, 2, 20),
+                screen(1440, 900, 1440, 875, 24, 2, 10),
             ]
         case .windows:
             return [
@@ -268,6 +256,21 @@ public enum IdentitySampler {
                                       availHeight: availHeight, colorDepth: colorDepth,
                                       scale: scale, weight: weight),
                  weight: weight)
+    }
+
+    /// Fills a screen for `platform` when the fingerprint has none. Profiles built by hand get the
+    /// same coherent display a sampled one would.
+    static func applyScreen(to fingerprint: inout FingerprintSettings, for platform: BrowserPlatform) {
+        // A screen from another platform's catalogue does not fit the new one.
+        let widths = Set(screenProfiles(for: platform).map(\.value.width))
+        if let width = fingerprint.screenWidth, widths.contains(width) { return }
+        guard let screen = choose(screenProfiles(for: platform)) else { return }
+        fingerprint.screenWidth = screen.width
+        fingerprint.screenHeight = screen.height
+        fingerprint.availWidth = screen.availWidth
+        fingerprint.availHeight = screen.availHeight
+        fingerprint.colorDepth = screen.colorDepth
+        fingerprint.deviceScaleFactor = screen.scale
     }
 
     private static func fontProfile(for presetID: String, platform: BrowserPlatform) -> FontProfile {

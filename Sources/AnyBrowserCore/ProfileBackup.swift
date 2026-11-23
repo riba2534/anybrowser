@@ -414,6 +414,7 @@ public enum ProfileBackup {
             profile.fingerprint.seed = FingerprintSettings.newSeed(excluding: store.takenSeeds.union(others.map(\.fingerprint.seed)),
                                                                    sameHardwareAs: profile.fingerprint.seed)
         }
+        ProfileLibrary.renewDevice(in: &profile)
         return profile
     }
 
@@ -483,21 +484,31 @@ public enum ProfileBackup {
             } catch {
                 return skip(error.localizedDescription)
             }
+            var renewed = false
             switch identity {
             case .keepOriginal:
                 if let reason = ids[entry.id] { return skip(reason) }
                 profile.id = entry.id
             case .keepOriginalOrRenew:
-                profile.id = ids[entry.id] == nil ? entry.id : UUID()
+                if ids[entry.id] == nil {
+                    profile.id = entry.id
+                } else {
+                    profile.id = UUID()
+                    renewed = true
+                }
             case .renew:
                 profile.id = UUID()
+                renewed = true
             }
+            // Keeping the original id also keeps its device; a new id is a new device.
+            if renewed { ProfileLibrary.renewDevice(in: &profile) }
             if ports.contains(profile.port) {
                 guard let port = try? ProfileLibrary.freePort(excluding: ports) else { return skip("没有可分配的调试端口。") }
                 profile.port = port
             }
             if seeds.contains(profile.fingerprint.seed) {
                 profile.fingerprint.seed = FingerprintSettings.newSeed(excluding: seeds, sameHardwareAs: profile.fingerprint.seed)
+                ProfileLibrary.renewDevice(in: &profile)
             }
             ids[profile.id] = "备份中有两个 ID 相同的 Profile。"
             ports.insert(profile.port)

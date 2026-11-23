@@ -9,7 +9,7 @@ extension LaunchCoordinator {
     /// A new identity for `profile` (saved or not), with language and time zone from its proxy's
     /// exit, or from this Mac without a proxy. Nothing is saved or deleted. The Profile counts as
     /// busy meanwhile, so the editor and launches wait for the exit lookup.
-    public func generateIdentity(for profile: BrowserProfile) async throws -> (fingerprint: FingerprintSettings, exitLookupFailed: Bool) {
+    public func generateIdentity(for profile: BrowserProfile) async throws -> (profile: BrowserProfile, exitLookupFailed: Bool) {
         let id = profile.id
         guard !isBusy(id) else { throw ProfileError.invalid("「\(profile.name)」正在执行另一个操作。") }
         regenerating.insert(id)
@@ -24,7 +24,7 @@ extension LaunchCoordinator {
         } else {
             lookupFailed = true
         }
-        return (try store.regenerateIdentity(profile, locale: locale).fingerprint, lookupFailed)
+        return (try store.regenerateIdentity(profile, locale: locale), lookupFailed)
     }
 
     /// Saves `profile` with the identity `generateIdentity` gave it and marks the old identity's
@@ -32,7 +32,10 @@ extension LaunchCoordinator {
     /// launch still asks what to do with the old data, because the seed changed.
     public func saveNewIdentity(_ profile: BrowserProfile) throws {
         guard !isBusy(profile.id) else { throw ProfileError.invalid("「\(profile.name)」正在执行另一个操作。") }
-        try store.save(profile)
+        var value = profile
+        // The identity reset clears the stored session, so restoring it would bring back nothing.
+        value.launch.restoreSession = false
+        try store.save(value)
         do {
             try store.setPendingIdentityReset(profile.id, true)
         } catch {

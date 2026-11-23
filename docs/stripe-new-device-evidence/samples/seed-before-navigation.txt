@@ -1,0 +1,5 @@
+ALL-BEFORE [{"name": "__stripe_lax", "value": "vlax", "domain": "127.0.0.1", "path": "/", "expires": 1795385677, "size": 16, "httpOnly": false, "secure": false, "session": false, "sameSite": "Lax", "priority": "Medium", "sourceScheme": "NonSecure", "sourcePort": 80}, {"name": "__stripe_strict", "value": "vstrict", "domain": "127.0.0.1", "path": "/", "expires": 1795385677, "size": 22, "httpOnly": false, "secu
+DOC-one __stripe_lax=vlax; __stripe_strict=vstrict
+HEADERS-one COOKIE
+DOC-two __stripe_lax=vlax; __stripe_strict=vstrict
+HEADERS-two COOKIE

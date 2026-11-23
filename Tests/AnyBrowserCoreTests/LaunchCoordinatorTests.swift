@@ -361,8 +361,8 @@ struct LaunchCoordinatorTests {
             let identity = try await generation.value
             #expect(!fixture.coordinator.isBusy(profile.id))
             #expect(!identity.exitLookupFailed)
-            #expect(identity.fingerprint.seed != profile.fingerprint.seed)
-            #expect(identity.fingerprint.timeZone == "Asia/Tokyo")
+            #expect(identity.profile.fingerprint.seed != profile.fingerprint.seed)
+            #expect(identity.profile.fingerprint.timeZone == "Asia/Tokyo")
             #expect(try fixture.saved(profile) == profile)
             #expect(!fixture.store.pendingIdentityReset(profile.id))
             #expect(fixture.exists(fixture.data(profile, "Default/Network/Cookies")))
@@ -391,7 +391,7 @@ struct LaunchCoordinatorTests {
         try FileManager.default.createSymbolicLink(atPath: lock, withDestinationPath: "host-\(holder.processIdentifier)")
         try await fixture.run([profile]) {
             var renewed = profile
-            renewed.fingerprint = try await fixture.coordinator.generateIdentity(for: profile).fingerprint
+            renewed.fingerprint = try await fixture.coordinator.generateIdentity(for: profile).profile.fingerprint
             try fixture.coordinator.saveNewIdentity(renewed)
             #expect(try fixture.saved(profile).fingerprint == renewed.fingerprint)
             #expect(fixture.store.pendingIdentityReset(profile.id))
@@ -421,7 +421,7 @@ struct LaunchCoordinatorTests {
         try fixture.writeSiteData(profile)
         try await fixture.run([profile]) {
             var renewed = profile
-            renewed.fingerprint = try await fixture.coordinator.generateIdentity(for: profile).fingerprint
+            renewed.fingerprint = try await fixture.coordinator.generateIdentity(for: profile).profile.fingerprint
             try fixture.coordinator.saveNewIdentity(renewed)
             // The browser dies before it is ready.
             try fixture.fake.configure(profile, ["exit_ms": "0", "exit_code": "3"])
@@ -456,7 +456,7 @@ struct LaunchCoordinatorTests {
             let first = try #require(fixture.pid(profile))
             try fixture.writeSiteData(profile)
             var renewed = profile
-            renewed.fingerprint = try await fixture.coordinator.generateIdentity(for: profile).fingerprint
+            renewed.fingerprint = try await fixture.coordinator.generateIdentity(for: profile).profile.fingerprint
             try fixture.coordinator.saveNewIdentity(renewed)
             // Nothing is cleared while the old identity's pages are open.
             #expect(try await fixture.coordinator.clearPendingSiteData(profile.id) == false)

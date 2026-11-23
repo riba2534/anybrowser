@@ -173,11 +173,16 @@ public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
     public var tags: [String]
     /// The account state the user recorded; nil when not set.
     public var accountStatus: AccountStatus?
+    /// This Profile's Stripe device id, a lowercase UUIDv4 minted when the identity is created.
+    /// `DeviceIdentity.effective` derives one from the seed when nil, so an older row still gets a
+    /// stable value; "整套重新生成" clears it.
+    public var deviceIdentity: String?
 
     public init(id: UUID = UUID(), name: String, port: Int, fingerprint: FingerprintSettings,
                 proxy: String = BrowserProfile.defaultProxy, group: String = "", notes: String = "",
                 passkeyBox: PasskeyBoxAccount? = nil, launch: LaunchOptions = LaunchOptions(),
-                tags: [String] = [], accountStatus: AccountStatus? = nil) {
+                tags: [String] = [], accountStatus: AccountStatus? = nil,
+                deviceIdentity: String? = nil) {
         self.id = id
         self.name = name
         self.port = port
@@ -189,6 +194,7 @@ public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
         self.launch = launch
         self.tags = tags
         self.accountStatus = accountStatus
+        self.deviceIdentity = deviceIdentity
     }
 
     public init(from decoder: Decoder) throws {
@@ -205,6 +211,7 @@ public struct BrowserProfile: Identifiable, Codable, Equatable, Sendable {
         tags = try data.decodeIfPresent([String].self, forKey: .tags) ?? []
         // A status written by a newer version reads as unset instead of hiding the Profile.
         accountStatus = (try? data.decodeIfPresent(AccountStatus.self, forKey: .accountStatus)) ?? nil
+        deviceIdentity = try data.decodeIfPresent(String.self, forKey: .deviceIdentity)
     }
 }
 
@@ -264,6 +271,9 @@ extension BrowserProfile {
         }
         guard (1024...65535).contains(port) else {
             throw ProfileError.invalid("调试端口须为 1024–65535。")
+        }
+        if let deviceIdentity = result.deviceIdentity, !DeviceIdentity.isValid(deviceIdentity) {
+            throw ProfileError.invalid("设备标识须为小写 UUIDv4。")
         }
         // A platform or version change made outside the editor (imports, automation, tests)
         // must not keep a font set from the old identity. A Profile without a platform keeps
@@ -358,8 +368,12 @@ extension FingerprintSettings {
         if !platformVersion.isEmpty {
             arguments.append("--fingerprint-platform-version=\(platformVersion)")
         }
-        if let brand {
-            arguments.append("--fingerprint-brand=\(brand.rawValue)")
+        // The engine only reports Chromium in UA-CH when no brand is given, while every real Chrome
+        // names Google Chrome in both the brand list and `sec-ch-ua`. A platform identity therefore
+        // always carries the brand.
+        let effectiveBrand = brand ?? (platform == nil ? nil : .chrome)
+        if let effectiveBrand {
+            arguments.append("--fingerprint-brand=\(effectiveBrand.rawValue)")
         }
         if !brandVersion.isEmpty {
             arguments.append("--fingerprint-brand-version=\(brandVersion)")
@@ -542,17 +556,15 @@ extension FingerprintSettings {
         if fields.contains(.adjustments) {
             var next: Set<FingerprintAdjustment> = [.canvas, .clientRects]
             if let platform, platform != .linux { next.insert(.gpu) }
-            if platform == .macOS, adjustments.contains(.font) { next.insert(.font) }
             if Bool.random() { next.insert(.audio) }
+            // `.font` follows the platform in adaptToPlatform, which runs below.
             adjustments = next
         } else if fields.contains(.platform) {
             // A platform switch must also switch the GPU/font policies.
             if let platform {
                 if platform == .linux { adjustments.remove(.gpu) } else { adjustments.insert(.gpu) }
-                if platform != .macOS { adjustments.remove(.font) }
             } else {
                 adjustments.remove(.gpu)
-                adjustments.remove(.font)
             }
         }
         adaptToPlatform()
@@ -591,6 +603,7 @@ extension FingerprintSettings {
             platformVersion = ""
             // Engine-default identity is the host Mac; platform-specific claims cannot stand.
             fontProfile = nil
+            adjustments.remove(.font)
             screenWidth = nil
             screenHeight = nil
             availWidth = nil
@@ -605,9 +618,15 @@ extension FingerprintSettings {
         if platform == .linux {
             adjustments.remove(.gpu)
         }
-        // A manually changed platform must not keep a font set from the old one.
-        if let platform, let fontProfile, fontProfile.platform != platform {
-            self.fontProfile = FontProfile.default(for: platform, version: platformVersion)
+        // A manually changed platform must not keep a font set from the old one, and a platform
+        // without a table would silently read this Mac's fonts.
+        if let platform {
+            if fontProfile == nil || fontProfile?.platform != platform {
+                fontProfile = FontProfile.default(for: platform, version: platformVersion)
+            }
+            adjustments.insert(.font)
+            // A platform identity without a screen would report the host display.
+            IdentitySampler.applyScreen(to: &self, for: platform)
         }
     }
 

@@ -158,6 +158,20 @@ extension BrowserRuntime {
     /// page when there are no start pages. Best effort within `budget`; problems become warnings.
     /// `waitingForTabs` waits for Chromium's first tab and the expected placeholders; without it the
     /// tabs are taken as they are, for a browser that has been running for a while.
+    /// Plants the Profile's device id on the start hosts before any of them is opened.
+    nonisolated static func seedStripeIdentity(_ profile: BrowserProfile, startURLs: [String],
+                                               endpoint: URL, budget: TimeInterval = 2) async -> [String] {
+        let client: DevToolsClient
+        do {
+            client = try DevToolsClient(endpoint: endpoint, timeout: budget)
+        } catch {
+            return ["设备 Cookie 未能写入：\(error.localizedDescription)"]
+        }
+        let warnings = await StripeIdentitySeeder.seed(profile, startURLs: startURLs, client: client)
+        client.close()
+        return warnings
+    }
+
     nonisolated static func openStartPages(_ urls: [String], endpoint: URL, placeholders: Int,
                                            waitingForTabs: Bool = true, budget: TimeInterval) async -> [String] {
         let client: DevToolsClient

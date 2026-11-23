@@ -279,7 +279,7 @@ public final class BrowserRuntime: ObservableObject {
             try ProfileExtensions.check(for: profile, in: storage)
             try PasskeyBoxInstall.prepare(bundled: engine.passkeyBoxDirectory, in: storage, for: id, account: passkeyBox,
                                           enabled: profile.launch.loadPasskeyBox)
-            if IdentityShim.isNeeded(for: engine.version) {
+            if IdentityShim.isNeeded(for: engine.version, profile: profile) {
                 try IdentityShim.prepare(for: profile, in: storage)
             }
             ProfileExtensions.removeLegacyProxySignIn(in: storage, for: id)
@@ -287,6 +287,9 @@ public final class BrowserRuntime: ObservableObject {
                 // Under the directory lock and before the browser exists, so nothing writes the old data back.
                 try await removeSiteData(for: id)
             }
+            // The bundled engine blocks third-party cookies by default; a stock Chrome does not, and
+            // Stripe's `.m.stripe.com` anchor only exists while they are allowed.
+            try? ThirdPartyCookiePosture.apply(in: directory)
             stopWatching(id)
             let log = LaunchLog()
             logs[id] = log
@@ -341,8 +344,18 @@ public final class BrowserRuntime: ObservableObject {
                     if let endpoint = await verifiedEndpoint(receipt, directory: directory) {
                         let placeholders = Self.placeholderCount(arguments)
                         var warnings: [String] = []
+                        // Before the first navigation, so the identity is settled when the page loads.
+                        if !startURLs.isEmpty {
+                            let seeding = await Self.seedStripeIdentity(profile, startURLs: startURLs,
+                                                                        endpoint: endpoint)
+                            warnings += seeding
+                            if profile.launch.restoreSession,
+                               !seeding.contains(where: { $0.contains("未能读取 Cookie") }) {
+                                warnings.append("已恢复上次会话：旧标签页可能早于设备 Cookie 写入。")
+                            }
+                        }
                         if !startURLs.isEmpty || placeholders > 0 || profile.launch.restoreSession {
-                            warnings = await Self.openStartPages(startURLs, endpoint: endpoint, placeholders: placeholders,
+                            warnings += await Self.openStartPages(startURLs, endpoint: endpoint, placeholders: placeholders,
                                                                  budget: startPageBudget)
                         }
                         guard owns(receipt, directory: directory) else {
@@ -534,7 +547,7 @@ public final class BrowserRuntime: ObservableObject {
 
     private func launchArguments(_ profile: BrowserProfile, directory: URL, relayPort: Int?) -> [String] {
         var extensions = ProfileExtensions.paths(for: profile, in: storage)
-        if IdentityShim.isNeeded(for: engine.version) {
+        if IdentityShim.isNeeded(for: engine.version, profile: profile) {
             extensions.append(IdentityShim.directory(in: storage, for: profile.id))
         }
         return profile.launchArguments(userDataDirectory: directory, extensions: extensions, relayPort: relayPort)

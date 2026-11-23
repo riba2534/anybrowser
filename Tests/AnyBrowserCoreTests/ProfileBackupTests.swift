@@ -313,7 +313,8 @@ struct ProfileBackupFlowTests {
             #expect(manifest.profiles[0].profile?.proxy == "http://127.0.0.1:17499")
             let packed = ProfileBackup.entryFolder(saved.id, in: unpacked).appendingPathComponent("Data")
             #expect(listing(packed) == ["Default", "Default/Local Storage", "Default/Local Storage/leveldb",
-                                        "Default/Local Storage/leveldb/000003.log", "cdp.log"])
+                                        "Default/Local Storage/leveldb/000003.log", "Default/Preferences", "cdp.log"],
+                    "\(listing(packed))")
 
             // Restoring next to the original needs another id, port and seed.
             let kept = try await ProfileBackup.restore(from: file, store: store, runtime: fixture.runtime, identity: .keepOriginal)
