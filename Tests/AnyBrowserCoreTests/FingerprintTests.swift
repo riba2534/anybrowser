@@ -85,12 +85,12 @@ struct FingerprintTests {
         fingerprint.platformVersion = "19.0.0"
         fingerprint.adjustments = [.gpu, .canvas]
         fingerprint.adaptToPlatform()
-        #expect(fingerprint.adjustments == [.gpu, .canvas])
+        #expect(fingerprint.adjustments == [.gpu, .canvas, .font])
         #expect(fingerprint.platformVersion == "19.0.0")
 
         fingerprint.platform = .linux
         fingerprint.adaptToPlatform()
-        #expect(fingerprint.adjustments == [.canvas])
+        #expect(fingerprint.adjustments == [.canvas, .font])
 
         fingerprint.platform = nil
         fingerprint.adaptToPlatform()
@@ -148,10 +148,10 @@ struct FingerprintTests {
                 let ids = Set(profile.consistencyIssues(engineVersion: Self.engine, exit: nil).map(\.id))
                 let wanted: Set<String> = switch item.platform {
                 case .macOS: []
-                case .windows: Self.hostHints
-                case .linux: Self.hostHints.union(["linux-webgl"])
+                case .windows: Self.hostHints.union(["font-spoof-missing"])
+                case .linux: Self.hostHints.union(["linux-webgl", "font-spoof-missing"])
                 }
-                #expect(ids == wanted, "\(item.id)")
+                #expect(ids == wanted, "\(item.id) \(ids.sorted()) vs \(wanted.sorted())")
             }
         }
     }
@@ -438,11 +438,8 @@ struct FingerprintTests {
                 #expect(fingerprint.adjustments.contains(.canvas))
                 #expect(fingerprint.adjustments.contains(.clientRects))
                 #expect(fingerprint.adjustments.contains(.gpu) == (platform != .linux))
-                if platform == .macOS {
-                    #expect(fingerprint.adjustments.contains(.font))
-                } else {
-                    #expect(!fingerprint.adjustments.contains(.font))
-                }
+                // A platform identity always carries its font table.
+                #expect(fingerprint.adjustments.contains(.font))
             }
         }
         var unset = FingerprintSettings(seed: 104)
@@ -470,21 +467,20 @@ struct FingerprintTests {
 
             fingerprint.randomize([.platform], excluding: [])
             let platform = fingerprint.platform ?? .macOS
-            #expect(fingerprint.screenWidth == nil)
-            #expect(fingerprint.screenHeight == nil)
-            #expect(fingerprint.availWidth == nil)
-            #expect(fingerprint.availHeight == nil)
-            #expect(fingerprint.colorDepth == nil)
-            #expect(fingerprint.deviceScaleFactor == nil)
+            // The old screen cannot follow the new platform; a matching one is drawn in its place.
+            let screenWidth = try? #require(fingerprint.screenWidth)
+            #expect(fingerprint.screenHeight != nil)
+            #expect((fingerprint.availWidth ?? .max) <= (screenWidth ?? 0))
+            #expect(fingerprint.availHeight != nil)
+            #expect([24].contains(fingerprint.colorDepth ?? 0))
+            #expect(fingerprint.deviceScaleFactor != nil)
             // Memory comes from the seed on every platform.
             #expect(fingerprint.deviceMemory == Self.hardware.deviceMemory(seed: 105))
             #expect(Self.hardware.exists(platform: platform, seed: 105, cpuCount: fingerprint.cpuCount))
             #expect(fingerprint.touch == false)
             #expect(fingerprint.fontProfile?.platform == platform)
             #expect(fingerprint.adjustments.contains(.gpu) == (platform != .linux))
-            if platform != .macOS {
-                #expect(!fingerprint.adjustments.contains(.font))
-            }
+            #expect(fingerprint.adjustments.contains(.font))
             #expect(throws: Never.self) {
                 try BrowserProfile(name: "R", port: 9301, fingerprint: fingerprint).validated()
             }

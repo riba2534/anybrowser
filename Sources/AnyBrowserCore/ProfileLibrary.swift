@@ -155,6 +155,8 @@ public enum ProfileLibrary {
         copy.name = copyName(of: profile.name, existing: existingNames)
         copy.port = try freePort(excluding: takenPorts)
         copy.fingerprint.seed = FingerprintSettings.newSeed(excluding: takenSeeds, sameHardwareAs: profile.fingerprint.seed)
+        // A copy with the same device id would look like the same device to Stripe.
+        copy.deviceIdentity = DeviceIdentity.mint()
         return try copy.validated()
     }
 

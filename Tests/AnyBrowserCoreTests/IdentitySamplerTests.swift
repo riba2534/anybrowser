@@ -22,10 +22,13 @@ struct IdentitySamplerTests {
             #expect(fingerprint.brandVersion.isEmpty)
             #expect(fingerprint.cpuCount != nil)
             #expect(EngineHardwareTable.bundled.exists(platform: .macOS, seed: seed, cpuCount: fingerprint.cpuCount))
-            // The bundled engine ignores its screen switches, so generated Profiles do not claim one.
-            #expect(fingerprint.screenWidth == nil)
-            #expect(fingerprint.colorDepth == nil)
-            #expect(fingerprint.deviceScaleFactor == nil)
+            // The identity guard applies the screen in the page; a generated Profile always has one.
+            let screenWidth = try? #require(fingerprint.screenWidth)
+            let screenHeight = try? #require(fingerprint.screenHeight)
+            #expect((fingerprint.availWidth ?? .max) <= (screenWidth ?? 0))
+            #expect((fingerprint.availHeight ?? .max) <= (screenHeight ?? 0))
+            #expect([24, 30].contains(fingerprint.colorDepth ?? 0))
+            #expect(fingerprint.deviceScaleFactor == 2)
             #expect(fingerprint.deviceMemory == EngineHardwareTable.bundled.deviceMemory(seed: seed))
             #expect(fingerprint.languages?.first == fingerprint.language)
             #expect(fingerprint.languages?.isEmpty == false)
@@ -56,7 +59,9 @@ struct IdentitySamplerTests {
             #expect(fingerprint.platformVersion == "19.0.0")
             #expect(fingerprint.brandVersion.isEmpty)
             #expect(EngineHardwareTable.bundled.gpu(for: .windows, seed: seed)?.cpuCounts.contains(fingerprint.cpuCount ?? 0) == true)
-            #expect(fingerprint.screenWidth == nil)
+            #expect(fingerprint.screenWidth != nil)
+            #expect(fingerprint.colorDepth == 24)
+            #expect([1.0, 1.25, 1.5].contains(fingerprint.deviceScaleFactor ?? 0))
             #expect(fingerprint.fontProfile == .windows11)
             #expect(fingerprint.languages?.first == fingerprint.language)
             #expect(throws: Never.self) {
@@ -83,8 +88,9 @@ struct IdentitySamplerTests {
             let regenerated = try store.regenerateIdentity(profile)
             #expect(regenerated.fingerprint.platform == .windows)
             #expect([FontProfile.windows11, .windows10].contains(regenerated.fingerprint.fontProfile))
-            #expect(regenerated.fingerprint.screenWidth == nil)
+            #expect(regenerated.fingerprint.screenWidth != nil)
             #expect(regenerated.fingerprint.seed != profile.fingerprint.seed)
+            #expect(regenerated.deviceIdentity != profile.deviceIdentity)
         }
     }
 

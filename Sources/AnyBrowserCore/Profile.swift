@@ -628,6 +628,8 @@ extension FingerprintSettings {
                 fontProfile = FontProfile.default(for: platform, version: platformVersion)
             }
             adjustments.insert(.font)
+            // A platform identity without a screen would report the host display.
+            IdentitySampler.applyScreen(to: &self, for: platform)
         }
     }
 

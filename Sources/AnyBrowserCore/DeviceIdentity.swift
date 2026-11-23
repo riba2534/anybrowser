@@ -43,12 +43,10 @@ public enum DeviceIdentity {
 
     private static func format(_ bytes: [UInt8]) -> String {
         let hex = bytes.map { String(format: "%02x", $0) }.joined()
-        let cuts = [8, 13, 18, 23]
-        var result = ""
-        for (index, character) in hex.enumerated() {
-            if cuts.contains(index) { result.append("-") }
-            result.append(character)
-        }
-        return result
+        return [hex.prefix(8),
+                hex.dropFirst(8).prefix(4),
+                hex.dropFirst(12).prefix(4),
+                hex.dropFirst(16).prefix(4),
+                hex.dropFirst(20)].map(String.init).joined(separator: "-")
     }
 }

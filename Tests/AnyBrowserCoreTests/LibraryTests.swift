@@ -302,7 +302,10 @@ struct LibraryTests {
         same.name = original.name
         same.port = original.port
         same.fingerprint.seed = original.fingerprint.seed
+        // The device id is minted per copy; neutralize it to compare everything else.
+        same.deviceIdentity = original.deviceIdentity
         #expect(same == original)
+        #expect(copy.deviceIdentity != original.deviceIdentity)
         #expect(store.profiles == [original, copy])
         #expect(try store.saveClone(of: original.id).name == "店铺 副本 2")
 

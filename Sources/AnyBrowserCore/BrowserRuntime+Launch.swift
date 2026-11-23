@@ -160,7 +160,7 @@ extension BrowserRuntime {
     /// tabs are taken as they are, for a browser that has been running for a while.
     /// Plants the Profile's device id on the start hosts before any of them is opened.
     nonisolated static func seedStripeIdentity(_ profile: BrowserProfile, startURLs: [String],
-                                               endpoint: URL, budget: TimeInterval = 4) async -> [String] {
+                                               endpoint: URL, budget: TimeInterval = 2) async -> [String] {
         let client: DevToolsClient
         do {
             client = try DevToolsClient(endpoint: endpoint, timeout: budget)
