@@ -21,6 +21,17 @@ struct LaunchOptionsCard: View {
             CardHeading(title: "启动选项", icon: "play.rectangle")
             startPages
             VStack(alignment: .leading, spacing: 6) {
+                Toggle("无痕启动", isOn: $draft.profile.launch.incognito)
+                    .toggleStyle(.checkbox)
+                    .accessibilityIdentifier("launch-incognito")
+                Text(draft.profile.launch.incognito
+                     ? "启动时打开无痕窗口：Cookie 与站点数据不写入磁盘，页面读到的存储配额按内存压缩，自检会按无痕值检查配额。无痕窗口同样经过代理。"
+                     : "关闭时按普通窗口启动，资料保存在这个 Profile 自己的目录里。")
+                    .font(.system(size: 12))
+                    .foregroundColor(WorkbenchPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 6) {
                 Toggle("恢复上次会话", isOn: $draft.profile.launch.restoreSession)
                     .toggleStyle(.checkbox)
                     .accessibilityIdentifier("launch-restore-session")
