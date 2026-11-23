@@ -77,7 +77,10 @@ struct ProfileTests {
         #expect(arguments.contains("--fingerprint-device-scale-factor=1"))
         #expect(arguments.contains("--disable-spoofing=font,audio,gpu"))
         // Cocoa reads these two as the AppleLanguages default, which ICU follows.
-        #expect(Array(arguments.suffix(2)) == ["-AppleLanguages", "<array><string>zh-CN</string></array>"])
+        let language = try #require(arguments.firstIndex(of: "-AppleLanguages"))
+        #expect(arguments[language + 1] == "<array><string>zh-CN</string></array>")
+        // The window derived from the fingerprint's screen comes last.
+        #expect(arguments.suffix(2).allSatisfy { $0.hasPrefix("--window-") })
     }
 
     @Test("Device memory accepts what the engine reports and what older versions saved")

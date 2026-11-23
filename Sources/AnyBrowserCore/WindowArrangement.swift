@@ -79,14 +79,55 @@ public enum WindowArrangement {
         return frame(fromScreenRect: screen.visibleFrame, mainDisplayHeight: main)
     }
 
+    /// The usable part of the display the Profile claims in its fingerprint; nil when it claims
+    /// none, and this Mac's visible frame stands in.
+    public static func usableArea(for profile: BrowserProfile) -> Frame? {
+        profile.fingerprint.profileScreen?.usableArea
+    }
+
+    /// `cell` kept inside `screen`: no wider or taller than its usable part, below the menu bar,
+    /// and never past an edge.
+    public static func clamped(_ cell: Frame, to screen: ProfileScreen) -> Frame {
+        let width = max(min(cell.width, screen.availWidth), 1)
+        let height = max(min(cell.height, screen.availHeight), 1)
+        return Frame(left: min(max(cell.left, 0), max(screen.width - width, 0)),
+                     top: min(max(cell.top, screen.topInset), max(screen.height - height, screen.topInset)),
+                     width: width, height: height)
+    }
+
+    /// `cell` kept inside `area`.
+    static func clamped(_ cell: Frame, to area: Frame) -> Frame {
+        let width = max(min(cell.width, area.width), 1)
+        let height = max(min(cell.height, area.height), 1)
+        return Frame(left: min(max(cell.left, area.left), area.left + max(area.width - width, 0)),
+                     top: min(max(cell.top, area.top), area.top + max(area.height - height, 0)),
+                     width: width, height: height)
+    }
+
+    /// One grid for `count` windows in the first claimed screen among `screens` (or in
+    /// `fallback`), with every cell then clamped into the screen its own window claims. A window
+    /// whose Profile claims no screen is clamped into `fallback` instead.
+    public static func frames(count: Int, screens: [ProfileScreen?], fallback: Frame,
+                              columns: Int? = nil) -> [Frame] {
+        let tile = screens.compactMap { $0?.usableArea }.first ?? fallback
+        return grid(count: count, in: tile, columns: columns).enumerated().map { index, cell in
+            screens.indices.contains(index) ? screens[index].map { clamped(cell, to: $0) } ?? clamped(cell, to: fallback)
+                : clamped(cell, to: fallback)
+        }
+    }
+
     /// Moves one window of each browser into its cell of `grid(count:in:columns:)`, in the order
     /// given. A minimized, maximized or full-screen window is returned to normal first. Outcomes
     /// come back in the same order; a browser that fails leaves the others alone.
     public static func arrange(_ windows: [(id: UUID, endpoint: URL)], in area: Frame,
                                columns: Int? = nil) async -> [Outcome] {
-        let frames = grid(count: windows.count, in: area, columns: columns)
-        return await withTaskGroup(of: (Int, Outcome).self) { group in
-            for (index, window) in windows.enumerated() {
+        await arrange(windows, frames: grid(count: windows.count, in: area, columns: columns))
+    }
+
+    /// Moves one window of each browser to the frame at its index.
+    public static func arrange(_ windows: [(id: UUID, endpoint: URL)], frames: [Frame]) async -> [Outcome] {
+        await withTaskGroup(of: (Int, Outcome).self) { group in
+            for (index, window) in windows.enumerated() where frames.indices.contains(index) {
                 let frame = frames[index]
                 group.addTask {
                     do {
@@ -153,8 +194,26 @@ extension BrowserRuntime {
     /// running with a window take a cell; the others are reported with the reason and no frame.
     public func arrangeWindows(_ ids: [UUID], in area: WindowArrangement.Frame,
                                columns: Int? = nil) async -> [WindowArrangement.Outcome] {
+        await arrangeWindows(ids, screens: [:], in: area, columns: columns)
+    }
+
+    /// Tiles the windows of `profiles`. Each Profile's own claimed screen replaces `area` as the
+    /// grid it is placed at, and every window is then clamped into that screen, so no tile ends
+    /// past the `screen.*` its browser reports.
+    public func arrangeWindows(_ profiles: [BrowserProfile], in area: WindowArrangement.Frame,
+                               columns: Int? = nil) async -> [WindowArrangement.Outcome] {
+        var seen: Set<UUID> = []
+        let ids = profiles.map(\.id).filter { seen.insert($0).inserted }
+        var screens: [UUID: ProfileScreen] = [:]
+        for profile in profiles { screens[profile.id] = profile.fingerprint.profileScreen }
+        return await arrangeWindows(ids, screens: screens, in: area, columns: columns)
+    }
+
+    private func arrangeWindows(_ ids: [UUID], screens: [UUID: ProfileScreen], in area: WindowArrangement.Frame,
+                                columns: Int?) async -> [WindowArrangement.Outcome] {
         var order: [UUID] = []
         var windows: [(id: UUID, endpoint: URL)] = []
+        var claimed: [ProfileScreen?] = []
         var unplaced: [UUID: String] = [:]
         for id in ids where !order.contains(id) {
             order.append(id)
@@ -168,8 +227,10 @@ extension BrowserRuntime {
                 continue
             }
             windows.append((id, endpoint))
+            claimed.append(screens[id])
         }
-        let placed = await WindowArrangement.arrange(windows, in: area, columns: columns)
+        let frames = WindowArrangement.frames(count: windows.count, screens: claimed, fallback: area, columns: columns)
+        let placed = await WindowArrangement.arrange(windows, frames: frames)
         return order.map { id in
             placed.first { $0.id == id } ?? WindowArrangement.Outcome(id: id, frame: nil, failure: unplaced[id])
         }

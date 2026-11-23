@@ -36,6 +36,7 @@ struct SelfCheckTests {
                                                  .init(brand: "Google Chrome", version: "148.0.7778.97")],
                                platform: "macOS", platformVersion: "26.4.1", architecture: "arm", bitness: "64", mobile: false),
             screen: .init(width: 2560, height: 1440, availWidth: 2560, availHeight: 1410, colorDepth: 24, devicePixelRatio: 2),
+            window: .init(outerWidth: 2048, outerHeight: 1210, innerWidth: 2048, innerHeight: 1122),
             canvasMeasureText: 337.4765625, canvasStable: true, markers: [],
             expectedZoneName: "Mitteleuropäische Normalzeit")
     }
