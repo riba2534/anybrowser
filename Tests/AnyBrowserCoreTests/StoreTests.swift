@@ -103,6 +103,31 @@ private func legacyDatabase(in directory: URL) throws -> (shop: UUID, old: UUID)
 
 private func message(_ error: Error?) -> String { error?.localizedDescription ?? "" }
 
+/// A valid macOS fingerprint on a given display and font, with the version validation derives the
+/// font from.
+private func display(_ width: Int, _ height: Int, font: FontProfile, seed: Int) -> FingerprintSettings {
+    var fingerprint = FingerprintSettings(seed: seed)
+    fingerprint.platform = .macOS
+    fingerprint.platformVersion = font == .macos15 ? "15.0.0" : "26.0.0"
+    fingerprint.screenWidth = width
+    fingerprint.screenHeight = height
+    fingerprint.availWidth = width
+    fingerprint.availHeight = height - 30
+    fingerprint.colorDepth = 24
+    fingerprint.deviceScaleFactor = 2
+    fingerprint.fontProfile = font
+    return fingerprint
+}
+
+/// Every display of the Mac catalogue, in both fonts.
+private let allDisplays: [(width: Int, height: Int, font: FontProfile)] = [
+    (1728, 1117, .macos26), (1728, 1117, .macos15),
+    (1512, 982, .macos26), (1512, 982, .macos15),
+    (2560, 1440, .macos26), (2560, 1440, .macos15),
+    (1440, 900, .macos26), (1440, 900, .macos15),
+    (1920, 1080, .macos26), (1920, 1080, .macos15),
+]
+
 @MainActor
 struct StoreTests {
     // MARK: Schema
@@ -351,6 +376,73 @@ struct StoreTests {
         let reopened = try ProfileStore(directory: directory)
         #expect(reopened.unreadableRows == store.unreadableRows)
         #expect(reopened.profiles.map(\.id) == [good.id, sparse])
+    }
+
+    // MARK: Display and font combinations
+
+    @Test("The same screen with another font, and the same font on another screen, both save")
+    func combinationsMustMatchTogether() throws {
+        let directory = try scratchDirectory("store")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        try store.save(BrowserProfile(name: "Base", port: 9600, fingerprint: display(1728, 1117, font: .macos26, seed: 9600)))
+        try store.save(BrowserProfile(name: "Other font", port: 9601, fingerprint: display(1728, 1117, font: .macos15, seed: 9601)))
+        try store.save(BrowserProfile(name: "Other screen", port: 9602, fingerprint: display(1512, 982, font: .macos26, seed: 9602)))
+        #expect(store.profiles.map(\.name) == ["Base", "Other font", "Other screen"])
+
+        // The same four values in another Profile are refused, naming the holder.
+        let conflict = message(#expect(throws: ProfileError.self) {
+            try store.save(BrowserProfile(name: "Same", port: 9603, fingerprint: display(1728, 1117, font: .macos26, seed: 9603)))
+        })
+        #expect(conflict == "屏幕与字体组合与「Base」相同。")
+
+        // Saving a Profile again with its own combination is not a conflict with itself.
+        var own = store.profiles[0]
+        own.notes = "edited"
+        try store.save(own)
+
+        // A trashed Profile keeps its combination until it is purged.
+        try store.trash(store.profiles[0].id)
+        let trashed = message(#expect(throws: ProfileError.self) {
+            try store.save(BrowserProfile(name: "Taken", port: 9604, fingerprint: display(1728, 1117, font: .macos26, seed: 9604)))
+        })
+        #expect(trashed == "屏幕与字体组合与「Base」相同。")
+    }
+
+    @Test("A Profile that claims no display is never a combination conflict")
+    func platformlessProfilesShareACombination() throws {
+        let directory = try scratchDirectory("store")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        for port in 9610...9612 {
+            try store.save(BrowserProfile(name: "P\(port)", port: port, fingerprint: FingerprintSettings(seed: port)))
+        }
+        #expect(store.profiles.count == 3)
+    }
+
+    @Test("Once every display and font is in use a repeat saves, and a new draft may repeat too")
+    func exhaustedCombinationsSave() throws {
+        let directory = try scratchDirectory("store")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        for (offset, screen) in allDisplays.enumerated() {
+            try store.save(BrowserProfile(name: "P\(offset)", port: 9620 + offset,
+                                          fingerprint: display(screen.width, screen.height, font: screen.font, seed: 9620 + offset)))
+        }
+        #expect(store.takenScreenFontCombinations.count == allDisplays.count)
+
+        // Every combination is taken, so a repeat cannot be avoided; it is let through.
+        let extra = BrowserProfile(name: "Extra", port: 9630, fingerprint: display(1728, 1117, font: .macos26, seed: 9630))
+        try store.save(extra)
+        #expect(store.profiles.last?.name == "Extra")
+
+        // A new draft cannot get a free one either, and still saves.
+        var draft = try store.makeDraft()
+        draft.fingerprint.platform = .macOS
+        draft.fingerprint.platformVersion = "26.0.0"
+        draft.fingerprint.adaptToPlatform()
+        try store.save(draft)
+        #expect(store.profiles.count == allDisplays.count + 2)
     }
 
     // MARK: Recycle bin

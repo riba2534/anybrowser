@@ -178,7 +178,9 @@ extension Workbench {
             if result.skipped > 0 { text += "，跳过 \(result.skipped) 个无效条目" }
             text += "。"
             let review = ProfileLibrary.importReview(result.profiles)
-            notice = Notice(text: text + (review ?? ""), isError: result.profiles.isEmpty || review != nil)
+            let warnings = result.warnings.joined(separator: " ")
+            notice = Notice(text: text + (review ?? "") + (warnings.isEmpty ? "" : " " + warnings),
+                            isError: result.profiles.isEmpty || review != nil)
             if draft == nil, let first = result.profiles.first { draft = ProfileDraft(first) }
         } catch {
             show(error)
@@ -393,7 +395,8 @@ extension Workbench {
             return
         }
         guard let screen = NSApp.keyWindow?.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
-        let outcomes = await runtime.arrangeWindows(targets, in: WindowArrangement.visibleArea(of: screen))
+        let chosen = targets.compactMap { id in profiles.first { $0.id == id } }
+        let outcomes = await runtime.arrangeWindows(chosen, in: WindowArrangement.visibleArea(of: screen))
         let placed = outcomes.filter { $0.failure == nil }.count
         let failures = outcomes.compactMap { outcome in
             outcome.failure.map { "\(profiles.first { $0.id == outcome.id }?.name ?? "Profile")：\($0)" }

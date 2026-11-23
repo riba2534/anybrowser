@@ -249,9 +249,10 @@ struct FingerprintTests {
             let seed = FingerprintSettings.newSeed(excluding: [])
             let preset = IdentityPreset.all[index % IdentityPreset.all.count]
             let fingerprint = IdentitySampler.sample(seed: seed, preset: preset)
-            #expect(Self.hardware.exists(platform: fingerprint.platform, seed: seed, cpuCount: fingerprint.cpuCount),
-                    "\(preset.id) \(seed) \(String(describing: fingerprint.cpuCount))")
-            #expect(fingerprint.deviceMemory == Self.hardware.deviceMemory(seed: seed))
+            #expect(Self.hardware.exists(platform: fingerprint.platform, seed: fingerprint.seed,
+                                         cpuCount: fingerprint.cpuCount),
+                    "\(preset.id) \(fingerprint.seed) \(String(describing: fingerprint.cpuCount))")
+            #expect(fingerprint.deviceMemory == Self.hardware.deviceMemory(seed: fingerprint.seed))
         }
     }
 
@@ -472,7 +473,9 @@ struct FingerprintTests {
             #expect(fingerprint.screenHeight != nil)
             #expect((fingerprint.availWidth ?? .max) <= (screenWidth ?? 0))
             #expect(fingerprint.availHeight != nil)
-            #expect([24].contains(fingerprint.colorDepth ?? 0))
+            // Only macOS has 30-bit panels, and only as a minority.
+            #expect(platform == .macOS ? [24, 30].contains(fingerprint.colorDepth ?? 0)
+                                       : fingerprint.colorDepth == 24)
             #expect(fingerprint.deviceScaleFactor != nil)
             // Memory comes from the seed on every platform.
             #expect(fingerprint.deviceMemory == Self.hardware.deviceMemory(seed: 105))
@@ -576,6 +579,40 @@ struct FingerprintTests {
     }
 
     // MARK: Consistency checks
+
+    @Test("Contradictions are critical, engine limits are not blocking")
+    func severitiesClassify() {
+        // 12345 % 13 selects the Arc GPU, which has no 4-core machine.
+        var fingerprint = FingerprintSettings(seed: 12345)
+        fingerprint.platform = .windows
+        fingerprint.adjustments = [.canvas, .gpu]
+        fingerprint.cpuCount = 4
+        fingerprint.screenWidth = 1920
+        fingerprint.screenHeight = 1080
+        fingerprint.availWidth = 1920
+        fingerprint.availHeight = 1040
+        fingerprint.colorDepth = 24
+        let found = issues(fingerprint)
+        #expect(found.first { $0.id == "hardware-impossible" }?.severity == .critical)
+        #expect(found.filter(\.isBlocking).map(\.id) == ["hardware-impossible"])
+
+        var screen = FingerprintSettings(seed: 12345)
+        screen.platform = .windows
+        screen.screenWidth = 1920
+        screen.screenHeight = 1080
+        screen.availWidth = 2000
+        screen.availHeight = 1040
+        #expect(issues(screen).first { $0.id == "screen-avail" }?.severity == .critical)
+
+        // The known engine gaps on Windows and Linux must not send the sampler back to the start.
+        for platform in [BrowserPlatform.windows, .linux] {
+            let sampled = IdentitySampler.sample(seed: FingerprintSettings.newSeed(excluding: []),
+                                                 constraints: .init(platforms: [platform]))
+            let severities = BrowserProfile(name: "P", port: 9301, fingerprint: sampled)
+                .consistencyIssues(engineVersion: Self.engine, exit: nil).map(\.severity)
+            #expect(severities.allSatisfy { !$0.isBlocking }, "\(platform) \(severities)")
+        }
+    }
 
     @Test("Chrome and Edge versions must sit near the engine")
     func brandVersionAgainstEngine() {

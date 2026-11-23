@@ -66,6 +66,7 @@ public enum FingerprintAdjustment: String, CaseIterable, Codable, Sendable {
 
 public enum FingerprintField: String, CaseIterable, Hashable, Sendable {
     case seed, platform, platformVersion, brand, brandVersion, cpuCount, language, timeZone, adjustments
+    case screen, font, touch, deviceMemory
 
     public var title: String {
         switch self {
@@ -78,6 +79,10 @@ public enum FingerprintField: String, CaseIterable, Hashable, Sendable {
         case .language: return "语言"
         case .timeZone: return "时区"
         case .adjustments: return "指纹改写项"
+        case .screen: return "屏幕"
+        case .font: return "字体"
+        case .touch: return "触摸屏"
+        case .deviceMemory: return "设备内存"
         }
     }
 }
@@ -337,12 +342,17 @@ extension BrowserProfile {
             // Chromium parses --load-extension as a comma-separated list.
             arguments.append("--load-extension=\(extensions.map(\.path).joined(separator: ","))")
         }
-        arguments += launch.arguments()
+        arguments += launch.arguments(for: fingerprint)
         return arguments
     }
 }
 
 extension FingerprintSettings {
+    /// `platform|seed|screenWidth`: the identity triple Profiles must not share.
+    public var identityTriple: String {
+        "\(platform?.rawValue ?? "host")|\(seed)|\(screenWidth.map(String.init) ?? "")"
+    }
+
     /// The language the browser runs in: `language`, or else the first of `languages`.
     var primaryLanguage: String {
         language.isEmpty ? (languages?.first ?? "") : language
@@ -507,34 +517,41 @@ extension FingerprintSettings {
     ]
 
     mutating func randomize(_ fields: Set<FingerprintField>, excluding seeds: Set<Int>) {
-        // Platform and brand are drawn with the whole-identity weights, so the field randomizer
-        // ends up on the same engine-supported combinations; a kept field narrows the draw.
+        // Everything is drawn inside the machine family the identity already describes; a new
+        // platform or brand draws its family first, narrowed by the field that stays.
+        var family = platform.flatMap { IdentitySampler.family(for: self, platform: $0) }
         if fields.contains(.platform) || fields.contains(.brand) {
             let keptPlatform = fields.contains(.platform) ? nil : platform
             let keptBrand = fields.contains(.brand) || brand == .opera || brand == .vivaldi ? nil : brand
-            let preset = IdentitySampler.weightedPreset {
-                (keptPlatform == nil || $0.platform == keptPlatform) && (keptBrand == nil || $0.brand == keptBrand)
-            }
-            if fields.contains(.platform) {
-                platform = preset.platform
-                // These values belonged to the old platform and cannot follow it.
-                screenWidth = nil
-                screenHeight = nil
-                availWidth = nil
-                availHeight = nil
-                colorDepth = nil
-                deviceScaleFactor = nil
-                touch = false
-            }
-            if fields.contains(.brand) {
-                brand = preset.brand
+            if let drawn = IdentitySampler.weightedFamily(platform: keptPlatform, brand: keptBrand) {
+                family = drawn
+                if fields.contains(.platform) {
+                    platform = drawn.platform
+                    // These values belonged to the old platform and cannot follow it.
+                    touch = false
+                    IdentitySampler.applyRandomScreen(to: &self, family: drawn)
+                }
+                if fields.contains(.brand) {
+                    brand = IdentitySampler.preset(for: drawn)?.brand
+                }
             }
         }
         // A version kept from the previous platform or brand would contradict the new one.
         if fields.contains(.platformVersion) || fields.contains(.platform) && !platformVersion.isEmpty {
             platformVersion = Self.randomPlatformVersion(for: platform)
         }
-        if fields.contains(.platform), let platform {
+        if fields.contains(.font), let platform {
+            // A preset names one font, so drawing inside the family could pick the same one;
+            // take the platform's other table and move the version with it.
+            let alternatives = ProfileLibrary.fonts(for: platform, claimed: true)
+                .compactMap { $0 }.filter { $0 != fontProfile }
+            if let next = alternatives.randomElement() {
+                for _ in 0..<8 where FontProfile.default(for: platform, version: platformVersion) != next {
+                    platformVersion = Self.randomPlatformVersion(for: platform)
+                }
+                fontProfile = FontProfile.default(for: platform, version: platformVersion)
+            }
+        } else if fields.contains(.platform), let platform {
             fontProfile = FontProfile.default(for: platform, version: platformVersion)
         } else if fields.contains(.platformVersion), let platform, fontProfile != nil {
             fontProfile = FontProfile.default(for: platform, version: platformVersion)
@@ -546,6 +563,16 @@ extension FingerprintSettings {
             brandVersion = brand == .opera || brand == .vivaldi || !brandVersion.isEmpty
                 ? Self.randomBrandVersion(for: brand, platform: platform) : ""
         }
+        if fields.contains(.screen) {
+            if let family {
+                IdentitySampler.applyRandomScreen(to: &self, family: family)
+            } else if let platform {
+                IdentitySampler.applyRandomScreen(to: &self, for: platform)
+            }
+        }
+        if fields.contains(.touch) {
+            touch = family.map { $0.touchPercent > 0 && Int.random(in: 0..<100) < $0.touchPercent } ?? false
+        }
         // Language and time zone are one identity: randomizing either moves both.
         if fields.contains(.language) || fields.contains(.timeZone) {
             let locale = IdentitySampler.sampleLocale()
@@ -556,7 +583,7 @@ extension FingerprintSettings {
         if fields.contains(.adjustments) {
             var next: Set<FingerprintAdjustment> = [.canvas, .clientRects]
             if let platform, platform != .linux { next.insert(.gpu) }
-            if Bool.random() { next.insert(.audio) }
+            if let family, Int.random(in: 0..<100) < family.audioPercent { next.insert(.audio) }
             // `.font` follows the platform in adaptToPlatform, which runs below.
             adjustments = next
         } else if fields.contains(.platform) {
@@ -569,20 +596,19 @@ extension FingerprintSettings {
         }
         adaptToPlatform()
 
-        // The seed fixes the GPU and memory, so hardware is settled last. A CPU count the user
-        // keeps on the same platform gets a seed whose GPU ships with it; a new platform or seed
-        // otherwise gets a CPU count of its own.
+        // Memory is fixed by the seed, so moving it means choosing a seed of the same GPU that
+        // carries the new memory. A new seed alone stays on the same machine, which also keeps
+        // the CPU count valid.
         let hardware = EngineHardwareTable.bundled
         let spoofsGPU = adjustments.contains(.gpu)
-        let keepsCPU = !fields.contains(.cpuCount) && !fields.contains(.platform) && cpuCount != nil
-        if fields.contains(.seed) {
-            let taken = seeds.union([seed])
-            seed = Self.newSeed(excluding: taken)
-            if keepsCPU, spoofsGPU {
-                for _ in 0..<64 where !hardware.exists(platform: platform, seed: seed, cpuCount: cpuCount) {
-                    seed = Self.newSeed(excluding: taken)
-                }
-            }
+        if fields.contains(.seed) || fields.contains(.deviceMemory) {
+            let memory = fields.contains(.deviceMemory)
+                ? family.flatMap(IdentitySampler.randomMemory(for:)) ?? hardware.deviceMemory(seed: seed)
+                : hardware.deviceMemory(seed: seed)
+            let excluding = fields.contains(.seed) ? seeds : seeds.subtracting([seed])
+            let preferring = fields.contains(.seed) ? nil : seed
+            seed = IdentitySampler.newSeed(for: family, memory: memory,
+                                           excluding: excluding, preferring: preferring)
         }
         if fields.contains(.cpuCount) || fields.contains(.platform) && cpuCount != nil {
             cpuCount = IdentitySampler.randomCPUCount(for: platform, seed: seed, spoofsGPU: spoofsGPU)

@@ -6,6 +6,34 @@ import Testing
 
 private func message(_ error: Error?) -> String { error?.localizedDescription ?? "" }
 
+/// A valid macOS fingerprint on a given display and font.
+private func display(_ width: Int, _ height: Int, font: FontProfile, seed: Int) -> FingerprintSettings {
+    var fingerprint = FingerprintSettings(seed: seed)
+    fingerprint.platform = .macOS
+    fingerprint.platformVersion = font == .macos15 ? "15.0.0" : "26.0.0"
+    fingerprint.screenWidth = width
+    fingerprint.screenHeight = height
+    fingerprint.availWidth = width
+    fingerprint.availHeight = height - 30
+    fingerprint.colorDepth = 24
+    fingerprint.deviceScaleFactor = 2
+    fingerprint.fontProfile = font
+    return fingerprint
+}
+
+/// Every display of the Mac catalogue, in both fonts.
+private let allDisplays: [(width: Int, height: Int, font: FontProfile)] = [
+    (1728, 1117, .macos26), (1728, 1117, .macos15),
+    (1512, 982, .macos26), (1512, 982, .macos15),
+    (2560, 1440, .macos26), (2560, 1440, .macos15),
+    (1440, 900, .macos26), (1440, 900, .macos15),
+    (1920, 1080, .macos26), (1920, 1080, .macos15),
+]
+
+private func combination(_ profile: BrowserProfile) -> ScreenFontCombination? {
+    ScreenFontCombination(profile.fingerprint)
+}
+
 @MainActor
 struct LibraryTests {
     // MARK: Store
@@ -151,10 +179,21 @@ struct LibraryTests {
         #expect(imported.skipped == 0)
         var restored = try #require(imported.profiles.first)
         #expect(restored.id != profile.id)
-        // An imported copy is a new device and must not collide with the original's id.
+        // An imported copy is a new device and must not collide with the original's id, and takes
+        // a display and font of its own.
         #expect(restored.deviceIdentity == nil)
+        #expect(restored.fingerprint.screenWidth != nil)
+        #expect(restored.fingerprint.fontProfile == .windows11 || restored.fingerprint.fontProfile == .windows10)
         restored.id = profile.id
         restored.deviceIdentity = profile.deviceIdentity
+        restored.fingerprint.screenWidth = profile.fingerprint.screenWidth
+        restored.fingerprint.screenHeight = profile.fingerprint.screenHeight
+        restored.fingerprint.availWidth = profile.fingerprint.availWidth
+        restored.fingerprint.availHeight = profile.fingerprint.availHeight
+        restored.fingerprint.colorDepth = profile.fingerprint.colorDepth
+        restored.fingerprint.deviceScaleFactor = profile.fingerprint.deviceScaleFactor
+        restored.fingerprint.fontProfile = profile.fingerprint.fontProfile
+        restored.fingerprint.platformVersion = profile.fingerprint.platformVersion
         #expect(restored == profile)
 
         let stripped = try ProfileLibrary.importProfiles(from: ProfileLibrary.export([profile], includeSecrets: false),
@@ -275,6 +314,68 @@ struct LibraryTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["Profiles.json"])
     }
 
+    // MARK: Display and font combinations
+
+    @Test("Clones get a display and font combination of their own, also when all are taken")
+    func cloneCombinations() throws {
+        let directory = try scratchDirectory("library")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        try store.save(BrowserProfile(name: "Mac", port: 9700, fingerprint: display(1728, 1117, font: .macos26, seed: 9700)))
+
+        var combinations = Set([try #require(combination(store.profiles[0]))])
+        for _ in 0..<(allDisplays.count - 1) {
+            let copy = try store.saveClone(of: store.profiles[0].id)
+            let drawn = try #require(combination(copy))
+            #expect(!combinations.contains(drawn))
+            combinations.insert(drawn)
+        }
+        #expect(store.profiles.count == allDisplays.count)
+        // Every combination is in use now: the next copy has to repeat one, and is still saved.
+        let repeatCopy = try store.saveClone(of: store.profiles[0].id)
+        #expect(combinations.contains(try #require(combination(repeatCopy))))
+        #expect(store.profiles.count == allDisplays.count + 1)
+    }
+
+    @Test("Imports take display and font combinations of their own on top of the store's")
+    func importCombinations() throws {
+        let directory = try scratchDirectory("library")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        try store.save(BrowserProfile(name: "Base", port: 9700, fingerprint: display(1728, 1117, font: .macos26, seed: 9700)))
+        let taken = try #require(combination(store.profiles[0]))
+
+        let entries = [
+            BrowserProfile(name: "A", port: 9701, fingerprint: display(1728, 1117, font: .macos26, seed: 9701)),
+            BrowserProfile(name: "B", port: 9702, fingerprint: display(1512, 982, font: .macos15, seed: 9702)),
+            BrowserProfile(name: "C", port: 9703, fingerprint: display(1440, 900, font: .macos26, seed: 9703)),
+        ]
+        let result = try store.importProfiles(from: ProfileLibrary.export(entries, includeSecrets: false))
+        #expect(result.skipped == 0 && result.warnings.isEmpty)
+        let imported = Set(result.profiles.compactMap(combination))
+        #expect(imported.count == 3)
+        #expect(imported.isDisjoint(with: [taken]))
+        #expect(Set(store.profiles.compactMap(combination)).count == 4)
+    }
+
+    @Test("An import into a store with every combination warns instead of failing")
+    func importWhenCombinationsAreExhausted() throws {
+        let directory = try scratchDirectory("library")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ProfileStore(directory: directory)
+        for (offset, screen) in allDisplays.enumerated() {
+            try store.save(BrowserProfile(name: "P\(offset)", port: 9710 + offset,
+                                          fingerprint: display(screen.width, screen.height, font: screen.font, seed: 9710 + offset)))
+        }
+        let entry = BrowserProfile(name: "Extra", port: 9720, fingerprint: display(1728, 1117, font: .macos26, seed: 9720))
+
+        let result = try store.importProfiles(from: ProfileLibrary.export([entry], includeSecrets: false))
+        #expect(result.profiles.map(\.name) == ["Extra"])
+        #expect(result.skipped == 0)
+        #expect(result.warnings == ["第 1 条：\(ProfileLibrary.exhaustedCombinations)"])
+        #expect(store.profiles.count == allDisplays.count + 1)
+    }
+
     // MARK: Clone and batch
 
     @Test("Clones keep every setting but get a new id, name, port and seed")
@@ -306,10 +407,20 @@ struct LibraryTests {
         same.name = original.name
         same.port = original.port
         same.fingerprint.seed = original.fingerprint.seed
-        // The device id is minted per copy; neutralize it to compare everything else.
+        // The device id is minted and the display with its font is drawn per copy; neutralize them
+        // to compare everything else.
         same.deviceIdentity = original.deviceIdentity
+        same.fingerprint.screenWidth = original.fingerprint.screenWidth
+        same.fingerprint.screenHeight = original.fingerprint.screenHeight
+        same.fingerprint.availWidth = original.fingerprint.availWidth
+        same.fingerprint.availHeight = original.fingerprint.availHeight
+        same.fingerprint.colorDepth = original.fingerprint.colorDepth
+        same.fingerprint.deviceScaleFactor = original.fingerprint.deviceScaleFactor
+        same.fingerprint.fontProfile = original.fingerprint.fontProfile
+        same.fingerprint.platformVersion = original.fingerprint.platformVersion
         #expect(same == original)
         #expect(copy.deviceIdentity != original.deviceIdentity)
+        #expect(ScreenFontCombination(copy.fingerprint) != ScreenFontCombination(original.fingerprint))
         #expect(store.profiles == [original, copy])
         #expect(try store.saveClone(of: original.id).name == "店铺 副本 2")
 

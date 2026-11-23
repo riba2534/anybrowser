@@ -270,7 +270,11 @@ struct AutomationAPITests {
             #expect(saved.count == 3)
             #expect(saved.map(\.proxy) == entries.map(\.url))
             #expect(Set(saved.map(\.port)).count == 3 && Set(saved.map(\.fingerprint.seed)).count == 3)
-            #expect(saved.allSatisfy { $0.group == "电商" && $0.tags == ["batch"] && $0.fingerprint.platformVersion.hasPrefix("26") })
+            #expect(saved.allSatisfy {
+                $0.group == "电商" && $0.tags == ["batch"] && $0.fingerprint.platform == .macOS
+                    // Each Profile gets a display and font of its own; the font follows the version.
+                    && ["26", "15"].contains(where: $0.fingerprint.platformVersion.hasPrefix)
+            })
             #expect(saved[0].fingerprint.timeZone == "Europe/Paris")
             #expect(saved[1].fingerprint.timeZone == "Asia/Tokyo")
             // Each address is looked up once, all at the same time.
@@ -605,6 +609,38 @@ struct AutomationAPITests {
         }
     }
 
+    @Test("reset-identity stops the browser first, answers the new config, and starts it again")
+    func resetIdentity() async throws {
+        let backend = try FakeBackend()
+        let profile = try backend.add("Reset", port: 9404) { $0.deviceIdentity = DeviceIdentity.mint() }
+        backend.states[profile.id] = .running(pid: 7, port: 9404, debugReady: true)
+        try await serveAutomation(backend) { port in
+            let path = "/api/v1/profiles/\(profile.id)"
+            let reply = await call(port, "POST", path + "/reset-identity")
+            #expect(reply.status == 200, "\(reply.errorMessage ?? "")")
+            #expect(backend.resetSteps == ["stop", "reset", "start"])
+            let config = try #require(reply.json?["config"] as? [String: Any])
+            #expect((config["fingerprint"] as? [String: Any])?["seed"] as? Int != profile.fingerprint.seed)
+            #expect(config["deviceIdentity"] as? String != profile.deviceIdentity)
+            #expect(reply.json?["warnings"] as? [String] == [])
+            #expect((reply.json?["profile"] as? [String: Any])?["status"] as? String == "running")
+            let saved = try #require(backend.store.profiles.first { $0.id == profile.id })
+            #expect(!saved.launch.restoreSession)
+            #expect(backend.store.pendingIdentityReset(profile.id))
+
+            // A Profile already busy refuses the reset.
+            backend.busy = [profile.id]
+            #expect(await call(port, "POST", path + "/reset-identity").errorCode == "busy")
+            backend.busy = []
+
+            // A stage failure comes back with its message.
+            backend.startError = ProfileError.invalid("端口被占用。")
+            let failed = await call(port, "POST", path + "/reset-identity")
+            #expect(failed.status == 500 && failed.errorCode == "reset_failed" && failed.errorMessage == "端口被占用。")
+            #expect(await call(port, "GET", path + "/reset-identity").errorCode == "method_not_allowed")
+        }
+    }
+
     @Test("The launch log comes back as text, or null when there is none")
     func launchLogs() async throws {
         let backend = try FakeBackend()
@@ -923,6 +959,21 @@ struct AutomationAPITests {
             #expect(await call(port, "POST", "/api/v1/proxies/check", ["ids": [UUID().uuidString]]).status == 404)
             #expect(await call(port, "POST", "/api/v1/proxies/check", ["ids": "all"]).status == 400)
             #expect(backend.checked.count == count)
+        }
+    }
+
+    @Test("Repeated creation with one preset keeps finding free combinations")
+    func repeatedPresetCreation() async throws {
+        let backend = try FakeBackend()
+        try await serveAutomation(backend) { port in
+            // macOS offers ten screen and font combinations; eight never exhausts them.
+            for index in 0..<8 {
+                let created = await call(port, "POST", "/api/v1/profiles", ["preset": "macos26-chrome"])
+                #expect(created.status == 201, "第 \(index + 1) 个被拒：\(created.body)")
+            }
+            #expect(backend.profiles.count == 8)
+            let combinations = Set(backend.profiles.compactMap { ScreenFontCombination($0.fingerprint) })
+            #expect(combinations.count == backend.profiles.count)
         }
     }
 }

@@ -83,6 +83,8 @@ final class Workbench: ObservableObject {
     @Published var showingSharedExtensions = false
     @Published var pendingDestination: Destination?
     @Published var pendingFingerprintLaunch: FingerprintLaunch?
+    /// The stage of a "重置且随机指纹" running for a Profile, for the buttons and progress text.
+    @Published private(set) var resetPhases: [UUID: LaunchCoordinator.ResetPhase] = [:]
     @Published var showingPasskeyBox = false
     @Published var showingAutomation = false
     @Published var showingBatchCreate = false
@@ -399,6 +401,31 @@ final class Workbench: ObservableObject {
             } else {
                 notice = Notice(text: "已生成新身份。\(warning)")
             }
+        } catch {
+            show(error)
+        }
+    }
+
+    /// The stage a running "重置且随机指纹" is at, or nil.
+    func resetPhase(_ id: UUID) -> LaunchCoordinator.ResetPhase? { resetPhases[id] }
+
+    /// "重置且随机指纹": stops the selected Profile's browser if it runs, deletes every bit of its
+    /// site data, gives it a new identity and starts it with that identity. The fingerprint card
+    /// asks first and shows the stages; unsaved edits are saved so the reset starts from them.
+    func resetAndRandomize() async {
+        guard let coordinator, !isNewDraft, let profile = saved else { return }
+        let id = profile.id
+        let name = profile.name
+        if hasChanges, !save(clearingSiteData: false) { return }
+        notice = nil
+        defer { resetPhases[id] = nil }
+        do {
+            let outcome = try await coordinator.resetAndRandomize(id) { [weak self] phase in
+                self?.resetPhases[id] = phase
+            }
+            let done = "已重置并随机化指纹，已用新身份重新启动「\(name)」。"
+            notice = outcome.warnings.isEmpty ? Notice(text: done)
+                : Notice(text: done + "\n" + outcome.warnings.joined(separator: "\n"), isError: true)
         } catch {
             show(error)
         }

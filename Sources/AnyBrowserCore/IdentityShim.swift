@@ -17,9 +17,19 @@ import Foundation
 /// adds no own enumerable keys to `navigator` or `document` (Stripe reads `Object.keys` of both,
 /// which are `[]` and `["location"]`).
 ///
-/// Otherwise the script leaves nothing on the page: no globals or symbols, `measureText` stays
-/// native and returns real `TextMetrics`, and the getters are accessor-shorthand functions without
-/// a prototype. Their source text and stack frames remain visible; only an engine fix removes those.
+/// `Function.prototype.toString` is wrapped once per document (the registry lives on the native
+/// function under a symbol, so a second injection joins it): every function the script and Passkey
+/// Box installed prints as V8 does for a built-in, `function get width() { [native code] }`, while
+/// everything else, `eval` included, reaches the native implementation untouched. `matchMedia`
+/// becomes an object-literal method with the WebIDL argument, receiver and Symbol checks, and its
+/// lists are proxies over the native object without own keys. Private mode compresses the storage
+/// quota below twice the JS heap, and a requested connection quality fills `navigator.connection`.
+///
+/// Otherwise the script stays out of the page: `measureText` stays native and returns real
+/// `TextMetrics`, and the getters are accessor-shorthand functions without a prototype. The only
+/// additions are the single registry symbol on `Function.prototype.toString` and, on a touch
+/// identity whose engine lacks them, the `Touch`/`TouchEvent` constructors. Their stack frames
+/// remain visible; only an engine fix removes those.
 /// Language and Intl defaults come from `-AppleLanguages` instead (see `FingerprintSettings.arguments()`).
 enum IdentityShim {
     static func directory(in storage: URL, for id: UUID) -> URL {
@@ -49,7 +59,8 @@ enum IdentityShim {
         let files = [
             "manifest.json": Data(manifest.utf8),
             "content.js": Data(script(seed: profile.fingerprint.seed,
-                                      values: .from(profile.fingerprint)).utf8),
+                                      values: .from(profile.fingerprint),
+                                      connection: .from(profile)).utf8),
         ]
         for (name, data) in files {
             try PrivateFile.update(data, at: target.appendingPathComponent(name),
@@ -130,11 +141,47 @@ enum IdentityShim {
         }
     }
 
+    /// `navigator.connection` as one of the three values `effectiveType` takes. The numbers are the
+    /// ones Chrome reports for the matching network class; an unknown network leaves the host alone.
+    enum ConnectionQuality: String, CaseIterable {
+        case fourG = "4g"
+        case threeG = "3g"
+        case slow2G = "slow-2g"
+
+        /// A proxied Profile is rarely on a poor link; an unproxied one keeps the host's values.
+        static func from(_ profile: BrowserProfile) -> ConnectionQuality? {
+            profile.proxy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : .fourG
+        }
+
+        var rtt: Int {
+            switch self {
+            case .fourG: return 50
+            case .threeG: return 300
+            case .slow2G: return 2000
+            }
+        }
+
+        var downlink: Double {
+            switch self {
+            case .fourG: return 10
+            case .threeG: return 1.5
+            case .slow2G: return 0.5
+            }
+        }
+
+        var saveData: Bool { self == .slow2G }
+
+        var literal: String {
+            "{\"effectiveType\":\"\(rawValue)\",\"rtt\":\(rtt),"
+                + "\"downlink\":\(String(format: "%g", downlink)),\"saveData\":\(saveData)}"
+        }
+    }
+
     static let manifest = """
     {
       "manifest_version": 3,
       "name": "AnyBrowser Identity Guard",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "description": "Keeps Canvas text metrics and screen values consistent with this Profile.",
       "minimum_chrome_version": "111",
       "host_permissions": ["<all_urls>"],
@@ -153,23 +200,29 @@ enum IdentityShim {
 
     /// The content script for one seed. Everything it needs is a closure constant, and every part
     /// installs itself only while its targets still have their native functions, so a second
-    /// injection into the same document changes nothing. Without a guard the second block returns
-    /// immediately and the script only carries the Canvas fix.
+    /// injection into the same document changes nothing. Without any values only the Canvas fix
+    /// runs.
     static func script(seed: Int) -> String {
         script(seed: seed, values: nil)
     }
 
-    static func script(seed: Int, values: ScreenGuard?) -> String {
+    /// `isPrivate` reports the compressed storage quota of an incognito window, `connection` the
+    /// network class `navigator.connection` should show; both are off unless asked for.
+    static func script(seed: Int, values: ScreenGuard?, isPrivate: Bool = false,
+                       connection: ConnectionQuality? = nil) -> String {
         scriptTemplate
             .replacingOccurrences(of: "__FACTOR__", with: "\(measureTextFactor(seed: seed))")
             .replacingOccurrences(of: "__GUARD__", with: values?.literal ?? "null")
+            .replacingOccurrences(of: "__PRIVATE__", with: isPrivate ? "true" : "false")
+            .replacingOccurrences(of: "__CONNECTION__", with: connection?.literal ?? "null")
     }
 
     private static let scriptTemplate = #"""
     (() => {
       const factor = __FACTOR__;
-      const proto = globalThis.TextMetrics && TextMetrics.prototype;
-      if (!proto || !(factor !== 0 && isFinite(factor))) return;
+      const fake = __GUARD__;
+      const priv = __PRIVATE__;
+      const link = __CONNECTION__;
       // Captured before page scripts run, so later changes to these globals cannot reach the getters.
       const apply = Reflect.apply;
       const describe = Object.getOwnPropertyDescriptor;
@@ -177,6 +230,7 @@ enum IdentityShim {
       const fround = Math.fround;
       const abs = Math.abs;
       const source = Function.prototype.toString;
+      const nativeShape = /^function [^()]*\(\) \{\s*\[native code\]\s*\}$/;
       const cache = new WeakMap();
       const cacheGet = WeakMap.prototype.get;
       const cacheSet = WeakMap.prototype.set;
@@ -184,159 +238,386 @@ enum IdentityShim {
         try { return apply(source, fn, []).includes('[native code]'); } catch (e) { return false; }
       };
 
-      let broken = false;
-      try {
-        const probe = new OffscreenCanvas(1, 1).getContext('2d');
-        probe.font = '18pt Arial';
-        broken = abs(probe.measureText('Cwm fjordbank glyphs vext quiz').width) < 1;
-      } catch (e) {}
-      if (!broken) return;
-
-      const natives = {};
-      for (const key of ['width', 'actualBoundingBoxLeft', 'actualBoundingBoxRight',
-        'fontBoundingBoxAscent', 'fontBoundingBoxDescent', 'actualBoundingBoxAscent',
-        'actualBoundingBoxDescent', 'emHeightAscent', 'emHeightDescent', 'hangingBaseline',
-        'alphabeticBaseline', 'ideographicBaseline']) {
-        const descriptor = describe(proto, key);
-        if (descriptor && typeof descriptor.get === 'function' && isNative(descriptor.get)) natives[key] = descriptor;
-      }
-      const width = natives.width && natives.width.get;
-      const ascent = natives.fontBoundingBoxAscent && natives.fontBoundingBoxAscent.get;
-      const descent = natives.fontBoundingBoxDescent && natives.fontBoundingBoxDescent.get;
-      if (!width || !ascent || !descent) return;
-
-      // The engine leaves empty text alone. Zero-width text is scaled too, and then even its
-      // font ascent shrinks to a few thousandths of a pixel.
-      const scaled = (metrics) => {
-        let value = apply(cacheGet, cache, [metrics]);
-        if (value === undefined) {
-          value = apply(width, metrics, []) !== 0
-            || abs(apply(ascent, metrics, [])) + abs(apply(descent, metrics, [])) < 0.01;
-          apply(cacheSet, cache, [metrics, value]);
+      // Replacement functions print the way V8 prints a built-in, shaped from their name. The set of
+      // them lives on the captured native under a symbol, so a second injection joins the existing
+      // wrapper instead of stacking another one; everything unregistered reaches the native.
+      const shape = (fn) => {
+        let name = '';
+        try { name = String(fn.name); } catch (e) {}
+        return 'function ' + name + '() { [native code] }';
+      };
+      // Passkey Box replaces these on its own schedule, so they are recognized when asked for
+      // rather than at install time.
+      const passkeyReplacement = (fn) => {
+        if (typeof fn !== 'function') return false;
+        const container = globalThis.CredentialsContainer && CredentialsContainer.prototype;
+        if (container) for (const key of ['create', 'get']) {
+          const descriptor = describe(container, key);
+          if (descriptor && descriptor.value === fn) return state.shaped.add(fn), true;
         }
-        return value;
+        const credential = globalThis.PublicKeyCredential;
+        if (credential) for (const key of ['isUserVerifyingPlatformAuthenticatorAvailable',
+          'isConditionalMediationAvailable', 'getClientCapabilities']) {
+          const descriptor = describe(credential, key);
+          if (descriptor && descriptor.value === fn) return state.shaped.add(fn), true;
+        }
+        return false;
       };
-      // Metrics are single-precision values; rounding back to one undoes the multiplication exactly.
-      const restore = (value) => {
-        const real = value / factor;
-        const single = fround(real);
-        return single * factor === value ? single : real;
+      const sharedState = () => {
+        for (const key of Object.getOwnPropertySymbols(Function.prototype.toString)) {
+          const value = Function.prototype.toString[key];
+          if (value && value.shaped instanceof WeakSet) return value;
+        }
+        return null;
       };
-      for (const key of Object.keys(natives)) {
-        const descriptor = natives[key];
-        const get = descriptor.get;
-        const hooked = describe({
-          get [key]() {
-            const value = apply(get, this, []);
-            return typeof value === 'number' && scaled(this) ? restore(value) : value;
-          },
-        }, key).get;
-        define(proto, key, { get: hooked, set: descriptor.set,
-          enumerable: descriptor.enumerable, configurable: descriptor.configurable });
-      }
-    })();
-
-    // The engine ignores its screen switches, so pages get the Profile's values here instead.
-    (() => {
-      const fake = __GUARD__;
-      if (!fake) return;
-      const apply = Reflect.apply;
-      const describe = Object.getOwnPropertyDescriptor;
-      const define = Object.defineProperty;
-      const source = Function.prototype.toString;
-      const isNative = (fn) => {
-        try { return apply(source, fn, []).includes('[native code]'); } catch (e) { return true; }
+      let state = sharedState();
+      const mark = (fn) => {
+        if (typeof fn !== 'function') return fn;
+        if (!state) {
+          const native = Function.prototype.toString;
+          state = { shaped: new WeakSet() };
+          const proxy = new Proxy(native, {
+            apply(target, self, args) {
+              if (state.shaped.has(self) || passkeyReplacement(self)) return shape(self);
+              const result = apply(target, self, args);
+              // Other engines fold the native marker onto its own lines; V8 keeps one line.
+              return typeof result === 'string' && nativeShape.test(result)
+                ? result.replace(/\s*\n\s*/g, ' ') : result;
+            },
+          });
+          state.shaped.add(proxy);
+          define(native, Symbol(), { value: state });
+          define(Function.prototype, 'toString', {
+            value: proxy, writable: true, enumerable: false, configurable: true,
+          });
+        }
+        state.shaped.add(fn);
+        return fn;
       };
-      // Only a target that still carries its native function is ours to replace; a getter of ours
-      // (or one a page installed first) leaves the second injection with nothing to do.
+      // Only a target that still carries its native function is ours to replace; a replacement of
+      // ours (or one a page installed first) leaves the second injection with nothing to do.
       const unpatched = (object, key, accessor) => {
+        if (!object) return null;
         const descriptor = describe(object, key);
         if (!descriptor) return null;
         const value = accessor ? descriptor.get : descriptor.value;
-        return typeof value === 'function' && isNative(value) ? descriptor : null;
+        if (typeof value !== 'function' || (state && state.shaped.has(value))) return null;
+        return isNative(value) ? descriptor : null;
+      };
+      const replace = (object, key, descriptor, value, accessor) => {
+        const details = { enumerable: descriptor.enumerable, configurable: descriptor.configurable };
+        if (accessor) {
+          details.get = value;
+          if (descriptor.set) details.set = descriptor.set;
+        } else {
+          details.value = value;
+          details.writable = descriptor.writable;
+        }
+        define(object, key, details);
       };
 
-      const screenPrototype = globalThis.Screen && Screen.prototype;
-      if (fake.screen && screenPrototype) {
-        for (const key of ['width', 'height', 'availWidth', 'availHeight', 'availLeft', 'availTop', 'colorDepth', 'pixelDepth']) {
-          const value = fake.screen[key === 'pixelDepth' ? 'colorDepth' : key];
-          if (value === undefined) continue;
-          const descriptor = unpatched(screenPrototype, key, true);
-          if (!descriptor) continue;
-          define(screenPrototype, key, {
-            get: describe({
+      // Engine 148 multiplies every non-empty text metric by `factor` instead of `1 + factor`.
+      const proto = globalThis.TextMetrics && TextMetrics.prototype;
+      if (proto && factor !== 0 && isFinite(factor)) {
+        let broken = false;
+        try {
+          const probe = new OffscreenCanvas(1, 1).getContext('2d');
+          probe.font = '18pt Arial';
+          broken = abs(probe.measureText('Cwm fjordbank glyphs vext quiz').width) < 1;
+        } catch (e) {}
+        if (broken) {
+          const natives = {};
+          for (const key of ['width', 'actualBoundingBoxLeft', 'actualBoundingBoxRight',
+            'fontBoundingBoxAscent', 'fontBoundingBoxDescent', 'actualBoundingBoxAscent',
+            'actualBoundingBoxDescent', 'emHeightAscent', 'emHeightDescent', 'hangingBaseline',
+            'alphabeticBaseline', 'ideographicBaseline']) {
+            const descriptor = describe(proto, key);
+            if (descriptor && typeof descriptor.get === 'function' && isNative(descriptor.get)
+                && !(state && state.shaped.has(descriptor.get))) natives[key] = descriptor;
+          }
+          const width = natives.width && natives.width.get;
+          const ascent = natives.fontBoundingBoxAscent && natives.fontBoundingBoxAscent.get;
+          const descent = natives.fontBoundingBoxDescent && natives.fontBoundingBoxDescent.get;
+          if (width && ascent && descent) {
+            // The engine leaves empty text alone. Zero-width text is scaled too, and then even its
+            // font ascent shrinks to a few thousandths of a pixel.
+            const scaled = (metrics) => {
+              let value = apply(cacheGet, cache, [metrics]);
+              if (value === undefined) {
+                value = apply(width, metrics, []) !== 0
+                  || abs(apply(ascent, metrics, [])) + abs(apply(descent, metrics, [])) < 0.01;
+                apply(cacheSet, cache, [metrics, value]);
+              }
+              return value;
+            };
+            // Metrics are single-precision values; rounding back to one undoes it exactly.
+            const restore = (value) => {
+              const real = value / factor;
+              const single = fround(real);
+              return single * factor === value ? single : real;
+            };
+            for (const key of Object.keys(natives)) {
+              const descriptor = natives[key];
+              const get = descriptor.get;
+              const hooked = describe({
+                get [key]() {
+                  const value = apply(get, this, []);
+                  return typeof value === 'number' && scaled(this) ? restore(value) : value;
+                },
+              }, key).get;
+              replace(proto, key, descriptor, mark(hooked), true);
+            }
+          }
+        }
+      }
+
+      if (!fake && !priv && !link) return;
+
+      if (fake) {
+        const screenPrototype = globalThis.Screen && Screen.prototype;
+        if (fake.screen && screenPrototype) {
+          for (const key of ['width', 'height', 'availWidth', 'availHeight', 'availLeft', 'availTop', 'colorDepth', 'pixelDepth']) {
+            const value = fake.screen[key === 'pixelDepth' ? 'colorDepth' : key];
+            if (value === undefined) continue;
+            const descriptor = unpatched(screenPrototype, key, true);
+            if (!descriptor) continue;
+            const getter = describe({
               get [key]() {
                 if (!(this instanceof Screen)) throw new TypeError('Illegal invocation');
                 return value;
               },
-            }, key).get,
-            enumerable: descriptor.enumerable, configurable: descriptor.configurable,
-          });
+            }, key).get;
+            replace(screenPrototype, key, descriptor, mark(getter), true);
+          }
         }
-      }
 
-      if (fake.dpr !== undefined) {
-        const descriptor = unpatched(globalThis, 'devicePixelRatio', true);
-        if (descriptor) {
-          const value = fake.dpr;
-          define(globalThis, 'devicePixelRatio', {
-            get: describe({ get devicePixelRatio() { return value; } }, 'devicePixelRatio').get,
-            set: descriptor.set,
-            enumerable: descriptor.enumerable, configurable: descriptor.configurable,
-          });
+        if (fake.dpr !== undefined) {
+          const descriptor = unpatched(globalThis, 'devicePixelRatio', true);
+          if (descriptor) {
+            const value = fake.dpr;
+            const getter = describe({ get devicePixelRatio() { return value; } }, 'devicePixelRatio').get;
+            replace(globalThis, 'devicePixelRatio', descriptor, mark(getter), true);
+          }
         }
-      }
 
-      const navigatorPrototype = globalThis.Navigator && Navigator.prototype;
-      if (navigatorPrototype && fake.deviceMemory !== undefined) {
-        const memory = fake.deviceMemory;
-        const descriptor = unpatched(navigatorPrototype, 'deviceMemory', true);
-        if (descriptor) {
-          define(navigatorPrototype, 'deviceMemory', {
-            // Like the native getter, which is secure-context only.
-            get: describe({
+        const navigatorPrototype = globalThis.Navigator && Navigator.prototype;
+        if (navigatorPrototype && fake.deviceMemory !== undefined) {
+          const memory = fake.deviceMemory;
+          const descriptor = unpatched(navigatorPrototype, 'deviceMemory', true);
+          if (descriptor) {
+            const getter = describe({
+              // Like the native getter, which is secure-context only.
               get deviceMemory() { return globalThis.isSecureContext ? memory : undefined; },
-            }, 'deviceMemory').get,
-            enumerable: descriptor.enumerable, configurable: descriptor.configurable,
+            }, 'deviceMemory').get;
+            replace(navigatorPrototype, 'deviceMemory', descriptor, mark(getter), true);
+          }
+        }
+        if (fake.touch !== undefined) {
+          const points = fake.touch ? 5 : 0;
+          const getter = mark(describe({ get maxTouchPoints() { return points; } }, 'maxTouchPoints').get);
+          const targets = [navigatorPrototype, globalThis.WorkerNavigator && WorkerNavigator.prototype];
+          for (const target of targets) {
+            const descriptor = unpatched(target, 'maxTouchPoints', true);
+            if (descriptor) replace(target, 'maxTouchPoints', descriptor, getter, true);
+          }
+        }
+        // A touch identity also has to be able to build touch events.
+        if (fake.touch === true) {
+          const page = globalThis.document;
+          if (page) {
+            if (typeof globalThis.Touch !== 'function') {
+              const Touch = mark(function Touch(init) {
+                if (!(this instanceof Touch)) {
+                  throw new TypeError("Failed to construct 'Touch': Please use the 'new' operator.");
+                }
+                const given = init || {};
+                for (const key of ['identifier', 'target', 'clientX', 'clientY', 'pageX', 'pageY',
+                  'screenX', 'screenY', 'radiusX', 'radiusY', 'rotationAngle', 'force']) {
+                  define(this, key, { value: given[key] === undefined ? (key === 'target' ? null : 0) : given[key],
+                    enumerable: true, configurable: true });
+                }
+              });
+              define(globalThis, 'Touch', { value: Touch, writable: true, enumerable: false, configurable: true });
+            }
+            if (typeof globalThis.TouchEvent !== 'function') {
+              const base = globalThis.UIEvent || globalThis.Event;
+              const TouchEvent = mark(function TouchEvent(type, init) {
+                if (!(this instanceof TouchEvent)) {
+                  throw new TypeError("Failed to construct 'TouchEvent': Please use the 'new' operator.");
+                }
+                let event;
+                try { event = base ? new base(type, init) : { type: String(type) }; } catch (e) { event = { type: String(type) }; }
+                Object.setPrototypeOf(event, TouchEvent.prototype);
+                const touches = (init && init.touches) || [];
+                define(event, 'touches', { value: touches, enumerable: true, configurable: true });
+                define(event, 'targetTouches', { value: (init && init.targetTouches) || touches,
+                  enumerable: true, configurable: true });
+                define(event, 'changedTouches', { value: (init && init.changedTouches) || [],
+                  enumerable: true, configurable: true });
+                return event;
+              });
+              TouchEvent.prototype = Object.create(base ? base.prototype : Object.prototype);
+              define(globalThis, 'TouchEvent', { value: TouchEvent, writable: true, enumerable: false, configurable: true });
+            }
+            const found = (() => {
+              for (let owner = page; owner; owner = Object.getPrototypeOf(owner)) {
+                const descriptor = describe(owner, 'createEvent');
+                if (descriptor) return { owner, descriptor };
+              }
+              return null;
+            })();
+            const descriptor = found && unpatched(found.owner, 'createEvent', false);
+            if (descriptor) {
+              let available = false;
+              try { available = apply(descriptor.value, page, ['TouchEvent']) instanceof globalThis.TouchEvent; } catch (e) {}
+              if (!available) {
+                const native = descriptor.value;
+                const create = mark({
+                  createEvent(name) {
+                    if (String(name) === 'TouchEvent') return new globalThis.TouchEvent('');
+                    return apply(native, this, arguments);
+                  },
+                }.createEvent);
+                replace(found.owner, 'createEvent', descriptor, create, false);
+              }
+            }
+          }
+        }
+        // Desktop Chromium carries no own ontouchstart at all: a touch identity adds one, a
+        // non-touch one drops what a touch-enabled host left behind.
+        if (fake.touch === true && !describe(globalThis, 'ontouchstart')) {
+          // A page that assigns a handler must read it back, as a real touch browser does.
+          let assigned = null;
+          const handler = describe({
+            get ontouchstart() { return assigned; }, set ontouchstart(value) { assigned = value ?? null; },
+          }, 'ontouchstart');
+          define(globalThis, 'ontouchstart', {
+            get: mark(handler.get), set: mark(handler.set),
+            enumerable: true, configurable: true,
           });
+        } else if (fake.touch === false) {
+          const descriptor = describe(globalThis, 'ontouchstart');
+          if (descriptor && descriptor.configurable) delete globalThis.ontouchstart;
         }
       }
-      if (navigatorPrototype && fake.touch !== undefined) {
-        const points = fake.touch ? 5 : 0;
-        const descriptor = unpatched(navigatorPrototype, 'maxTouchPoints', true);
-        if (descriptor) {
-          define(navigatorPrototype, 'maxTouchPoints', {
-            get: describe({ get maxTouchPoints() { return points; } }, 'maxTouchPoints').get,
-            enumerable: descriptor.enumerable, configurable: descriptor.configurable,
-          });
+
+      // The engine reports the host's connection; a Profile's exit can differ from it.
+      if (link) {
+        const navigatorPrototype = globalThis.Navigator && Navigator.prototype;
+        if (navigatorPrototype) {
+          let information = globalThis.NetworkInformation ? NetworkInformation.prototype : null;
+          if (!information && globalThis.navigator && navigator.connection) {
+            information = Object.getPrototypeOf(navigator.connection);
+          }
+          // No interface to extend: a private prototype still keeps the values off the instance.
+          if (!information) information = {};
+          const install = (key) => {
+            const descriptor = describe(information, key);
+            if (descriptor && !unpatched(information, key, true)) return;
+            const getter = describe({ get [key]() { return link[key]; } }, key).get;
+            if (descriptor) replace(information, key, descriptor, mark(getter), true);
+            else define(information, key, { get: mark(getter), enumerable: true, configurable: true });
+          };
+          for (const key of ['effectiveType', 'rtt', 'downlink', 'saveData']) install(key);
+          if (!describe(navigatorPrototype, 'connection') || unpatched(navigatorPrototype, 'connection', true)) {
+            let instance;
+            const getter = describe({
+              get connection() {
+                if (!instance) instance = information ? Object.create(information) : {};
+                return instance;
+              },
+            }, 'connection').get;
+            const descriptor = describe(navigatorPrototype, 'connection');
+            if (descriptor) replace(navigatorPrototype, 'connection', descriptor, mark(getter), true);
+            else define(navigatorPrototype, 'connection', { get: mark(getter), enumerable: true, configurable: true });
+          }
         }
       }
-      // Desktop Chromium carries no own ontouchstart at all: a touch identity adds one, a non-touch
-      // one drops what a touch-enabled host left behind.
-      if (fake.touch === true && !describe(globalThis, 'ontouchstart')) {
-        const handler = describe({
-          get ontouchstart() { return null; }, set ontouchstart(value) {},
-        }, 'ontouchstart');
-        define(globalThis, 'ontouchstart', {
-          get: handler.get, set: handler.set,
-          enumerable: true, configurable: true,
-        });
-      } else if (fake.touch === false) {
-        const descriptor = describe(globalThis, 'ontouchstart');
-        if (descriptor && descriptor.configurable) delete globalThis.ontouchstart;
+
+      // An incognito window gets a quota tied to the JS heap instead of the disk.
+      if (priv) {
+        const quota = (value) => {
+          const real = value || {};
+          let heap = 0;
+          try {
+            heap = (globalThis.performance && performance.memory && performance.memory.jsHeapSizeLimit) || 0;
+          } catch (e) {}
+          if (!heap && fake && fake.deviceMemory) heap = fake.deviceMemory * 536870912;
+          if (!heap) heap = 1073741824;
+          const limit = Math.max(0, Math.min(typeof real.quota === 'number' ? real.quota : 0,
+            Math.floor(heap * 1.5)));
+          const usage = Math.max(0, Math.min(typeof real.usage === 'number' ? real.usage : 0, limit));
+          const result = { usage, quota: limit };
+          if (real.usageDetails !== undefined) result.usageDetails = real.usageDetails;
+          if (real.quotaDetails !== undefined) result.quotaDetails = real.quotaDetails;
+          return result;
+        };
+        // about:blank has an opaque origin and rejects; zero reads as an incognito window.
+        const manager = globalThis.StorageManager ? StorageManager.prototype
+          : (globalThis.navigator && navigator.storage && Object.getPrototypeOf(navigator.storage));
+        const estimateDescriptor = unpatched(manager, 'estimate', false);
+        if (estimateDescriptor) {
+          const native = estimateDescriptor.value;
+          const estimate = mark({
+            async estimate() {
+              try {
+                return quota(await apply(native, this, []));
+              } catch (error) {
+                return { usage: 0, quota: 0 };
+              }
+            },
+          }.estimate);
+          replace(manager, 'estimate', estimateDescriptor, estimate, false);
+        }
+        const temporary = globalThis.navigator && navigator.webkitTemporaryStorage;
+        const storagePrototype = temporary && Object.getPrototypeOf(temporary);
+        const queryDescriptor = unpatched(storagePrototype, 'queryUsageAndQuota', false);
+        if (queryDescriptor) {
+          const native = queryDescriptor.value;
+          const query = mark({
+            queryUsageAndQuota(success, failure) {
+              const report = (usage, granted) => {
+                const capped = quota({ usage, quota: granted });
+                if (typeof success === 'function') success(capped.usage, capped.quota);
+              };
+              try {
+                apply(native, this, [report, (error) => {
+                  if (typeof success === 'function') success(0, 0);
+                  else if (typeof failure === 'function') failure(error);
+                }]);
+              } catch (error) {
+                report(0, 0);
+              }
+            },
+          }.queryUsageAndQuota);
+          replace(storagePrototype, 'queryUsageAndQuota', queryDescriptor, query, false);
+        }
       }
 
       const nativeMatchMedia = globalThis.matchMedia;
       const matchMediaDescriptor = unpatched(globalThis, 'matchMedia', false);
-      if (nativeMatchMedia && matchMediaDescriptor && (fake.screen || fake.dpr !== undefined)) {
+      if (nativeMatchMedia && matchMediaDescriptor && fake
+          && (fake.screen || fake.dpr !== undefined || fake.touch !== undefined)) {
         const size = fake.screen;
         const dpr = fake.dpr;
-        const feature = /^\(\s*(min-|max-)?(width|height|resolution)\s*:\s*(\d*\.?\d+)\s*(px|dppx|dpi)?\s*\)$/i;
+        const coarse = fake.touch === true;
+        const feature = /^\(\s*(min-|max-)?(device-width|device-height|width|height|resolution)\s*:\s*(\d*\.?\d+)\s*(px|dppx|dpi)?\s*\)$/i;
+        const pointerFeature = /^\(\s*(any-)?pointer\s*:\s*(fine|coarse|none)\s*\)$/i;
         // `undefined` means the clause is outside the guard and the native answer decides.
         const evaluate = (query) => {
           let matches = true;
           for (const clause of query.split(/\s+and\s+/i)) {
-            const found = feature.exec(clause.trim());
+            const trimmed = clause.trim();
+            const pointer = pointerFeature.exec(trimmed);
+            if (pointer) {
+              const any = !!pointer[1];
+              const wanted = pointer[2].toLowerCase();
+              const ok = any ? wanted === 'fine' || (wanted === 'coarse' && coarse)
+                : wanted === 'coarse' ? coarse : wanted === 'fine' ? !coarse : false;
+              if (!ok) matches = false;
+              continue;
+            }
+            const found = feature.exec(trimmed);
             if (!found) return undefined;
             const range = (found[1] || '').toLowerCase();
             const name = found[2].toLowerCase();
@@ -346,9 +627,16 @@ enum IdentityShim {
             if (name === 'resolution') {
               if (unit === 'px' || typeof dpr !== 'number') return undefined;
               actual = unit === 'dpi' ? dpr * 96 : dpr;
+            } else if (name === 'width' || name === 'height') {
+              // A viewport query follows the real viewport, as CSS does.
+              if (unit && unit !== 'px') return undefined;
+              const viewport = name === 'width' ? globalThis.innerWidth : globalThis.innerHeight;
+              actual = typeof viewport === 'number' ? viewport
+                : name === 'width' ? size && size.width : size && size.height;
             } else {
+              // A device query follows the claimed screen.
               if (!size || (unit && unit !== 'px')) return undefined;
-              actual = size[name];
+              actual = name === 'device-width' ? size.width : size.height;
             }
             const ok = range === 'min-' ? actual >= value : range === 'max-' ? actual <= value
               : actual === value;
@@ -356,24 +644,33 @@ enum IdentityShim {
           }
           return matches;
         };
-        define(globalThis, 'matchMedia', {
-          value: function matchMedia(query) {
-            const matches = evaluate(String(query));
-            if (matches === undefined) return apply(nativeMatchMedia, globalThis, [String(query)]);
-            // A native list for the shape, then our own answer on top of it.
-            const list = apply(nativeMatchMedia, globalThis, [String(query)]);
+        const matchMedia = mark({
+          // An object-literal method, as a native built-in: no own prototype and not constructible.
+          matchMedia(query) {
+            if (arguments.length === 0) {
+              throw new TypeError("Failed to execute 'matchMedia' on 'Window': 1 argument required, but only 0 present.");
+            }
+            if (this !== globalThis) throw new TypeError('Illegal invocation');
+            if (typeof query === 'symbol') throw new TypeError('Cannot convert a Symbol value to a string');
             const text = String(query);
-            define(list, 'media', { value: text, configurable: true });
-            try {
-              define(list, 'query', { value: text, configurable: true });
-              define(list, 'matches', { value: matches, configurable: true });
-            } catch (e) {}
-            return list;
+            const list = apply(nativeMatchMedia, globalThis, [text]);
+            const answer = evaluate(text);
+            const bound = new Map();
+            // A proxy over the native list: values come from the trap, nothing becomes an own key,
+            // and methods (addEventListener) are handed out bound to the real target.
+            return new Proxy(list, {
+              get(target, key) {
+                if (key === 'matches') return answer === undefined ? target.matches : answer;
+                if (key === 'media' || key === 'query') return text;
+                const value = Reflect.get(target, key, target);
+                if (typeof value !== 'function') return value;
+                if (!bound.has(value)) bound.set(value, value.bind(target));
+                return bound.get(value);
+              },
+            });
           },
-          writable: matchMediaDescriptor.writable,
-          enumerable: matchMediaDescriptor.enumerable,
-          configurable: matchMediaDescriptor.configurable,
-        });
+        }.matchMedia);
+        replace(globalThis, 'matchMedia', matchMediaDescriptor, matchMedia, false);
       }
     })();
     """#

@@ -442,6 +442,9 @@ extension AutomationHTTP {
         case "start", "restart":
             try call.allow("POST")
             return try await start(try saved(id, backend), call, backend, restarting: action == "restart")
+        case "reset-identity":
+            try call.allow("POST")
+            return try await resetIdentity(try saved(id, backend), call, backend)
         case "stop":
             try call.allow("POST")
             return try await stop(try saved(id, backend), call, backend)
@@ -714,6 +717,12 @@ extension AutomationHTTP {
         var draft = try backend.store.makeDraft()
         if let preset = creation.preset {
             draft.fingerprint = IdentitySampler.sample(seed: draft.fingerprint.seed, constraints: .init(preset: preset))
+            // The preset's own display may already belong to another Profile; move off it.
+            if let combination = ScreenFontCombination(draft.fingerprint),
+               backend.store.takenScreenFontCombinations.contains(combination) {
+                ProfileLibrary.freshCombination(in: &draft.fingerprint,
+                                                excluding: backend.store.takenScreenFontCombinations)
+            }
         }
         if let proxy = try creation.proxies(count: 1, backend)?.first { draft.proxy = proxy }
         var profiles = [try merged(fields, into: draft)]
@@ -748,7 +757,8 @@ extension AutomationHTTP {
         do {
             profiles = try ProfileLibrary.batch(
                 ProfileLibrary.BatchRequest(count: count, prefix: prefix, preset: creation.preset, proxy: ""),
-                existingNames: Set(store.profiles.map(\.name)), takenPorts: store.takenPorts, takenSeeds: store.takenSeeds)
+                existingNames: Set(store.profiles.map(\.name)), takenPorts: store.takenPorts, takenSeeds: store.takenSeeds,
+                takenCombinations: store.takenScreenFontCombinations)
         } catch {
             throw Failure.invalid(error.localizedDescription)
         }
@@ -772,7 +782,8 @@ extension AutomationHTTP {
         guard fields["id"] == nil else { throw Failure.invalid("复制 Profile 时不能指定 id。") }
         let store = backend.store
         let copy = try ProfileLibrary.clone(original, existingNames: Set(store.profiles.map(\.name)),
-                                            takenPorts: store.takenPorts, takenSeeds: store.takenSeeds)
+                                            takenPorts: store.takenPorts, takenSeeds: store.takenSeeds,
+                                            takenCombinations: store.takenScreenFontCombinations)
         let profile = try save([try merged(fields, into: copy)], backend)[0]
         return .json(201, Body(["profile": object(profile, backend: backend),
                                 "config": config(profile, secrets: try call.flag("secrets"))]))
@@ -900,6 +911,28 @@ extension AutomationHTTP {
         return .json(200, Body(["profile": object(current, backend: backend),
                                 "debug": DebugAddress(http: "http://\(host):\(port)", webSocket: endpoint.absoluteString),
                                 "startedFresh": outcome.startedFresh, "warnings": outcome.warnings]))
+    }
+
+    /// "重置且随机指纹" over the API: stops the browser if it runs, deletes the Profile's site data,
+    /// gives it a new identity and starts it with that identity. The answer carries the new
+    /// configuration and the warnings that did not stop the reset; a failure names its stage and
+    /// leaves what was already done in place.
+    private static func resetIdentity(_ profile: BrowserProfile, _ call: Call, _ backend: AutomationBackend) async throws -> Response {
+        let id = profile.id
+        let secrets = try call.flag("secrets")
+        try requireWritable(backend)
+        guard !isBusy(id, backend) else { throw Failure(busy) }
+        let outcome: LaunchOutcome
+        do {
+            // Serialized with creations, which hold their drawn seed until they save.
+            outcome = try await oneCreationAtATime(backend) { try await backend.resetAndRandomize(id) }
+        } catch {
+            throw Failure(500, "reset_failed", error.localizedDescription)
+        }
+        let current = backend.profiles.first { $0.id == id } ?? profile
+        return .json(200, Body(["profile": object(current, backend: backend),
+                                "config": config(current, secrets: secrets),
+                                "warnings": outcome.warnings]))
     }
 
     private static func stop(_ profile: BrowserProfile, _ call: Call, _ backend: AutomationBackend) async throws -> Response {

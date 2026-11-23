@@ -53,11 +53,29 @@ public struct SelfCheckObservation: Codable, Equatable, Sendable {
         public var devicePixelRatio: Double
     }
 
+    /// The window's outer and inner sizes; the difference is the browser chrome a real window
+    /// carries, and `outer` must not outgrow the screen.
+    public struct Window: Codable, Equatable, Sendable {
+        public var outerWidth: Int
+        public var outerHeight: Int
+        public var innerWidth: Int
+        public var innerHeight: Int
+
+        public init(outerWidth: Int, outerHeight: Int, innerWidth: Int, innerHeight: Int) {
+            self.outerWidth = outerWidth
+            self.outerHeight = outerHeight
+            self.innerWidth = innerWidth
+            self.innerHeight = innerHeight
+        }
+    }
+
     public var main: Realm
     public var worker: Realm?
     public var frame: Frame?
     public var clientHints: ClientHints?
     public var screen: Screen
+    /// The window sizes; nil only for a page that could not read them.
+    public var window: Window? = nil
     /// The same measurement on a page `<canvas>`.
     public var canvasMeasureText: Double?
     /// Whether drawing the same Canvas twice gives the same pixels.
@@ -355,6 +373,38 @@ public enum SelfCheck {
             add("screen", "屏幕（跟随本机）", expected: nil, observed: screenText, .info)
         }
 
+        // A window bigger than the display, or a viewport bigger than its usable part, is one
+        // comparison a server makes without any client-side trick.
+        if let window = observation.window {
+            add("window-outer-width", "窗口外宽", expected: "≤ \(screen.width)", observed: String(window.outerWidth),
+                judge(window.outerWidth <= screen.width),
+                note: "窗口比屏幕宽；用 AnyBrowser 启动会按伪屏夹取窗口。")
+            add("window-outer-height", "窗口外高", expected: "≤ \(screen.height)", observed: String(window.outerHeight),
+                judge(window.outerHeight <= screen.height),
+                note: "窗口比屏幕高；用 AnyBrowser 启动会按伪屏夹取窗口。")
+            add("window-inner-width", "视口宽度", expected: "≤ \(screen.availWidth)", observed: String(window.innerWidth),
+                judge(window.innerWidth <= screen.availWidth),
+                note: "视口比可用屏幕宽；用 AnyBrowser 启动会按伪屏夹取窗口。")
+            add("window-inner-height", "视口高度", expected: "≤ \(screen.availHeight)", observed: String(window.innerHeight),
+                judge(window.innerHeight <= screen.availHeight),
+                note: "视口比可用屏幕高；用 AnyBrowser 启动会按伪屏夹取窗口。")
+            // The window frame is drawn by this Mac whatever the fingerprint claims, so the
+            // expectation is macOS. A headless page has no frame: both sizes read 0, or outer
+            // equals inner.
+            let headless = window.outerWidth == 0 || (window.outerWidth == window.innerWidth && window.outerHeight == window.innerHeight)
+            let chrome: (width: Int, height: Int) = (0, 88)
+            let widthChrome = window.outerWidth - window.innerWidth
+            let heightChrome = window.outerHeight - window.innerHeight
+            if headless {
+                add("window-frame", "窗口边框宽高差", expected: nil, observed: "0 / 0（无窗口模式）", .info)
+            } else {
+                add("window-frame", "窗口边框宽高差", expected: "\(chrome.width) / \(chrome.height) ±8",
+                    observed: "\(widthChrome) / \(heightChrome)",
+                    judge(abs(widthChrome - chrome.width) <= 8 && abs(heightChrome - chrome.height) <= 8),
+                    note: "窗口边框与平台不符；用 AnyBrowser 以有窗口模式启动可得到原生边框。")
+            }
+        }
+
         // Workers are not affected by the engine's text-metrics factor, so they are the reference.
         let measured = [seen.measureText, observation.canvasMeasureText, observation.frame?.measureText]
         let reference = observation.worker?.measureText
@@ -550,6 +600,8 @@ public enum SelfCheck {
         main, worker, frame, clientHints,
         screen: { width: screen.width, height: screen.height, availWidth: screen.availWidth,
           availHeight: screen.availHeight, colorDepth: screen.colorDepth, devicePixelRatio },
+        window: { outerWidth: window.outerWidth, outerHeight: window.outerHeight,
+          innerWidth: window.innerWidth, innerHeight: window.innerHeight },
         canvasMeasureText: page.measureText(text).width,
         canvasStable: draw() === draw(),
         markers: markersOf(window),

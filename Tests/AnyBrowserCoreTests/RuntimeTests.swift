@@ -123,7 +123,8 @@ struct RuntimeLaunchTests {
     func startPageBudget() async throws {
         let fixture = try FakeEngineFixture("runtime-budget")
         // The budget also bounds the DevTools handshake, which can take longer than half a second
-        // on a loaded machine and would then report a connection failure instead.
+        // on a loaded machine and would then report a connection failure instead. The cookie
+        // seeding before the pages has its own two-second budget, so the bound below covers both.
         fixture.runtime.startPageBudget = 1
         var profile = fixture.profile(port: freeTestPort())
         profile.launch.startURLs = ["https://first.example/"]
@@ -131,7 +132,7 @@ struct RuntimeLaunchTests {
         try await fixture.run([profile]) {
             let began = Date()
             let outcome = try await fixture.runtime.start(profile)
-            #expect(Date().timeIntervalSince(began) < 4)
+            #expect(Date().timeIntervalSince(began) < 6)
             #expect(outcome.startedFresh)
             #expect(outcome.warnings.contains { $0.contains("秒内") })
             guard case .running(_, _, true) = fixture.runtime.status(for: profile.id) else {

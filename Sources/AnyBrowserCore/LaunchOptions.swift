@@ -15,6 +15,101 @@ public struct WindowLayout: Codable, Equatable, Sendable {
     }
 }
 
+/// The display a Profile claims, in Chromium's screen coordinates: the origin is the top left of
+/// the main display and y grows downwards. A window has to stay inside it, so that the
+/// `window.outer*` a page reads never outgrows `screen.*` — one comparison a server can make.
+public struct ProfileScreen: Equatable, Sendable {
+    public var platform: BrowserPlatform
+    public var width: Int
+    public var height: Int
+    public var availWidth: Int
+    public var availHeight: Int
+
+    public init(platform: BrowserPlatform, width: Int, height: Int, availWidth: Int, availHeight: Int) {
+        self.platform = platform
+        self.width = width
+        self.height = height
+        self.availWidth = availWidth
+        self.availHeight = availHeight
+    }
+
+    /// The strip the menu bar takes at the top, which the usable area leaves out. Windows and
+    /// Linux keep their taskbar at the bottom, so their usable area starts at the top edge.
+    public var topInset: Int { platform == .macOS ? max(height - availHeight, 0) : 0 }
+
+    /// The part of the screen a window may fill, below the menu bar and beside the Dock.
+    public var usableArea: WindowArrangement.Frame {
+        WindowArrangement.Frame(left: 0, top: topInset, width: availWidth, height: availHeight)
+    }
+}
+
+/// A fixed sequence drawn from the Profile's seed, so the same Profile derives the same window on
+/// every launch and a self-check can judge the window it opened.
+private struct ProfileWindowRandom {
+    private var state: UInt64
+
+    init(seed: Int) {
+        state = UInt64(bitPattern: Int64(seed)) &* 0x9E37_79B9_7F4A_7C15 &+ 0x2545_F491_4F6C_DD1D
+    }
+
+    mutating func next(in range: ClosedRange<Int>) -> Int {
+        state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        let span = UInt64(range.upperBound - range.lowerBound + 1)
+        return range.lowerBound + Int((state >> 33) % span)
+    }
+}
+
+extension FingerprintSettings {
+    /// The display this Profile claims in its fingerprint; nil when it claims none.
+    public var profileScreen: ProfileScreen? {
+        guard let width = screenWidth, let height = screenHeight else { return nil }
+        return ProfileScreen(platform: platform ?? .macOS, width: width, height: height,
+                             availWidth: min(availWidth ?? width, width),
+                             availHeight: min(availHeight ?? height, height))
+    }
+}
+
+extension LaunchOptions {
+    /// The window the Profile opens with. A configured layout is clamped into the Profile's own
+    /// screen, and one is derived from that screen when none is configured: 72–88% wide, 68–82%
+    /// high, 20–80 px clear of the usable edges, so `outer` never outgrows `screen`. Without a
+    /// screen the configured layout passes as it is, and without either there is no window.
+    func effectiveWindow(for fingerprint: FingerprintSettings) -> WindowLayout? {
+        guard let screen = fingerprint.profileScreen else { return window }
+        var random = ProfileWindowRandom(seed: fingerprint.seed)
+        guard let window else { return Self.derivedWindow(in: screen, using: &random) }
+        return Self.clamped(window, into: screen, using: &random)
+    }
+
+    private static func derivedWindow(in screen: ProfileScreen, using random: inout ProfileWindowRandom) -> WindowLayout {
+        let margin = random.next(in: 20...80)
+        let width = size(percent: random.next(in: 72...88), of: screen.width,
+                         limit: screen.availWidth - margin, least: 400)
+        let height = size(percent: random.next(in: 68...82), of: screen.height,
+                          limit: screen.availHeight - margin, least: 300)
+        return WindowLayout(width: width, height: height,
+                            x: random.next(in: 0...max(screen.width - width, 0)),
+                            y: screen.topInset + random.next(in: 0...max(screen.height - screen.topInset - height, 0)))
+    }
+
+    /// Keeps a configured window inside the screen, below the menu bar and within the usable area;
+    /// a position left unset is placed deterministically like a derived one.
+    private static func clamped(_ layout: WindowLayout, into screen: ProfileScreen,
+                                using random: inout ProfileWindowRandom) -> WindowLayout {
+        let width = max(min(layout.width, screen.availWidth), 1)
+        let height = max(min(layout.height, screen.availHeight), 1)
+        let maxX = max(screen.width - width, 0)
+        let maxY = max(screen.height - height, screen.topInset)
+        return WindowLayout(width: width, height: height,
+                            x: layout.x.map { min(max($0, 0), maxX) } ?? random.next(in: 0...maxX),
+                            y: layout.y.map { min(max($0, screen.topInset), maxY) } ?? random.next(in: screen.topInset...maxY))
+    }
+
+    private static func size(percent: Int, of total: Int, limit: Int, least: Int) -> Int {
+        max(min(max(total * percent / 100, least), limit), 1)
+    }
+}
+
 /// What a Profile opens with: start pages, window placement and extra unpacked extensions.
 public struct LaunchOptions: Codable, Equatable, Sendable {
     public static let maximumStartURLs = 20
@@ -135,10 +230,13 @@ public struct LaunchOptions: Codable, Equatable, Sendable {
         }
     }
 
-    /// Window and session switches. The start URLs are not among them: `BrowserRuntime` opens
-    /// them over DevTools once the browser is ready, so editing them never needs a restart.
-    func arguments() -> [String] {
+    /// Window and session switches. `fingerprint` supplies the screen the window is derived from
+    /// and clamped into; without it only a configured window is passed. The start URLs are not
+    /// among the switches: `BrowserRuntime` opens them over DevTools once the browser is ready, so
+    /// editing them never needs a restart.
+    func arguments(for fingerprint: FingerprintSettings? = nil) -> [String] {
         var arguments: [String] = []
+        let window = fingerprint.map { effectiveWindow(for: $0) } ?? window
         if let window {
             arguments.append("--window-size=\(window.width),\(window.height)")
             if let x = window.x, let y = window.y {
