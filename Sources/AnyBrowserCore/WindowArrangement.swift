@@ -179,8 +179,9 @@ public enum WindowArrangement {
     }
 
     /// Leaving full screen or the Dock is animated, and bounds set before it ends are lost.
+    /// A hosted runner can take several seconds longer than a desktop.
     private static func waitUntilNormal(_ id: Int, _ client: DevToolsClient) async throws {
-        for _ in 0..<50 {
+        for _ in 0..<120 {
             let bounds = try await client.send("Browser.getWindowBounds", ["windowId": id])["bounds"] as? [String: Any]
             if bounds?["windowState"] as? String == "normal" { return }
             try await Task.sleep(nanoseconds: 100_000_000)
