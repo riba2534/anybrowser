@@ -34,6 +34,7 @@ AnyBrowser 是一个原生 macOS 应用。每个 Profile 对应一份 Chromium �
 | --- | --- |
 | **多身份并行** | 每个 Profile 是一套独立身份：浏览器资料、指纹和代理各自独立，可同时运行，单独停止或重启。Passkey Box 全局账号里的通行密钥对所有使用它的 Profile 可见，需要彻底分开时给 Profile 单独设置账号。 |
 | **指纹配置** | 可编辑平台、浏览器品牌及其版本、逻辑 CPU 数、语言、时区和种子。字体、音频、Canvas、元素坐标和 WebGL 参数可按项控制。 |
+| **新设备身份** | 新建 Profile 或「整套重新生成」会换一份设备标识；启动前把三方 Cookie 恢复为 Chrome 默认的允许状态，并在首访前把标识种到启动网址。重置会清空该 Profile 的全部站点数据。换账号的做法与自查见[用「新设备」登录另一个 Stripe 账号](docs/stripe-new-device-usage.md)。 |
 | **身份模板与一致性检查** | 一键套用「Windows 11 · Chrome」「macOS 26 · Chrome」等自洽组合。编辑时提示品牌版本超过内核、平台版本不匹配、时区或语言与代理出口不一致等问题。 |
 | **按字段随机生成** | 勾选需要变化的字段并预览结果。平台与平台版本、品牌与品牌版本会一起保持匹配。保存后，每次启动使用同一份配置。 |
 | **独立代理** | 每个 Profile 可设置 HTTP、HTTPS 或 SOCKS5 代理，默认使用本机的 `127.0.0.1:7890`。三种代理都可以带账号密码，无痕窗口和自动化新建的上下文同样经过代理。启动前检查代理能否连通，可一键检测出口 IP 并按出口填写时区和语言。 |
@@ -287,6 +288,8 @@ AI Agent 可以先用 `anybrowserctl start <Profile>` 拿到 `debug.http`，再�
 | `~/Library/Caches/AnyBrowser/Profiles/<UUID>/` | Chromium 为对应 Profile 存放的 HTTP 缓存和代码缓存；删除 Profile 或「整套重新生成」时一并清除，没有 Profile 对应的缓存会在启动时清理 |
 
 以上文件和目录仅当前用户可读。回收站里的 Profile 保留浏览器资料，直到被永久删除。
+
+「整套重新生成」或带站点数据重置启动时，会清空该 Profile 的全部站点 Cookie（含 Link 登录）、localStorage、sessionStorage、IndexedDB、Service Worker、各类缓存和会话记录；扩展目录、书签、历史与 Profile 配置保留。步骤、边界与自查见[用「新设备」登录另一个 Stripe 账号](docs/stripe-new-device-usage.md)。
 
 ## 开发与测试
 
