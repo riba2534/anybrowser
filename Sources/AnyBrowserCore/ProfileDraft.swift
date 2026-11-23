@@ -116,6 +116,7 @@ extension ProfileDraft {
         case .fingerprint:
             return profile.fingerprint == other.profile.fingerprint && seedText == other.seedText
                 && cpuText == other.cpuText && resetsSiteData == other.resetsSiteData
+                && profile.deviceIdentity == other.profile.deviceIdentity
         case .proxy: return profile.proxy == other.profile.proxy
         case .group: return profile.group == other.profile.group
         case .notes: return profile.notes == other.profile.notes
@@ -132,6 +133,7 @@ extension ProfileDraft {
         case .port: portText = other.portText
         case .fingerprint:
             profile.fingerprint = other.profile.fingerprint
+            profile.deviceIdentity = other.profile.deviceIdentity
             seedText = other.seedText
             cpuText = other.cpuText
             resetsSiteData = other.resetsSiteData

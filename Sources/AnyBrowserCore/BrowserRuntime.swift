@@ -346,9 +346,11 @@ public final class BrowserRuntime: ObservableObject {
                         var warnings: [String] = []
                         // Before the first navigation, so the identity is settled when the page loads.
                         if !startURLs.isEmpty {
-                            warnings += await Self.seedStripeIdentity(profile, startURLs: startURLs,
-                                                                      endpoint: endpoint)
-                            if profile.launch.restoreSession {
+                            let seeding = await Self.seedStripeIdentity(profile, startURLs: startURLs,
+                                                                        endpoint: endpoint)
+                            warnings += seeding
+                            if profile.launch.restoreSession,
+                               !seeding.contains(where: { $0.contains("未能读取 Cookie") }) {
                                 warnings.append("已恢复上次会话：旧标签页可能早于设备 Cookie 写入。")
                             }
                         }

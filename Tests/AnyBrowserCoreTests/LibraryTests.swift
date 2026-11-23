@@ -145,12 +145,16 @@ struct LibraryTests {
         profile.passkeyBox = PasskeyBoxAccount(serverURL: "https://pk.example.com", username: "u", password: "p")
         profile.launch = LaunchOptions(startURLs: ["https://example.com/"], window: WindowLayout(width: 1280, height: 800))
         profile.fingerprint.platform = .windows
+        profile.deviceIdentity = DeviceIdentity.mint()
         let data = try ProfileLibrary.export([profile], includeSecrets: true)
         let imported = try ProfileLibrary.importProfiles(from: data, takenPorts: [], takenSeeds: [])
         #expect(imported.skipped == 0)
         var restored = try #require(imported.profiles.first)
         #expect(restored.id != profile.id)
+        // An imported copy is a new device and must not collide with the original's id.
+        #expect(restored.deviceIdentity == nil)
         restored.id = profile.id
+        restored.deviceIdentity = profile.deviceIdentity
         #expect(restored == profile)
 
         let stripped = try ProfileLibrary.importProfiles(from: ProfileLibrary.export([profile], includeSecrets: false),

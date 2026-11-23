@@ -32,7 +32,10 @@ extension LaunchCoordinator {
     /// launch still asks what to do with the old data, because the seed changed.
     public func saveNewIdentity(_ profile: BrowserProfile) throws {
         guard !isBusy(profile.id) else { throw ProfileError.invalid("「\(profile.name)」正在执行另一个操作。") }
-        try store.save(profile)
+        var value = profile
+        // The identity reset clears the stored session, so restoring it would bring back nothing.
+        value.launch.restoreSession = false
+        try store.save(value)
         do {
             try store.setPendingIdentityReset(profile.id, true)
         } catch {

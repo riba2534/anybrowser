@@ -81,6 +81,16 @@ public enum ProfileLibrary {
     /// New Profiles from an export file: each gets a new id, and a new port or seed when it collides
     /// with `takenPorts`/`takenSeeds` or an earlier entry. Entries that fail validation are skipped
     /// with the reason.
+    /// A copy must not inherit the original's device: the id goes, and the memory follows the seed
+    /// the copy ends up with. Call after the id or seed was reassigned.
+    static func renewDevice(in profile: inout BrowserProfile) {
+        profile.deviceIdentity = nil
+        // A Profile that records no memory keeps it unset; one that does follows the new seed.
+        if profile.fingerprint.deviceMemory != nil {
+            profile.fingerprint.deviceMemory = EngineHardwareTable.bundled.deviceMemory(seed: profile.fingerprint.seed)
+        }
+    }
+
     public static func importProfiles(from data: Data, takenPorts: Set<Int>, takenSeeds: Set<Int>) throws -> ImportResult {
         guard data.count <= maxImportBytes else {
             throw ProfileError.invalid("文件过大，不是 AnyBrowser 导出的 Profile 文件。")
@@ -117,6 +127,7 @@ public enum ProfileLibrary {
                 continue
             }
             profile.id = UUID()
+            renewDevice(in: &profile)
             if ports.contains(profile.port) {
                 guard let port = try? freePort(excluding: ports) else {
                     skip(index, "没有可分配的调试端口。")
@@ -127,6 +138,7 @@ public enum ProfileLibrary {
             if seeds.contains(profile.fingerprint.seed) {
                 profile.fingerprint.seed = FingerprintSettings.newSeed(excluding: seeds,
                                                                        sameHardwareAs: profile.fingerprint.seed)
+                renewDevice(in: &profile)
             }
             ports.insert(profile.port)
             seeds.insert(profile.fingerprint.seed)

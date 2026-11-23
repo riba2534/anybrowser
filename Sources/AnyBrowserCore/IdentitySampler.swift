@@ -261,7 +261,10 @@ public enum IdentitySampler {
     /// Fills a screen for `platform` when the fingerprint has none. Profiles built by hand get the
     /// same coherent display a sampled one would.
     static func applyScreen(to fingerprint: inout FingerprintSettings, for platform: BrowserPlatform) {
-        guard fingerprint.screenWidth == nil, let screen = choose(screenProfiles(for: platform)) else { return }
+        // A screen from another platform's catalogue does not fit the new one.
+        let widths = Set(screenProfiles(for: platform).map(\.value.width))
+        if let width = fingerprint.screenWidth, widths.contains(width) { return }
+        guard let screen = choose(screenProfiles(for: platform)) else { return }
         fingerprint.screenWidth = screen.width
         fingerprint.screenHeight = screen.height
         fingerprint.availWidth = screen.availWidth

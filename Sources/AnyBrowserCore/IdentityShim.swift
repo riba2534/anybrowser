@@ -91,7 +91,7 @@ enum IdentityShim {
         static func from(_ fingerprint: FingerprintSettings) -> ScreenGuard? {
             var screen: Screen?
             if fingerprint.platform != nil, let width = fingerprint.screenWidth {
-                let height = fingerprint.screenHeight ?? width
+                let height = fingerprint.screenHeight ?? max(width, fingerprint.availHeight ?? width)
                 screen = Screen(width: width, height: height,
                                 availWidth: fingerprint.availWidth ?? width,
                                 availHeight: fingerprint.availHeight ?? height,
@@ -110,7 +110,8 @@ enum IdentityShim {
             var entries: [String] = []
             if let screen {
                 var values = ["\"width\":\(screen.width)", "\"height\":\(screen.height)",
-                              "\"availWidth\":\(screen.availWidth)", "\"availHeight\":\(screen.availHeight)"]
+                              "\"availWidth\":\(screen.availWidth)", "\"availHeight\":\(screen.availHeight)",
+                              "\"availLeft\":0", "\"availTop\":\(max(0, screen.height - screen.availHeight))"]
                 if let colorDepth = screen.colorDepth {
                     values.append("\"colorDepth\":\(colorDepth)")
                 }
@@ -257,7 +258,7 @@ enum IdentityShim {
 
       const screenPrototype = globalThis.Screen && Screen.prototype;
       if (fake.screen && screenPrototype) {
-        for (const key of ['width', 'height', 'availWidth', 'availHeight', 'colorDepth', 'pixelDepth']) {
+        for (const key of ['width', 'height', 'availWidth', 'availHeight', 'availLeft', 'availTop', 'colorDepth', 'pixelDepth']) {
           const value = fake.screen[key === 'pixelDepth' ? 'colorDepth' : key];
           if (value === undefined) continue;
           const descriptor = unpatched(screenPrototype, key, true);
@@ -359,10 +360,14 @@ enum IdentityShim {
           value: function matchMedia(query) {
             const matches = evaluate(String(query));
             if (matches === undefined) return apply(nativeMatchMedia, globalThis, [String(query)]);
-            // The answer rides on a query the engine always respects.
-            const list = apply(nativeMatchMedia, globalThis,
-                               [matches ? '(min-width: 0px)' : '(min-width: 1000000px)']);
-            define(list, 'media', { value: String(query), configurable: true });
+            // A native list for the shape, then our own answer on top of it.
+            const list = apply(nativeMatchMedia, globalThis, [String(query)]);
+            const text = String(query);
+            define(list, 'media', { value: text, configurable: true });
+            try {
+              define(list, 'query', { value: text, configurable: true });
+              define(list, 'matches', { value: matches, configurable: true });
+            } catch (e) {}
             return list;
           },
           writable: matchMediaDescriptor.writable,

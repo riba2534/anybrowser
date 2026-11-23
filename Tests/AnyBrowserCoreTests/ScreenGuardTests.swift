@@ -18,7 +18,7 @@ struct ScreenGuardTests {
         fingerprint.screenWidth = 1920
         fingerprint.deviceScaleFactor = 1.25
         let screen = try? #require(IdentityShim.ScreenGuard.from(fingerprint))
-        #expect(screen?.literal.contains("\"screen\":{\"width\":1920,\"height\":1920,\"availWidth\":1920,\"availHeight\":1920}") == true)
+        #expect(screen?.literal.contains("\"screen\":{\"width\":1920,\"height\":1920,\"availWidth\":1920,\"availHeight\":1920,\"availLeft\":0,\"availTop\":0}") == true)
         #expect(screen?.literal.contains("\"dpr\":1.25") == true)
         #expect(screen?.literal.contains("\"deviceMemory\"") == false)
 
@@ -100,8 +100,6 @@ struct ScreenGuardTests {
     func installsValues() throws {
         let context = try realm()
         context.evaluateScript(IdentityShim.script(seed: 22223, values: values()))
-        print("debug:", context.evaluateScript("globalThis.debugError || 'none'").toString() ?? "nil")
-        print("desc:", context.evaluateScript("String(Object.getOwnPropertyDescriptor(Screen.prototype, 'width').get)").toString() ?? "nil")
         #expect(context.evaluateScript("screen.width").toInt32() == 1280)
         #expect(context.evaluateScript("screen.height").toInt32() == 720)
         #expect(context.evaluateScript("screen.availWidth").toInt32() == 1280)
