@@ -1,13 +1,40 @@
 import Foundation
 
 public struct ConsistencyIssue: Identifiable, Equatable, Sendable {
+    /// How glaring a mismatch is. A freshly generated identity may not keep `high` or `critical`
+    /// issues, so the sampler redraws it.
+    public enum Severity: String, CaseIterable, Comparable, Sendable {
+        case low, medium, high, critical
+
+        public static func < (lhs: Self, rhs: Self) -> Bool {
+            allCases.firstIndex(of: lhs)! < allCases.firstIndex(of: rhs)!
+        }
+
+        /// An identity with such an issue is redrawn when it is generated.
+        public var isBlocking: Bool { self >= .high }
+
+        public var title: String {
+            switch self {
+            case .low: return "提示"
+            case .medium: return "注意"
+            case .high: return "不一致"
+            case .critical: return "矛盾"
+            }
+        }
+    }
+
     public let id: String
     public let message: String
+    public let severity: Severity
 
-    public init(id: String, message: String) {
+    public init(id: String, severity: Severity = .medium, message: String) {
         self.id = id
         self.message = message
+        self.severity = severity
     }
+
+    /// An identity with a blocking issue is not kept as generated.
+    public var isBlocking: Bool { severity.isBlocking }
 
     /// The warning for Profiles that leave through the same exit IP as `names`, without a full stop.
     public static func sharedExit(_ names: [String]) -> String {
@@ -71,13 +98,13 @@ extension BrowserProfile {
         let engineMajor = engineVersion.flatMap(Self.majorVersion) ?? BundledVersions.engineMajor
         if fingerprint.brand == .edge, !brandVersion.isEmpty {
             issues.append(ConsistencyIssue(
-                id: "edge-ua-version",
+                id: "edge-ua-version", severity: .low,
                 message: "填写 Edge 品牌版本后内核会在 UA 中发送完整版本 Edg/\(brandVersion)，真实 Edge 只发送 Edg/\(Self.majorVersion(brandVersion) ?? engineMajor).0.0.0；留空则由内核按种子选用已发布的版本"))
         }
         // The engine only appends a UA suffix for these two brands and gives UA-CH no brand for them.
         if fingerprint.brand == .opera {
             issues.append(ConsistencyIssue(
-                id: "brand-experimental",
+                id: "brand-experimental", severity: .low,
                 message: "Opera 身份为实验性：内核只在 UA 末尾加上 OPR/版本，UA-CH 中没有 Opera 品牌；基于 Chromium \(engineMajor) 的 Opera 版本为 \(engineMajor - 16)"))
         } else if fingerprint.brand == .vivaldi {
             issues.append(ConsistencyIssue(
@@ -86,7 +113,7 @@ extension BrowserProfile {
         }
         if let behind = context.engineMajorsBehindStable, behind >= 2 {
             issues.append(ConsistencyIssue(
-                id: "engine-behind",
+                id: "engine-behind", severity: .low,
                 message: "内核 \(engineMajor) 落后 Chrome 稳定版 \(behind) 个主版本，所有 Profile 报出的都是这个较旧的版本"))
         }
 
@@ -100,24 +127,24 @@ extension BrowserProfile {
             }
             if !expected.contains(major) {
                 issues.append(ConsistencyIssue(
-                    id: "platform-version",
+                    id: "platform-version", severity: .high,
                     message: "平台版本 \(platformVersion) 与 \(platform.title) 不匹配（\(platform.title) 主版本应为 \(expected.lowerBound)–\(expected.upperBound)）"))
             }
         }
 
         // The macOS engine never rewrites WebGL for Linux: pages read this Mac's own GPU.
         if fingerprint.platform == .linux {
-            issues.append(ConsistencyIssue(id: "linux-webgl",
+            issues.append(ConsistencyIssue(id: "linux-webgl", severity: .medium,
                                            message: "Linux 平台下内核不改写 WebGL，网页会读到本机真实显卡，与 Linux 身份不符"))
         }
         // Spoofed WebGL follows the platform, and without a platform it claims a Windows GPU while
         // everything else still reports this Mac. Unspoofed WebGL shows this Mac's GPU.
         let spoofsWebGL = fingerprint.adjustments.contains(.gpu)
         if fingerprint.platform == .windows, !spoofsWebGL {
-            issues.append(ConsistencyIssue(id: "webgl-real-gpu",
+            issues.append(ConsistencyIssue(id: "webgl-real-gpu", severity: .high,
                                            message: "WebGL 改写已关闭，网页会读到本机真实显卡，与 Windows 身份不符"))
         } else if fingerprint.platform == nil, spoofsWebGL {
-            issues.append(ConsistencyIssue(id: "webgl-windows-gpu",
+            issues.append(ConsistencyIssue(id: "webgl-windows-gpu", severity: .high,
                                            message: "未选平台时 WebGL 按 Windows 显卡改写，与本机 macOS 身份不符"))
         }
         // The seed picks the spoofed GPU and the memory; the CPU count has to fit the same machine.
@@ -137,15 +164,15 @@ extension BrowserProfile {
             }
             if !problems.isEmpty {
                 issues.append(ConsistencyIssue(
-                    id: "hardware-impossible",
+                    id: "hardware-impossible", severity: .critical,
                     message: "种子 \(seed) 让 WebGL 报出 \(gpu.model)，这套硬件不存在：\(problems.joined(separator: "；"))。请换种子或修改逻辑 CPU 数"))
             }
         }
         // Neither has an engine switch yet: every Profile shows this Mac's WebGPU adapter and voices.
         if let platform = fingerprint.platform, platform != .macOS {
-            issues.append(ConsistencyIssue(id: "webgpu-host-gpu",
+            issues.append(ConsistencyIssue(id: "webgpu-host-gpu", severity: .low,
                                            message: "WebGPU 仍报告本机的 Apple 显卡，与 \(platform.title) 身份不符，需要内核补丁"))
-            issues.append(ConsistencyIssue(id: "voices-host-os",
+            issues.append(ConsistencyIssue(id: "voices-host-os", severity: .low,
                                            message: "语音列表仍是本机 macOS 的语音，没有 \(platform.title) 自带的语音，需要内核补丁"))
         }
 
@@ -153,46 +180,46 @@ extension BrowserProfile {
             let availWidth = fingerprint.availWidth ?? width
             let availHeight = fingerprint.availHeight ?? height
             if availWidth > width || availHeight > height {
-                issues.append(ConsistencyIssue(id: "screen-avail",
+                issues.append(ConsistencyIssue(id: "screen-avail", severity: .critical,
                                                message: "可用屏幕 \(availWidth)×\(availHeight) 大于屏幕 \(width)×\(height)。"))
             }
         }
         if let colorDepth = fingerprint.colorDepth, let platform = fingerprint.platform {
             let allowed: Set<Int> = platform == .macOS ? [24, 30] : [24]
             if !allowed.contains(colorDepth) {
-                issues.append(ConsistencyIssue(id: "screen-color-depth",
+                issues.append(ConsistencyIssue(id: "screen-color-depth", severity: .high,
                                                message: "\(platform.title) 身份常见色深为 \(allowed.sorted().map(String.init).joined(separator: "/"))，当前为 \(colorDepth)。"))
             }
         }
         if let fontProfile = fingerprint.fontProfile, let platform = fingerprint.platform,
            fontProfile.platform != platform {
-            issues.append(ConsistencyIssue(id: "font-profile-platform",
+            issues.append(ConsistencyIssue(id: "font-profile-platform", severity: .high,
                                            message: "字体表「\(fontProfile.title)」与 \(platform.title) 平台不匹配。"))
         }
         // A table the engine never applies is worse than none: the page reads this Mac's fonts
         // whatever the Profile claims.
         if let fontProfile = fingerprint.fontProfile, !fingerprint.adjustments.contains(.font) {
             issues.append(ConsistencyIssue(
-                id: "font-spoof-disabled",
+                id: "font-spoof-disabled", severity: .high,
                 message: "已选择字体表「\(fontProfile.title)」，但「字体」改写是关的，网页仍会读到本机 macOS 字体。"))
         }
         // The engine ignores its screen switches, so every Profile reports the host display.
         if fingerprint.platform != nil, fingerprint.screenWidth == nil {
             issues.append(ConsistencyIssue(
-                id: "screen-host-shared",
+                id: "screen-host-shared", severity: .high,
                 message: "没有屏幕配置：所有 Profile 都会报同一块本机屏幕，网站可以据此把它们关联起来。"))
         }
         // The engine has no font tables: its font switch only adds and drops this Mac's fonts by seed.
         if let fontProfile = fingerprint.fontProfile, fontProfile.platform != .macOS {
             let platform = fontProfile.platform.title
             issues.append(ConsistencyIssue(
-                id: "font-spoof-missing",
+                id: "font-spoof-missing", severity: .medium,
                 message: fingerprint.adjustments.contains(.font)
                     ? "当前内核没有 \(fontProfile.title)表，「字体」改写只是按种子增删本机 macOS 字体，网页读到的组合在真实 \(platform) 上不存在。"
                     : "当前内核没有 \(fontProfile.title)表，网页会读到本机 macOS 字体；打开「字体」改写也只会按种子增删这些字体，同样不像 \(platform)。"))
         }
         if !context.profilesSharingExit.isEmpty {
-            issues.append(ConsistencyIssue(id: "exit-shared", message: ConsistencyIssue.sharedExit(context.profilesSharingExit)))
+            issues.append(ConsistencyIssue(id: "exit-shared", severity: .medium, message: ConsistencyIssue.sharedExit(context.profilesSharingExit)))
         }
 
         guard let exit else { return issues }
@@ -203,7 +230,7 @@ extension BrowserProfile {
         let zone: (label: String, value: String) = timeZone.isEmpty
             ? ("本机时区", TimeZone.current.identifier) : ("时区", timeZone)
         if !exit.timeZone.isEmpty, zone.value != exit.timeZone {
-            issues.append(ConsistencyIssue(id: "time-zone",
+            issues.append(ConsistencyIssue(id: "time-zone", severity: .high,
                                            message: "\(zone.label) \(zone.value) 与\(place)的 \(exit.timeZone) 不一致"))
         }
 
@@ -212,10 +239,16 @@ extension BrowserProfile {
         let exitLanguages = Set(exit.languages.compactMap(Self.primaryLanguage))
         if !exitLanguages.isEmpty, let primary = Self.primaryLanguage(spoken.value), !exitLanguages.contains(primary) {
             let listed = exit.languages.prefix(3).joined(separator: "、")
-            issues.append(ConsistencyIssue(id: "language",
+            issues.append(ConsistencyIssue(id: "language", severity: .high,
                                            message: "\(spoken.label) \(spoken.value) 与\(place)的常用语言 \(listed) 不一致"))
         }
         return issues
+    }
+
+    /// Only the issues a freshly generated identity must not keep; the sampler redraws on these.
+    public func blockingConsistencyIssues(engineVersion: String?, exit: ProxyExit? = nil,
+                                          context: ConsistencyContext = ConsistencyContext()) -> [ConsistencyIssue] {
+        consistencyIssues(engineVersion: engineVersion, exit: exit, context: context).filter(\.isBlocking)
     }
 
     private static func list(_ values: [Int]) -> String {
