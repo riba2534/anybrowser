@@ -51,6 +51,24 @@ public struct SelfCheckObservation: Codable, Equatable, Sendable {
         public var availHeight: Int
         public var colorDepth: Int
         public var devicePixelRatio: Double
+        /// Distance of the usable area from the screen's top and left edges; nil when the
+        /// platform has no screen.
+        public var availTop: Int? = nil
+        public var availLeft: Int? = nil
+    }
+
+    /// The same four media questions asked twice: once through `matchMedia` and once through a
+    /// style sheet and `getComputedStyle`.
+    public struct Media: Codable, Equatable, Sendable {
+        public struct Answer: Codable, Equatable, Sendable {
+            public var js: Bool
+            public var css: Bool
+        }
+
+        public var maxWidth: Answer
+        public var minWidth: Answer
+        public var minHeight: Answer
+        public var minResolution: Answer
     }
 
     /// The window's outer and inner sizes; the difference is the browser chrome a real window
@@ -74,6 +92,8 @@ public struct SelfCheckObservation: Codable, Equatable, Sendable {
     public var frame: Frame?
     public var clientHints: ClientHints?
     public var screen: Screen
+    /// The media questions; nil for a page on which the style sheet probe could not run.
+    public var media: Media? = nil
     /// The window sizes; nil only for a page that could not read them.
     public var window: Window? = nil
     /// The same measurement on a page `<canvas>`.
@@ -373,6 +393,19 @@ public enum SelfCheck {
             add("screen", "屏幕（跟随本机）", expected: nil, observed: screenText, .info)
         }
 
+        // The usable area is the screen minus menu bar and Dock, so it cannot reach past it.
+        if let availTop = screen.availTop, let availLeft = screen.availLeft {
+            add("screen-avail-consistency", "可用屏幕区域",
+                expected: "在屏幕范围内",
+                observed: "上 \(availTop) + 高 \(screen.availHeight) = \(availTop + screen.availHeight) ≤ \(screen.height)"
+                    + " · 左 \(availLeft) + 宽 \(screen.availWidth) = \(availLeft + screen.availWidth) ≤ \(screen.width)",
+                judge(availTop + screen.availHeight <= screen.height && availLeft + screen.availWidth <= screen.width),
+                note: "可用屏幕区域伸出了屏幕；伪造的 avail 值互相矛盾。")
+        } else {
+            add("screen-avail-consistency", "可用屏幕区域", expected: nil,
+                observed: "无（平台没有屏幕）", .info)
+        }
+
         // A window bigger than the display, or a viewport bigger than its usable part, is one
         // comparison a server makes without any client-side trick.
         if let window = observation.window {
@@ -403,6 +436,24 @@ public enum SelfCheck {
                     judge(abs(widthChrome - chrome.width) <= 8 && abs(heightChrome - chrome.height) <= 8),
                     note: "窗口边框与平台不符；用 AnyBrowser 以有窗口模式启动可得到原生边框。")
             }
+        }
+
+        // `matchMedia` and a style sheet answer the same media question in two places; a wrapper
+        // that patches only one of them makes the two disagree.
+        let yesNo = { (value: Bool) in value ? "是" : "否" }
+        if let media = observation.media {
+            let answers: [(String, SelfCheckObservation.Media.Answer)] = [
+                ("max-width", media.maxWidth), ("min-width", media.minWidth),
+                ("min-height", media.minHeight), ("min-resolution", media.minResolution),
+            ]
+            add("media-css-js", "媒体查询：matchMedia 与 CSS",
+                expected: "四种问法两侧一致",
+                observed: answers.map { "\($0.0) JS \(yesNo($0.1.js)) · CSS \(yesNo($0.1.css))" }
+                    .joined(separator: "；"),
+                judge(answers.allSatisfy { $0.1.js == $0.1.css }),
+                note: "matchMedia 与样式表对同一媒体条件给出不同答案；注入脚本可能只覆盖了其中一侧。")
+        } else {
+            add("media-css-js", "媒体查询：matchMedia 与 CSS", expected: nil, observed: "无", .info)
         }
 
         // Workers are not affected by the engine's text-metrics factor, so they are the reference.
@@ -584,6 +635,37 @@ public enum SelfCheck {
         document.body.appendChild(element);
       }, 5000);
 
+      // The same four questions through matchMedia and through a style sheet: the two evaluators
+      // must agree on every one. The margins keep the answers off the exact edges, so a scrollbar
+      // or rounding cannot flip them.
+      const media = (() => {
+        try {
+          const probe = document.createElement('div');
+          probe.id = 'anybrowser-media-probe';
+          const style = document.createElement('style');
+          (document.head || document.documentElement).appendChild(style);
+          (document.body || document.documentElement).appendChild(probe);
+          const cssSays = () =>
+            getComputedStyle(probe).getPropertyValue('--anybrowser-media').trim() === '1';
+          const ask = (query) => {
+            const js = matchMedia(query).matches;
+            style.textContent = `@media ${query} { #anybrowser-media-probe { --anybrowser-media: 1 } }`;
+            const css = cssSays();
+            return { js, css };
+          };
+          const width = window.innerWidth, height = window.innerHeight;
+          const value = {
+            maxWidth: ask(`(max-width: ${width - 100}px)`),
+            minWidth: ask(`(min-width: ${width + 100}px)`),
+            minHeight: ask(`(min-height: ${height - 100}px)`),
+            minResolution: ask(`(min-resolution: ${devicePixelRatio || 1}dppx)`),
+          };
+          probe.remove();
+          style.remove();
+          return value;
+        } catch (e) { return null; }
+      })();
+
       let expectedZoneName = null;
       try {
         expectedZoneName = new Intl.DateTimeFormat(profileLanguage || undefined, { timeZoneName: 'long' })
@@ -597,9 +679,10 @@ public enum SelfCheck {
       }
 
       return {
-        main, worker, frame, clientHints,
+        main, worker, frame, clientHints, media,
         screen: { width: screen.width, height: screen.height, availWidth: screen.availWidth,
-          availHeight: screen.availHeight, colorDepth: screen.colorDepth, devicePixelRatio },
+          availHeight: screen.availHeight, colorDepth: screen.colorDepth, devicePixelRatio,
+          availTop: screen.availTop ?? null, availLeft: screen.availLeft ?? null },
         window: { outerWidth: window.outerWidth, outerHeight: window.outerHeight,
           innerWidth: window.innerWidth, innerHeight: window.innerHeight },
         canvasMeasureText: page.measureText(text).width,
