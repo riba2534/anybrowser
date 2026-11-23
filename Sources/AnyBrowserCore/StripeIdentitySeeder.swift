@@ -16,34 +16,37 @@ public enum StripeIdentitySeeder {
     private static let midLifetime: TimeInterval = 365 * 24 * 60 * 60
     private static let sidLifetime: TimeInterval = 30 * 60
 
-    /// Hosts of the start pages, lowercased and deduplicated, HTTP(S) only.
-    public static func hosts(from startURLs: [String]) -> [String] {
+    /// Start-page hosts, lowercased and deduplicated, HTTP(S) only, each with its scheme.
+    static func targets(from startURLs: [String]) -> [(host: String, secure: Bool)] {
         var seen: Set<String> = []
-        var result: [String] = []
+        var result: [(host: String, secure: Bool)] = []
         for line in startURLs {
             guard let url = URL(string: line.trimmingCharacters(in: .whitespacesAndNewlines)),
                   let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
                   let host = url.host?.lowercased(), !host.isEmpty else { continue }
             guard seen.insert(host).inserted else { continue }
-            result.append(host)
+            result.append((host, scheme == "https"))
             if result.count >= maximumHosts { break }
         }
         return result
+    }
+
+    /// Just the hosts, in the same order.
+    public static func hosts(from startURLs: [String]) -> [String] {
+        targets(from: startURLs).map(\.host)
     }
 
     /// An existing value is kept when its shape is one the server accepts: 36 characters, optionally
     /// followed by the 6-character checksum. Anything else would only make the client and the server
     /// disagree, and the client prefers whatever is in the jar.
     static func acceptable(_ value: String?) -> Bool {
-        guard let value else { return false }
-        return value.range(of: #"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}([0-9a-f]{6})?$"#,
-                           options: .regularExpression) == value.startIndex..<value.endIndex
+        value.map(DeviceIdentity.isValid) ?? false
     }
 
     /// Seeds every host and returns warnings; failures never stop the launch.
     public static func seed(_ profile: BrowserProfile, startURLs: [String], client: DevToolsClient) async -> [String] {
-        let hosts = hosts(from: startURLs)
-        guard !hosts.isEmpty else { return [] }
+        let targets = targets(from: startURLs)
+        guard !targets.isEmpty else { return [] }
         let identity = DeviceIdentity.effective(profile)
         var warnings: [String] = []
         var cookies: [[String: Any]] = []
@@ -53,39 +56,35 @@ public enum StripeIdentitySeeder {
             return ["未能读取 Cookie，设备标识等页面自己建立（\(error.localizedDescription)）。"]
         }
         let now = Date().timeIntervalSince1970
-        var planned: [(host: String, name: String, value: String, expires: TimeInterval)] = []
-        for host in hosts {
+        var planned: [(host: String, secure: Bool, name: String, value: String, expires: TimeInterval)] = []
+        for target in targets {
+            let host = target.host
             let own = cookies.filter { cookie in
                 (cookie["domain"] as? String)?.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host
             }
             let mid = own.first { $0["name"] as? String == "__stripe_mid" }?["value"] as? String
             let sid = own.first { $0["name"] as? String == "__stripe_sid" }?["value"] as? String
             if !acceptable(mid) {
-                planned.append((host, "__stripe_mid", identity, now + midLifetime))
+                planned.append((host, target.secure, "__stripe_mid", identity, now + midLifetime))
             }
             if !acceptable(sid) {
-                planned.append((host, "__stripe_sid", DeviceIdentity.mint(), now + sidLifetime))
+                planned.append((host, target.secure, "__stripe_sid", DeviceIdentity.mint(), now + sidLifetime))
             }
         }
         guard !planned.isEmpty else { return [] }
-        let secure = startURLs.contains { URL(string: $0)?.scheme?.lowercased() == "https" }
         let parameters: [[String: Any]] = planned.map { item in
-            var result: [String: Any] = [
+            // A leading dot makes it the merchant's whole domain; a bare IP takes no dot.
+            let bare = item.host.range(of: #"^[0-9.]+$|^\[.*\]$"#, options: .regularExpression) != nil
+            return [
                 "name": item.name,
                 "value": item.value,
-                // A leading dot makes it the merchant's whole domain; a bare IP takes no dot.
-                "domain": item.host.range(of: #"^[0-9.]+$|^\[.*\]$"#, options: .regularExpression) != nil
-                    ? item.host : "." + item.host,
+                "domain": bare ? item.host : "." + item.host,
                 "path": "/",
-                "secure": secure,
+                "secure": item.secure,
                 "httpOnly": false,
                 "sameSite": "Strict",
                 "expires": item.expires,
             ]
-            if item.host.range(of: #"^[0-9.]+$|^\[.*\]$"#, options: .regularExpression) != nil {
-                result["domain"] = item.host
-            }
-            return result
         }
         do {
             _ = try await client.send("Storage.setCookies", ["cookies": parameters])
