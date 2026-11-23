@@ -186,6 +186,9 @@ public enum IdentitySampler {
         // Audio and client rects are seed-derived and already work in this engine; they add
         // device separation beyond Canvas/GPU without claiming an unsupported value.
         fingerprint.adjustments.insert(.audio)
+        // The font set is part of the platform identity and the preset always names a platform;
+        // without the switch every page reads this Mac's own fonts whatever the Profile claims.
+        fingerprint.adjustments.insert(.font)
         fingerprint.adaptToPlatform()
         return fingerprint
     }

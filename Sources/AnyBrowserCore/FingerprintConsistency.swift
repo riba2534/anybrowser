@@ -169,6 +169,19 @@ extension BrowserProfile {
             issues.append(ConsistencyIssue(id: "font-profile-platform",
                                            message: "字体表「\(fontProfile.title)」与 \(platform.title) 平台不匹配。"))
         }
+        // A table the engine never applies is worse than none: the page reads this Mac's fonts
+        // whatever the Profile claims.
+        if let fontProfile = fingerprint.fontProfile, !fingerprint.adjustments.contains(.font) {
+            issues.append(ConsistencyIssue(
+                id: "font-spoof-disabled",
+                message: "已选择字体表「\(fontProfile.title)」，但「字体」改写是关的，网页仍会读到本机 macOS 字体。"))
+        }
+        // The engine ignores its screen switches, so every Profile reports the host display.
+        if fingerprint.platform != nil, fingerprint.screenWidth == nil {
+            issues.append(ConsistencyIssue(
+                id: "screen-host-shared",
+                message: "没有屏幕配置：所有 Profile 都会报同一块本机屏幕，网站可以据此把它们关联起来。"))
+        }
         // The engine has no font tables: its font switch only adds and drops this Mac's fonts by seed.
         if let fontProfile = fingerprint.fontProfile, fontProfile.platform != .macOS {
             let platform = fontProfile.platform.title

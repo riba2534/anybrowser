@@ -308,7 +308,10 @@ private let siteOrigins = [
 
 /// Stripe.js keeps a copy of the device id on every merchant's own domain
 /// (docs/stripe-refresh-on-launch.md §1.3), so these names are matched on any domain.
-private let stripeDeviceCookies: Set<String> = ["__stripe_mid", "__stripe_sid"]
+/// FingerprintJS Pro's visitor is bound to the same device.
+private let stripeDeviceCookies: Set<String> = [
+    "__stripe_mid", "__stripe_sid", "__Secure-f-visitor-id", "__fpjs_pvid",
+]
 
 /// Chromium's site-data files, relative to the data directory. Extension storage
 /// (`Local Extension Settings`), preferences, history and bookmarks are deliberately left alone.
@@ -324,6 +327,9 @@ private let siteDataPaths = [
     "Default/SharedStorage", "Default/SharedStorage-wal", "Default/Shared Dictionary",
     "Default/Trust Tokens", "Default/Trust Tokens-journal",
     "Default/MediaDeviceSalts", "Default/MediaDeviceSalts-journal",
+    // Session restore brings tabs back with the sessionStorage they held; without this the
+    // collector's cached font vector and feature id come back with them.
+    "Default/Sessions",
     "Default/Cache", "Default/Code Cache", "Default/GPUCache",
     "Default/blob_storage", "Default/File System", "Default/databases",
 ]
