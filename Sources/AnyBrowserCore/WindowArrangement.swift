@@ -152,7 +152,9 @@ public enum WindowArrangement {
             // Chromium refuses a position together with another state, so the state goes first.
             _ = try await client.send("Browser.setWindowBounds",
                                       ["windowId": window.id, "bounds": ["windowState": "normal"]])
-            try await waitUntilNormal(window.id, client)
+            // A runner without a desktop session may never report the state back; the bounds below
+            // are still worth sending.
+            try? await waitUntilNormal(window.id, client)
         }
         _ = try await client.send("Browser.setWindowBounds", [
             "windowId": window.id,
