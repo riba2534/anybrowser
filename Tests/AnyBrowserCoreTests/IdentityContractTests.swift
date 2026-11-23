@@ -380,11 +380,12 @@ struct IdentityContractTests {
         #expect(!issueIDs(fingerprint).contains("screen-host-shared"))
     }
 
-    @Test("A normal sampled identity is not font-flagged and is screen-flagged")
+    @Test("A normal sampled identity is flagged by neither screen nor font")
     func noFalsePositives() {
         let fingerprint = IdentitySampler.sample(seed: 4242, constraints: .init(preset: Self.macPreset))
         let ids = issueIDs(fingerprint)
         #expect(!ids.contains("font-spoof-disabled"))
-        #expect(ids.contains("screen-host-shared"))
+        #expect(fingerprint.screenWidth != nil)
+        #expect(!ids.contains("screen-host-shared"))
     }
 }
