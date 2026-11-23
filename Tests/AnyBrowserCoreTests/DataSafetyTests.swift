@@ -236,7 +236,8 @@ struct DataSafetyTests {
                 var created = fixture.fake.profile(port: second.port, name: "API")
                 created.fingerprint.seed = takesSeed ? second.fingerprint.seed : 990_004
                 intruder = created
-                Task { @MainActor in try? fixture.store.save(created) }
+                // Saved synchronously: the next entry is planned right after this callback returns.
+                try? fixture.store.save(created)
             }
             #expect(result.profiles.map(\.skipped) == [nil, nil])
             let restored = try #require(result.profiles.last?.profile)
