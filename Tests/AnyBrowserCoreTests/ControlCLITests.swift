@@ -155,6 +155,14 @@ struct ControlCLITests {
             #expect((await ctl("cookies", "export", "Alpha")).json?["startedHeadless"] as? Bool == false)
             #expect((await ctl("stop", "Alpha", "--force")).status == 0)
             #expect(backend.forced == [true])
+            let beforeReset = backend.profiles.first { $0.id == alpha.id }
+            let reset = await ctl("reset-identity", "Alpha")
+            #expect(reset.status == 0, "\(reset.errors)")
+            #expect((reset.json?["config"] as? [String: Any])?["fingerprint"] != nil)
+            #expect(backend.resetSteps == ["reset", "start"])
+            #expect(backend.profiles.first { $0.id == alpha.id }?.fingerprint.seed != beforeReset?.fingerprint.seed)
+            // The cookie tests below want it stopped.
+            #expect((await ctl("stop", "Alpha")).status == 0)
             #expect((await ctl("log", "Alpha")).json?["log"] as? String == "launch output")
 
             let file = sandbox.root.appendingPathComponent("cookies.json")
@@ -211,7 +219,7 @@ struct ControlCLITests {
             let missing = await ctl("start", "Ghost")
             #expect(missing.status == 1 && missing.errors.contains("找不到名为「Ghost」的 Profile。"))
             #expect((await ctl("show", UUID().uuidString)).status == 1)
-            for usage in [["frob"], ["start"], ["update", "Alpha"], ["list", "--bogus"], ["create", "--prefix", "x"],
+            for usage in [["frob"], ["start"], ["reset-identity"], ["update", "Alpha"], ["list", "--bogus"], ["create", "--prefix", "x"],
                           ["delete", "Alpha", "--delete-data"], ["cookies", "copy", "Alpha"], ["create", "--json", "[1]"]] {
                 let run = await ControlRun.run(usage, environment: environment)
                 #expect(run.status == 2, "\(usage)")

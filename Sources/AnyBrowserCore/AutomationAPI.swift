@@ -442,6 +442,9 @@ extension AutomationHTTP {
         case "start", "restart":
             try call.allow("POST")
             return try await start(try saved(id, backend), call, backend, restarting: action == "restart")
+        case "reset-identity":
+            try call.allow("POST")
+            return try await resetIdentity(try saved(id, backend), call, backend)
         case "stop":
             try call.allow("POST")
             return try await stop(try saved(id, backend), call, backend)
@@ -902,6 +905,27 @@ extension AutomationHTTP {
         return .json(200, Body(["profile": object(current, backend: backend),
                                 "debug": DebugAddress(http: "http://\(host):\(port)", webSocket: endpoint.absoluteString),
                                 "startedFresh": outcome.startedFresh, "warnings": outcome.warnings]))
+    }
+
+    /// "重置且随机指纹" over the API: stops the browser if it runs, deletes the Profile's site data,
+    /// gives it a new identity and starts it with that identity. The answer carries the new
+    /// configuration and the warnings that did not stop the reset; a failure names its stage and
+    /// leaves what was already done in place.
+    private static func resetIdentity(_ profile: BrowserProfile, _ call: Call, _ backend: AutomationBackend) async throws -> Response {
+        let id = profile.id
+        let secrets = try call.flag("secrets")
+        try requireWritable(backend)
+        guard !isBusy(id, backend) else { throw Failure(busy) }
+        let outcome: LaunchOutcome
+        do {
+            outcome = try await backend.resetAndRandomize(id)
+        } catch {
+            throw Failure(500, "reset_failed", error.localizedDescription)
+        }
+        let current = backend.profiles.first { $0.id == id } ?? profile
+        return .json(200, Body(["profile": object(current, backend: backend),
+                                "config": config(current, secrets: secrets),
+                                "warnings": outcome.warnings]))
     }
 
     private static func stop(_ profile: BrowserProfile, _ call: Call, _ backend: AutomationBackend) async throws -> Response {
