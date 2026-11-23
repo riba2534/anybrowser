@@ -279,7 +279,7 @@ public final class BrowserRuntime: ObservableObject {
             try ProfileExtensions.check(for: profile, in: storage)
             try PasskeyBoxInstall.prepare(bundled: engine.passkeyBoxDirectory, in: storage, for: id, account: passkeyBox,
                                           enabled: profile.launch.loadPasskeyBox)
-            if IdentityShim.isNeeded(for: engine.version) {
+            if IdentityShim.isNeeded(for: engine.version, profile: profile) {
                 try IdentityShim.prepare(for: profile, in: storage)
             }
             ProfileExtensions.removeLegacyProxySignIn(in: storage, for: id)
@@ -545,7 +545,7 @@ public final class BrowserRuntime: ObservableObject {
 
     private func launchArguments(_ profile: BrowserProfile, directory: URL, relayPort: Int?) -> [String] {
         var extensions = ProfileExtensions.paths(for: profile, in: storage)
-        if IdentityShim.isNeeded(for: engine.version) {
+        if IdentityShim.isNeeded(for: engine.version, profile: profile) {
             extensions.append(IdentityShim.directory(in: storage, for: profile.id))
         }
         return profile.launchArguments(userDataDirectory: directory, extensions: extensions, relayPort: relayPort)
