@@ -221,6 +221,11 @@ extension BrowserProfile {
         if !context.profilesSharingExit.isEmpty {
             issues.append(ConsistencyIssue(id: "exit-shared", severity: .medium, message: ConsistencyIssue.sharedExit(context.profilesSharingExit)))
         }
+        // `navigator.connection` follows the proxy: with one the page must not keep reading this
+        // Mac's network, and without one it must not claim a class no proxy explains.
+        if let issue = Self.connectionProxyIssue(proxy: proxy, reported: IdentityShim.ConnectionQuality.from(self)) {
+            issues.append(issue)
+        }
 
         guard let exit else { return issues }
         let location = [exit.city, exit.countryCode].filter { !$0.isEmpty }.joined(separator: ", ")
@@ -249,6 +254,24 @@ extension BrowserProfile {
     public func blockingConsistencyIssues(engineVersion: String?, exit: ProxyExit? = nil,
                                           context: ConsistencyContext = ConsistencyContext()) -> [ConsistencyIssue] {
         consistencyIssues(engineVersion: engineVersion, exit: exit, context: context).filter(\.isBlocking)
+    }
+
+    /// The mismatch between a proxy and the connection class a page would read: a Profile with a
+    /// proxy must not show the host's network, and one without must not show a made-up class.
+    static func connectionProxyIssue(proxy: String,
+                                     reported: IdentityShim.ConnectionQuality?) -> ConsistencyIssue? {
+        let hasProxy = !proxy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if hasProxy, reported == nil {
+            return ConsistencyIssue(
+                id: "connection-proxy", severity: .medium,
+                message: "已填写代理，但地址无法识别，网页会读到本机的网络类型，与代理出口不符；请检查代理格式")
+        }
+        if !hasProxy, reported != nil {
+            return ConsistencyIssue(
+                id: "connection-proxy", severity: .medium,
+                message: "没有代理，网页却会读到伪造的网络类型，与本机网络不符")
+        }
+        return nil
     }
 
     private static func list(_ values: [Int]) -> String {

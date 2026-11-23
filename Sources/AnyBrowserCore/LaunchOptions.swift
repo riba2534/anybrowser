@@ -125,15 +125,20 @@ public struct LaunchOptions: Codable, Equatable, Sendable {
     public var restoreSession: Bool
     /// Names of extensions in the shared library (`Extensions/Shared/<name>`) this Profile loads.
     public var sharedExtensions: [String]
+    /// Opens an incognito window: no cookies or site data on disk, and a storage quota tied to the
+    /// JS heap, which the identity script compresses further.
+    public var incognito: Bool
 
     public init(startURLs: [String] = [], window: WindowLayout? = nil, extensionDirectories: [String] = [],
-                loadPasskeyBox: Bool = true, restoreSession: Bool = false, sharedExtensions: [String] = []) {
+                loadPasskeyBox: Bool = true, restoreSession: Bool = false, sharedExtensions: [String] = [],
+                incognito: Bool = false) {
         self.startURLs = startURLs
         self.window = window
         self.extensionDirectories = extensionDirectories
         self.loadPasskeyBox = loadPasskeyBox
         self.restoreSession = restoreSession
         self.sharedExtensions = sharedExtensions
+        self.incognito = incognito
     }
 
     public init(from decoder: Decoder) throws {
@@ -144,6 +149,8 @@ public struct LaunchOptions: Codable, Equatable, Sendable {
         loadPasskeyBox = try data.decodeIfPresent(Bool.self, forKey: .loadPasskeyBox) ?? true
         restoreSession = try data.decodeIfPresent(Bool.self, forKey: .restoreSession) ?? false
         sharedExtensions = try data.decodeIfPresent([String].self, forKey: .sharedExtensions) ?? []
+        // Options written before the field existed are a normal window.
+        incognito = try data.decodeIfPresent(Bool.self, forKey: .incognito) ?? false
     }
 
     /// Checks the options without touching the disk, so a Profile whose extension folder has
@@ -192,6 +199,7 @@ public struct LaunchOptions: Codable, Equatable, Sendable {
         }
         result.loadPasskeyBox = loadPasskeyBox
         result.restoreSession = restoreSession
+        result.incognito = incognito
         for name in sharedExtensions where !result.sharedExtensions.contains(name) {
             guard Self.isSharedExtensionName(name) else {
                 throw ProfileError.invalid("共享扩展名称无效：\(name.prefix(64))")
@@ -243,6 +251,9 @@ public struct LaunchOptions: Codable, Equatable, Sendable {
                 arguments.append("--window-position=\(x),\(y)")
             }
         }
+        // Not `--incognito`: an unpacked extension is not enabled there, so the guard would not
+        // load. The window stays normal and the guard compresses the quota instead.
+
         if restoreSession {
             arguments.append("--restore-last-session")
         }

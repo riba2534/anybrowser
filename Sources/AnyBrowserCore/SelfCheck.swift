@@ -51,9 +51,27 @@ public struct SelfCheckObservation: Codable, Equatable, Sendable {
         public var availHeight: Int
         public var colorDepth: Int
         public var devicePixelRatio: Double
+        /// Distance of the usable area from the screen's top and left edges; nil when the
+        /// platform has no screen.
+        public var availTop: Int? = nil
+        public var availLeft: Int? = nil
     }
 
-    /// The window's outer and inner sizes; the difference is the browser chrome a real window
+    /// The same four media questions asked twice: once through `matchMedia` and once through a
+    /// style sheet and `getComputedStyle`.
+    public struct Media: Codable, Equatable, Sendable {
+        public struct Answer: Codable, Equatable, Sendable {
+            public var js: Bool
+            public var css: Bool
+        }
+
+        public var maxWidth: Answer
+        public var minWidth: Answer
+        public var minHeight: Answer
+        public var minResolution: Answer
+    }
+
+    /// A window's outer and inner sizes; the difference is the browser chrome a real window
     /// carries, and `outer` must not outgrow the screen.
     public struct Window: Codable, Equatable, Sendable {
         public var outerWidth: Int
@@ -69,13 +87,31 @@ public struct SelfCheckObservation: Codable, Equatable, Sendable {
         }
     }
 
+    /// `navigator.storage.estimate()` on the probe page, with the JS heap limit that bounds the
+    /// quota in private mode. `heapLimit` is zero when the page cannot read it.
+    public struct Storage: Codable, Equatable, Sendable {
+        public var usage: Double
+        public var quota: Double
+        public var heapLimit: Double
+
+        public init(usage: Double, quota: Double, heapLimit: Double) {
+            self.usage = usage
+            self.quota = quota
+            self.heapLimit = heapLimit
+        }
+    }
+
     public var main: Realm
     public var worker: Realm?
     public var frame: Frame?
     public var clientHints: ClientHints?
     public var screen: Screen
+    /// The media questions; nil for a page on which the style sheet probe could not run.
+    public var media: Media? = nil
     /// The window sizes; nil only for a page that could not read them.
     public var window: Window? = nil
+    /// The storage estimate; nil when the page could not read it.
+    public var storage: Storage? = nil
     /// The same measurement on a page `<canvas>`.
     public var canvasMeasureText: Double?
     /// Whether drawing the same Canvas twice gives the same pixels.
@@ -373,6 +409,22 @@ public enum SelfCheck {
             add("screen", "屏幕（跟随本机）", expected: nil, observed: screenText, .info)
         }
 
+        // The usable area is the screen minus menu bar and Dock. `availTop` is measured from this
+        // screen's top; `availLeft` is a global coordinate on multi-display setups, so it only
+        // counts when negative.
+        if let availTop = screen.availTop, let availLeft = screen.availLeft {
+            add("screen-avail-consistency", "可用屏幕区域",
+                expected: "在屏幕范围内",
+                observed: "上 \(availTop) + 高 \(screen.availHeight) = \(availTop + screen.availHeight) ≤ \(screen.height)"
+                    + " · 可用宽 \(screen.availWidth) ≤ \(screen.width)（左 \(availLeft)）",
+                judge(availTop + screen.availHeight <= screen.height && screen.availWidth <= screen.width
+                        && (availLeft >= 0 || availLeft + screen.availWidth <= screen.width)),
+                note: "可用屏幕区域伸出了屏幕；伪造的 avail 值互相矛盾。")
+        } else {
+            add("screen-avail-consistency", "可用屏幕区域", expected: nil,
+                observed: "无（平台没有屏幕）", .info)
+        }
+
         // A window bigger than the display, or a viewport bigger than its usable part, is one
         // comparison a server makes without any client-side trick.
         if let window = observation.window {
@@ -402,6 +454,47 @@ public enum SelfCheck {
                     observed: "\(widthChrome) / \(heightChrome)",
                     judge(abs(widthChrome - chrome.width) <= 8 && abs(heightChrome - chrome.height) <= 8),
                     note: "窗口边框与平台不符；用 AnyBrowser 以有窗口模式启动可得到原生边框。")
+            }
+        }
+
+        // `matchMedia` and a style sheet answer the same media question in two places; a wrapper
+        // that patches only one of them makes the two disagree.
+        let yesNo = { (value: Bool) in value ? "是" : "否" }
+        if let media = observation.media {
+            // Resolution is reported apart: the CSS side still runs on the engine's own scale, so a
+            // spoofed DPR legitimately differs there until the engine switch is wired.
+            let answers: [(String, SelfCheckObservation.Media.Answer)] = [
+                ("max-width", media.maxWidth), ("min-width", media.minWidth),
+                ("min-height", media.minHeight),
+            ]
+            add("media-css-js", "媒体查询：matchMedia 与 CSS",
+                expected: "三种问法两侧一致",
+                observed: answers.map { "\($0.0) JS \(yesNo($0.1.js)) · CSS \(yesNo($0.1.css))" }
+                    .joined(separator: "；"),
+                judge(answers.allSatisfy { $0.1.js == $0.1.css }),
+                note: "matchMedia 与样式表对同一媒体条件给出不同答案；注入脚本可能只覆盖了其中一侧。")
+            add("media-resolution", "媒体查询：分辨率", expected: nil,
+                observed: "JS \(yesNo(media.minResolution.js)) · CSS \(yesNo(media.minResolution.css))",
+                .info,
+                note: "分辨率的一侧仍由内核的真实 DPR 求值；内核开关接线后两侧应一致。")
+        } else {
+            add("media-css-js", "媒体查询：matchMedia 与 CSS", expected: nil, observed: "无", .info)
+        }
+
+        // An incognito window's quota is tied to the JS heap: the identity script caps it below
+        // 1.5 × the heap limit. A normal window's quota follows the disk and is only reported.
+        if let storage = observation.storage {
+            let observed = "配额 \(Self.number(storage.quota)) · 用量 \(Self.number(storage.usage))"
+            if profile.launch.incognito {
+                // The script falls back to the claimed memory, then to 1 GB, when the heap is unreadable.
+                let heap = storage.heapLimit > 0 ? storage.heapLimit
+                    : fingerprint.deviceMemory.map { Double($0) * 536_870_912 } ?? 1_073_741_824
+                let limit = (heap * 1.5).rounded(.down)
+                add("storage-quota", "无痕存储配额", expected: "≤ \(Self.number(limit))",
+                    observed: observed, judge(storage.quota > 0 && storage.quota <= limit),
+                    note: "配额没有被压到 1.5 × JS 堆上限；无痕标记只在从 AnyBrowser 无痕启动时生效。")
+            } else {
+                add("storage-quota", "存储配额", expected: nil, observed: observed, .info)
             }
         }
 
@@ -536,6 +629,17 @@ public enum SelfCheck {
         };
       } catch (e) {}
 
+      let storage = null;
+      try {
+        const estimate = await navigator.storage.estimate();
+        storage = {
+          usage: Number(estimate.usage) || 0,
+          quota: Number(estimate.quota) || 0,
+          heapLimit: (globalThis.performance && performance.memory
+            && Number(performance.memory.jsHeapSizeLimit)) || 0,
+        };
+      } catch (e) {}
+
       const draw = () => {
         const canvas = document.createElement('canvas');
         canvas.width = 240;
@@ -584,6 +688,37 @@ public enum SelfCheck {
         document.body.appendChild(element);
       }, 5000);
 
+      // The same four questions through matchMedia and through a style sheet: the two evaluators
+      // must agree on every one. The margins keep the answers off the exact edges, so a scrollbar
+      // or rounding cannot flip them.
+      const media = (() => {
+        try {
+          const probe = document.createElement('div');
+          probe.id = 'anybrowser-media-probe';
+          const style = document.createElement('style');
+          (document.head || document.documentElement).appendChild(style);
+          (document.body || document.documentElement).appendChild(probe);
+          const cssSays = () =>
+            getComputedStyle(probe).getPropertyValue('--anybrowser-media').trim() === '1';
+          const ask = (query) => {
+            const js = matchMedia(query).matches;
+            style.textContent = `@media ${query} { #anybrowser-media-probe { --anybrowser-media: 1 } }`;
+            const css = cssSays();
+            return { js, css };
+          };
+          const width = window.innerWidth, height = window.innerHeight;
+          const value = {
+            maxWidth: ask(`(max-width: ${width - 100}px)`),
+            minWidth: ask(`(min-width: ${width + 100}px)`),
+            minHeight: ask(`(min-height: ${height - 100}px)`),
+            minResolution: ask(`(min-resolution: ${devicePixelRatio || 1}dppx)`),
+          };
+          probe.remove();
+          style.remove();
+          return value;
+        } catch (e) { return null; }
+      })();
+
       let expectedZoneName = null;
       try {
         expectedZoneName = new Intl.DateTimeFormat(profileLanguage || undefined, { timeZoneName: 'long' })
@@ -597,11 +732,13 @@ public enum SelfCheck {
       }
 
       return {
-        main, worker, frame, clientHints,
+        main, worker, frame, clientHints, media,
         screen: { width: screen.width, height: screen.height, availWidth: screen.availWidth,
-          availHeight: screen.availHeight, colorDepth: screen.colorDepth, devicePixelRatio },
+          availHeight: screen.availHeight, colorDepth: screen.colorDepth, devicePixelRatio,
+          availTop: screen.availTop ?? null, availLeft: screen.availLeft ?? null },
         window: { outerWidth: window.outerWidth, outerHeight: window.outerHeight,
           innerWidth: window.innerWidth, innerHeight: window.innerHeight },
+        storage,
         canvasMeasureText: page.measureText(text).width,
         canvasStable: draw() === draw(),
         markers: markersOf(window),

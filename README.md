@@ -196,7 +196,7 @@ Profile 可以用 id 或名称指定，重名时须用 id；`restore` 在回收�
 
 Profile 对象为 `{"id","name","group","port","status","debugReady","tags","accountStatus","pendingRestart"}`。`status` 是浏览器状态，取值 `stopped`、`starting`、`stopping`、`running`、`failed`；`accountStatus` 是记录的账号状态，取值 `active`、`verifying`、`limited`、`banned` 或 `null`；`pendingRestart` 表示浏览器还在用修改前的配置运行。运行中的浏览器报告它启动时用的端口。
 
-`config` 是完整配置，字段与「导出 Profile…」文件里的 Profile 相同：`name`、`port`、`proxy`、`group`、`notes`、`tags`、`accountStatus`、`fingerprint`（`seed`、`platform`、`platformVersion`、`brand`、`brandVersion`、`cpuCount`、`language`、`languages`、`timeZone`、`adjustments` 等）、`launch`（`startURLs`、`window`、`extensionDirectories`、`loadPasskeyBox`、`restoreSession`、`sharedExtensions`）和 `passkeyBox`。默认不含密码：代理只保留 `scheme://主机:端口`，没有 Profile 自己的 Passkey Box 账号。
+`config` 是完整配置，字段与「导出 Profile…」文件里的 Profile 相同：`name`、`port`、`proxy`、`group`、`notes`、`tags`、`accountStatus`、`fingerprint`（`seed`、`platform`、`platformVersion`、`brand`、`brandVersion`、`cpuCount`、`language`、`languages`、`timeZone`、`adjustments` 等）、`launch`（`startURLs`、`window`、`extensionDirectories`、`loadPasskeyBox`、`restoreSession`、`incognito`、`sharedExtensions`；`incognito` 让网页读到无痕配额，资料仍写在 Profile 目录）和 `passkeyBox`。默认不含密码：代理只保留 `scheme://主机:端口`，没有 Profile 自己的 Passkey Box 账号。
 
 Proxy 对象为 `{"id","url","hasCredentials","label","tags","note","createdAt","lastExit","lastCheckedAt","profiles"}`，`profiles` 是使用这个代理的 Profile（含回收站中的），时间为 ISO 8601。
 

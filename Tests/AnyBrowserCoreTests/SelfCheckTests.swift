@@ -35,7 +35,10 @@ struct SelfCheckTests {
                                fullVersionList: [.init(brand: "Chromium", version: "148.0.7778.97"),
                                                  .init(brand: "Google Chrome", version: "148.0.7778.97")],
                                platform: "macOS", platformVersion: "26.4.1", architecture: "arm", bitness: "64", mobile: false),
-            screen: .init(width: 2560, height: 1440, availWidth: 2560, availHeight: 1410, colorDepth: 24, devicePixelRatio: 2),
+            screen: .init(width: 2560, height: 1440, availWidth: 2560, availHeight: 1410, colorDepth: 24, devicePixelRatio: 2,
+                          availTop: 0, availLeft: 0),
+            media: .init(maxWidth: .init(js: true, css: true), minWidth: .init(js: false, css: false),
+                         minHeight: .init(js: true, css: true), minResolution: .init(js: true, css: true)),
             window: .init(outerWidth: 2048, outerHeight: 1210, innerWidth: 2048, innerHeight: 1122),
             canvasMeasureText: 337.4765625, canvasStable: true, markers: [],
             expectedZoneName: "Mitteleuropäische Normalzeit")
@@ -99,7 +102,8 @@ struct SelfCheckTests {
         #expect(locale.status == .fail)
         #expect(locale.note == "语言与 Profile 不一致：可能是浏览器自行重启过，请从 AnyBrowser 重启此 Profile")
         #expect(SelfCheck.report(for: try profile(), exit: nil, observation: hostLanguage).item("locale")?.note == nil)
-        #expect(SelfCheck.report(for: try profile(), exit: nil, observation: observation()).items.allSatisfy { $0.note == nil })
+        #expect(SelfCheck.report(for: try profile(), exit: nil, observation: observation())
+            .items.filter { $0.status != .info }.allSatisfy { $0.note == nil })
 
         var hostDate = observation()
         hostDate.main.dateString = "Thu Jan 15 2026 12:00:00 GMT+0100 (中欧标准时间)"
@@ -199,6 +203,54 @@ struct SelfCheckTests {
         }
     }
 
+    @Test("matchMedia and a style sheet must give the same answer to the same media question")
+    func mediaQueriesMustAgree() throws {
+        #expect(try failures(observation()).isEmpty)
+
+        // The injection layer patched matchMedia but the style sheet still sees the real viewport.
+        var bypassed = observation()
+        bypassed.media?.minWidth.css = true
+        bypassed.media?.maxWidth.js = false
+        #expect(try failures(bypassed) == ["media-css-js"])
+        let item = try #require(SelfCheck.report(for: profile(), exit: nil, observation: bypassed).item("media-css-js"))
+        #expect(item.status == .fail)
+        #expect(item.observed.contains("max-width JS 否 · CSS 是"))
+        #expect(item.observed.contains("min-width JS 否 · CSS 是"))
+        #expect(item.note != nil)
+
+        var absent = observation()
+        absent.media = nil
+        let info = try #require(SelfCheck.report(for: profile(), exit: nil, observation: absent).item("media-css-js"))
+        #expect(info.status == .info)
+        #expect(try failures(absent).isEmpty)
+    }
+
+    @Test("The usable screen area must stay inside the screen")
+    func screenAvailStaysInside() throws {
+        #expect(try failures(observation()).isEmpty)
+
+        var spilledDown = observation()
+        spilledDown.screen.availTop = 60
+        #expect(try failures(spilledDown) == ["screen-avail-consistency"])
+        var spilledRight = observation()
+        spilledRight.screen.availWidth = spilledRight.screen.width + 20
+        #expect(try failures(spilledRight) == ["screen-avail-consistency"])
+
+        // A display placed right of the primary reports a large positive availLeft, which is fine.
+        var secondary = observation()
+        secondary.screen.availLeft = 2560
+        #expect(try failures(secondary).isEmpty)
+
+        var noScreen = observation()
+        noScreen.screen.availTop = nil
+        noScreen.screen.availLeft = nil
+        let info = try #require(SelfCheck.report(for: profile(), exit: nil, observation: noScreen)
+            .item("screen-avail-consistency"))
+        #expect(info.status == .info)
+        #expect(info.observed.contains("没有屏幕"))
+        #expect(try failures(noScreen).isEmpty)
+    }
+
     @Test("The probe script embeds the Profile language and time zones as JSON and parses date zone names")
     func probeScript() {
         #expect(SelfCheck.probeScript(language: "de-DE").contains("const [profileLanguage] = [\"de-DE\"];"))
@@ -206,6 +258,8 @@ struct SelfCheckTests {
         #expect(SelfCheck.probeScript(language: "en-IN", timeZones: ["Asia/Kolkata", ""])
             .contains("const timeZones = [\"Asia\\/Kolkata\"];"))
         #expect(SelfCheck.probeScript(language: "en-IN").contains("const timeZones = [];"))
+        #expect(SelfCheck.probeScript(language: "de-DE").contains("--anybrowser-media"))
+        #expect(SelfCheck.probeScript(language: "de-DE").contains("min-resolution: ${devicePixelRatio || 1}dppx"))
         #expect(SelfCheck.zoneName("Thu Jan 15 2026 12:00:00 GMT-0500 (Eastern Standard Time)") == "Eastern Standard Time")
         #expect(SelfCheck.zoneName("Invalid Date") == nil)
     }

@@ -60,6 +60,7 @@ enum IdentityShim {
             "manifest.json": Data(manifest.utf8),
             "content.js": Data(script(seed: profile.fingerprint.seed,
                                       values: .from(profile.fingerprint),
+                                      isPrivate: profile.launch.incognito,
                                       connection: .from(profile)).utf8),
         ]
         for (name, data) in files {
@@ -148,9 +149,24 @@ enum IdentityShim {
         case threeG = "3g"
         case slow2G = "slow-2g"
 
-        /// A proxied Profile is rarely on a poor link; an unproxied one keeps the host's values.
+        /// The class a page should read for this Profile's exit. Without a proxy the host's own
+        /// values stay. A plain HTTP(S) hop to a literal address without sign-in is a direct
+        /// connection, so `4g`; a SOCKS5 proxy, a proxy with credentials or a host name (one more
+        /// resolution and hop) is conservatively `3g`, the same whatever the region. An address
+        /// that does not parse also leaves the host alone.
         static func from(_ profile: BrowserProfile) -> ConnectionQuality? {
-            profile.proxy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : .fourG
+            guard let endpoint = try? ProxyEndpoint.parse(profile.proxy) else { return nil }
+            if endpoint.scheme == "socks5" || endpoint.hasCredentials || !isLiteralAddress(endpoint.host) {
+                return .threeG
+            }
+            return .fourG
+        }
+
+        /// An IPv4 address or a bracketed IPv6 one, as `ProxyEndpoint.parse` stores hosts.
+        private static func isLiteralAddress(_ host: String) -> Bool {
+            if host.hasPrefix("[") { return true }
+            var address = in_addr()
+            return inet_pton(AF_INET, host, &address) == 1
         }
 
         var rtt: Int {
@@ -184,6 +200,7 @@ enum IdentityShim {
       "version": "1.3.0",
       "description": "Keeps Canvas text metrics and screen values consistent with this Profile.",
       "minimum_chrome_version": "111",
+      "incognito": "spanning",
       "host_permissions": ["<all_urls>"],
       "content_scripts": [{
         "matches": ["<all_urls>"],
@@ -553,44 +570,60 @@ enum IdentityShim {
           return result;
         };
         // about:blank has an opaque origin and rejects; zero reads as an incognito window.
-        const manager = globalThis.StorageManager ? StorageManager.prototype
+        // `StorageManager` is not defined yet at document_start, so the install is retried.
+        const manager = () => globalThis.StorageManager ? StorageManager.prototype
           : (globalThis.navigator && navigator.storage && Object.getPrototypeOf(navigator.storage));
-        const estimateDescriptor = unpatched(manager, 'estimate', false);
-        if (estimateDescriptor) {
-          const native = estimateDescriptor.value;
-          const estimate = mark({
-            async estimate() {
-              try {
-                return quota(await apply(native, this, []));
-              } catch (error) {
-                return { usage: 0, quota: 0 };
-              }
-            },
-          }.estimate);
-          replace(manager, 'estimate', estimateDescriptor, estimate, false);
-        }
-        const temporary = globalThis.navigator && navigator.webkitTemporaryStorage;
-        const storagePrototype = temporary && Object.getPrototypeOf(temporary);
-        const queryDescriptor = unpatched(storagePrototype, 'queryUsageAndQuota', false);
-        if (queryDescriptor) {
-          const native = queryDescriptor.value;
-          const query = mark({
-            queryUsageAndQuota(success, failure) {
-              const report = (usage, granted) => {
-                const capped = quota({ usage, quota: granted });
-                if (typeof success === 'function') success(capped.usage, capped.quota);
-              };
-              try {
-                apply(native, this, [report, (error) => {
-                  if (typeof success === 'function') success(0, 0);
-                  else if (typeof failure === 'function') failure(error);
-                }]);
-              } catch (error) {
-                report(0, 0);
-              }
-            },
-          }.queryUsageAndQuota);
-          replace(storagePrototype, 'queryUsageAndQuota', queryDescriptor, query, false);
+        // Both the standard and the legacy callback API must agree, and both may be missing at
+        // document_start, so one installer covers them and the retry below drives it.
+        const installEstimate = () => {
+          let ready = true;
+          const descriptor = unpatched(manager(), 'estimate', false);
+          if (descriptor) {
+            const native = descriptor.value;
+            replace(manager(), 'estimate', descriptor, mark({
+              async estimate() {
+                try {
+                  return quota(await apply(native, this, []));
+                } catch (error) {
+                  return { usage: 0, quota: 0 };
+                }
+              },
+            }.estimate), false);
+          } else if (globalThis.StorageManager || (globalThis.navigator && navigator.storage)) {
+            ready = false;
+          }
+          const temporary = globalThis.navigator && navigator.webkitTemporaryStorage;
+          const storagePrototype = temporary && Object.getPrototypeOf(temporary);
+          const queryDescriptor = unpatched(storagePrototype, 'queryUsageAndQuota', false);
+          if (queryDescriptor) {
+            const native = queryDescriptor.value;
+            replace(storagePrototype, 'queryUsageAndQuota', queryDescriptor, mark({
+              queryUsageAndQuota(success, failure) {
+                const report = (usage, granted) => {
+                  const capped = quota({ usage, quota: granted });
+                  if (typeof success === 'function') success(capped.usage, capped.quota);
+                };
+                try {
+                  apply(native, this, [report, (error) => {
+                    if (typeof success === 'function') success(0, 0);
+                    else if (typeof failure === 'function') failure(error);
+                  }]);
+                } catch (error) {
+                  report(0, 0);
+                }
+              },
+            }.queryUsageAndQuota), false);
+          } else if (temporary) {
+            ready = false;
+          }
+          return ready;
+        };
+        // A real page has a timer; a bare JavaScriptCore realm installs once.
+        if (priv && !installEstimate() && typeof setInterval === 'function') {
+          let tries = 0;
+          const timer = setInterval(() => {
+            if (installEstimate() || ++tries > 100) clearInterval(timer);
+          }, 10);
         }
       }
 
