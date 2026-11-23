@@ -32,6 +32,8 @@ public enum ThirdPartyCookiePosture {
             }
         }
         var profile = root["profile"] as? [String: Any] ?? [:]
+        // Chromium reformats this file on every quit, so comparing bytes would always miss.
+        if profile["cookie_controls_mode"] as? Int == 0 { return }
         profile["cookie_controls_mode"] = 0
         root["profile"] = profile
         guard let data = try? JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]) else {

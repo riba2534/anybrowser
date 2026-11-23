@@ -113,7 +113,7 @@ struct CoordinatorEngineTests {
 
             // Generated and saved: cleared at once.
             var renewed = profile
-            renewed.fingerprint = try await coordinator.generateIdentity(for: profile).fingerprint
+            renewed.fingerprint = try await coordinator.generateIdentity(for: profile).profile.fingerprint
             try coordinator.saveNewIdentity(renewed)
             #expect(try await coordinator.clearPendingSiteData(profile.id))
             #expect(!fixture.store.pendingIdentityReset(profile.id))
@@ -151,7 +151,7 @@ struct CoordinatorEngineTests {
             #expect(server.requests("/asset.js") == 1)
 
             var renewed = profile
-            renewed.fingerprint = try await coordinator.generateIdentity(for: profile).fingerprint
+            renewed.fingerprint = try await coordinator.generateIdentity(for: profile).profile.fingerprint
             try coordinator.saveNewIdentity(renewed)
             #expect(try await coordinator.clearPendingSiteData(profile.id) == false)
             // Nothing is cleared under the old identity's open pages.

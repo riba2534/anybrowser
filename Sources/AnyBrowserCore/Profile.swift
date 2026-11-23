@@ -556,18 +556,15 @@ extension FingerprintSettings {
         if fields.contains(.adjustments) {
             var next: Set<FingerprintAdjustment> = [.canvas, .clientRects]
             if let platform, platform != .linux { next.insert(.gpu) }
-            // A platform always carries its font table; without a platform nothing applies it.
-            if platform != nil { next.insert(.font) }
             if Bool.random() { next.insert(.audio) }
+            // `.font` follows the platform in adaptToPlatform, which runs below.
             adjustments = next
         } else if fields.contains(.platform) {
             // A platform switch must also switch the GPU/font policies.
             if let platform {
                 if platform == .linux { adjustments.remove(.gpu) } else { adjustments.insert(.gpu) }
-                adjustments.insert(.font)
             } else {
                 adjustments.remove(.gpu)
-                adjustments.remove(.font)
             }
         }
         adaptToPlatform()

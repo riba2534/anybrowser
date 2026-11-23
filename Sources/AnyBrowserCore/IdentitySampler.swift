@@ -125,11 +125,6 @@ public enum IdentitySampler {
     /// font rendering there. Windows/Linux remain available through an explicit preset.
     private static let defaultPresetIDs = ["macos27-chrome", "macos26-chrome", "macos15-chrome"]
 
-    /// Fingerprint Chromium 148 accepts `--fingerprint-screen-*`, but in a windowed probe both
-    /// `screen.width/height` and `availWidth/Height` still reported the host display. The values are
-    /// applied by the identity guard in the page instead (see `IdentityShim`).
-    private static let screenSpoofingSupported = true
-
     /// Shared by whole identities and by the field randomizer's platform, brand and platform version.
     private static let presetWeights: [String: Int] = [
         "macos27-chrome": 30,
@@ -163,17 +158,7 @@ public enum IdentitySampler {
         var fingerprint = FingerprintSettings(seed: seed)
         preset.apply(to: &fingerprint)
 
-        if screenSpoofingSupported {
-            let screen = choose(screenProfiles(for: preset.platform))
-                ?? ScreenProfile(width: 1920, height: 1080, availWidth: 1920, availHeight: 1040,
-                                 colorDepth: 24, scale: 1, weight: 1)
-            fingerprint.screenWidth = screen.width
-            fingerprint.screenHeight = screen.height
-            fingerprint.availWidth = screen.availWidth
-            fingerprint.availHeight = screen.availHeight
-            fingerprint.colorDepth = screen.colorDepth
-            fingerprint.deviceScaleFactor = screen.scale
-        }
+        applyScreen(to: &fingerprint, for: preset.platform)
 
         let fallbackLocale = choose(localeProfiles)
             ?? LocaleProfile(language: "en-US", timeZone: "America/New_York", weight: 1)

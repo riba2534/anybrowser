@@ -12,11 +12,7 @@ import Foundation
 public enum DeviceIdentity {
     /// A new random lowercase UUIDv4.
     public static func mint() -> String {
-        var bytes = [UInt8](repeating: 0, count: 16)
-        for index in bytes.indices { bytes[index] = UInt8.random(in: .min ... .max) }
-        bytes[6] = (bytes[6] & 0x0F) | 0x40
-        bytes[8] = (bytes[8] & 0x3F) | 0x80
-        return format(bytes)
+        UUID().uuidString.lowercased()
     }
 
     /// The value for a Profile without one: stable for the same seed and platform, distinct across

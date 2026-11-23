@@ -386,9 +386,9 @@ final class Workbench: ObservableObject {
             let identity = try await coordinator.generateIdentity(for: draft.profile)
             // The user may have moved to another Profile while the exit lookup ran.
             guard var current = self.draft, current.profile.id == id else { return }
-            current.profile.fingerprint = identity.fingerprint
-            current.seedText = String(identity.fingerprint.seed)
-            current.cpuText = identity.fingerprint.cpuCount.map(String.init) ?? ""
+            current.profile = identity.profile
+            current.seedText = String(identity.profile.fingerprint.seed)
+            current.cpuText = identity.profile.fingerprint.cpuCount.map(String.init) ?? ""
             // A Profile that was never saved has no site data.
             if isSaved { current.resetsSiteData = true }
             self.draft = current

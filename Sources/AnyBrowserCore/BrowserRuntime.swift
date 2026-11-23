@@ -353,7 +353,7 @@ public final class BrowserRuntime: ObservableObject {
                             }
                         }
                         if !startURLs.isEmpty || placeholders > 0 || profile.launch.restoreSession {
-                            warnings = await Self.openStartPages(startURLs, endpoint: endpoint, placeholders: placeholders,
+                            warnings += await Self.openStartPages(startURLs, endpoint: endpoint, placeholders: placeholders,
                                                                  budget: startPageBudget)
                         }
                         guard owns(receipt, directory: directory) else {

@@ -47,7 +47,9 @@ struct RuntimeLaunchTests {
         try fixture.configure(profile, ["targets": newTabPage])
         try await fixture.run([profile]) {
             let outcome = try await fixture.runtime.start(profile)
-            #expect(outcome == LaunchOutcome(startedFresh: true))
+            // The fake engine has no cookie jar, so the seeder reports each host.
+            #expect(outcome.startedFresh)
+            #expect(outcome.warnings.allSatisfy { $0.contains("设备 Cookie") })
             guard case let .running(pid, _, true) = fixture.runtime.status(for: profile.id) else {
                 Issue.record("Not running: \(fixture.runtime.status(for: profile.id))")
                 return
@@ -107,7 +109,8 @@ struct RuntimeLaunchTests {
         try await fixture.run([withPages, withoutPages, restored]) {
             for profile in [withPages, withoutPages, restored] {
                 let outcome = try await fixture.runtime.start(profile)
-                #expect(outcome.warnings == [])
+                // The fake engine has no cookie jar, so the seeder reports each host.
+                #expect(outcome.warnings.allSatisfy { $0.contains("设备 Cookie") })
             }
             #expect(summary(withPages) == ["close p2", "attach p1", "navigate https://first.example/"])
             #expect(summary(withoutPages) == ["close p2", "attach p1", "navigate chrome://newtab/"])

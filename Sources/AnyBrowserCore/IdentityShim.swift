@@ -33,9 +33,10 @@ enum IdentityShim {
         true
     }
 
-    /// The Canvas fix and the screen/device guard are independent; either one loads the script.
+    /// The script is always loaded: the Canvas fix covers every engine build, and a Profile without
+    /// guard values simply leaves that block inactive.
     static func isNeeded(for engineVersion: String, profile: BrowserProfile) -> Bool {
-        isNeeded(for: engineVersion) || ScreenGuard.from(profile.fingerprint) != nil
+        true
     }
 
     static func prepare(for profile: BrowserProfile, in storage: URL) throws {
