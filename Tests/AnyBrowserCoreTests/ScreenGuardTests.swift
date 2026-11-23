@@ -5,7 +5,8 @@ import Testing
 
 /// The screen/device half of the identity guard: the engine reports the host display for every
 /// Profile, so the content script has to supply the values without adding own keys to
-/// `navigator`/`document` (Stripe reads `Object.keys` of both).
+/// `navigator`/`document` (Stripe reads `Object.keys` of both), and without looking like a script
+/// that replaced them.
 struct ScreenGuardTests {
     // MARK: Values
 
@@ -40,6 +41,21 @@ struct ScreenGuardTests {
         #expect(IdentityShim.ScreenGuard.from(platformless) == nil)
         platformless.deviceMemory = 8
         #expect(IdentityShim.ScreenGuard.from(platformless)?.literal == "{\"deviceMemory\":8}")
+    }
+
+    @Test("Connection qualities carry the values Chrome reports for their class")
+    func connectionLiteral() {
+        #expect(IdentityShim.ConnectionQuality.fourG.literal
+            == "{\"effectiveType\":\"4g\",\"rtt\":50,\"downlink\":10,\"saveData\":false}")
+        #expect(IdentityShim.ConnectionQuality.threeG.literal
+            == "{\"effectiveType\":\"3g\",\"rtt\":300,\"downlink\":1.5,\"saveData\":false}")
+        #expect(IdentityShim.ConnectionQuality.slow2G.literal
+            == "{\"effectiveType\":\"slow-2g\",\"rtt\":2000,\"downlink\":0.5,\"saveData\":true}")
+        #expect(IdentityShim.script(seed: 1, values: nil, connection: .threeG)
+            .contains("const link = {\"effectiveType\":\"3g\""))
+        #expect(IdentityShim.script(seed: 1, values: nil).contains("const link = null;"))
+        #expect(IdentityShim.script(seed: 1, values: nil, isPrivate: true).contains("const priv = true;"))
+        #expect(IdentityShim.script(seed: 1, values: nil).contains("const priv = false;"))
     }
 
     @Test("Either half of the shim keeps it mounted")
@@ -88,9 +104,11 @@ struct ScreenGuardTests {
         let context = try realm()
         let script = IdentityShim.script(seed: 22223)
         #expect(script.contains("const fake = null;"))
+        let source = context.evaluateScript("Function.prototype.toString")
         let before = context.evaluateScript(snapshot()).toString()
         context.evaluateScript(script)
         #expect(context.evaluateScript(snapshot()).toString() == before)
+        #expect(context.evaluateScript("Function.prototype.toString").isEqual(to: source) == true)
         #expect(context.evaluateScript("nativeCalls.length").toInt32() == 0)
     }
 
@@ -111,6 +129,7 @@ struct ScreenGuardTests {
         #expect(context.evaluateScript("navigator.maxTouchPoints").toInt32() == 5)
         #expect(context.evaluateScript("'ontouchstart' in window").toBool())
         #expect(context.evaluateScript("window.ontouchstart").isNull)
+        #expect(context.evaluateScript("'workerNavigatorPoints' in navigator").toBool() == false)
 
         // Native descriptors keep their shape: a getter named after the key, no setter, enumerable.
         let descriptor = context.evaluateScript("""
@@ -143,8 +162,137 @@ struct ScreenGuardTests {
         // The unknown clause was left to the native implementation.
         #expect(context.evaluateScript("nativeCalls[nativeCalls.length - 1]").toString() == "(orientation: portrait)")
         #expect(context.evaluateScript("matchMedia('(resolution: 2dppx)').media").toString() == "(resolution: 2dppx)")
-        // `media` shadows the prototype getter without becoming an own enumerable key.
-        #expect(context.evaluateScript("Object.keys(matchMedia('(width: 1280px)')).includes('media')").toBool() == false)
+        #expect(context.evaluateScript("matchMedia('(width: 1280px)').query").toString() == "(width: 1280px)")
+    }
+
+    @Test("matchMedia is shaped like a WebIDL method")
+    func matchMediaForm() throws {
+        let context = try realm()
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values()))
+        let form = context.evaluateScript("""
+        (() => {
+          let zero = '';
+          try { matchMedia(); } catch (e) { zero = e.message; }
+          let receiver = '';
+          try { matchMedia.call({}, '(width: 1280px)'); } catch (e) { receiver = e.message; }
+          let symbol = '';
+          try { matchMedia(Symbol('x')); } catch (e) { symbol = e.message; }
+          let constructed = false;
+          try { new matchMedia('(width: 1280px)'); } catch (e) { constructed = true; }
+          const descriptor = Object.getOwnPropertyDescriptor(window, 'matchMedia');
+          return {
+            zero, receiver, symbol, constructed,
+            name: matchMedia.name, length: matchMedia.length,
+            prototype: 'prototype' in matchMedia,
+            own: Object.getOwnPropertyNames(matchMedia).sort().join(','),
+            writable: descriptor.writable, enumerable: descriptor.enumerable,
+            source: String(matchMedia),
+          };
+        })()
+        """).toDictionary() ?? [:]
+        #expect(form["zero"] as? String
+            == "Failed to execute 'matchMedia' on 'Window': 1 argument required, but only 0 present.")
+        #expect(form["receiver"] as? String == "Illegal invocation")
+        #expect(form["symbol"] as? String == "Cannot convert a Symbol value to a string")
+        #expect(form["constructed"] as? Bool == true)
+        #expect(form["name"] as? String == "matchMedia")
+        #expect(form["length"] as? Int == 1)
+        #expect(form["prototype"] as? Bool == false)
+        #expect(form["own"] as? String == "length,name")
+        #expect(form["writable"] as? Bool == true)
+        #expect(form["enumerable"] as? Bool == true)
+        #expect(form["source"] as? String == "function matchMedia() { [native code] }")
+        // A window receiver still works.
+        #expect(context.evaluateScript("matchMedia.call(window, '(width: 1280px)').matches").toBool())
+    }
+
+    @Test("Replaced functions print as native code; everything else keeps its own")
+    func toStringForm() throws {
+        let context = try realm()
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values()))
+        let shape = context.evaluateScript("""
+        (() => {
+          const get = (object, key) => Object.getOwnPropertyDescriptor(object, key);
+          const printed = (fn) => String(fn);
+          return {
+            getter: get(Screen.prototype, 'width').get.toString(),
+            method: printed(matchMedia),
+            touch: get(Navigator.prototype, 'maxTouchPoints').get.toString(),
+            memory: get(Navigator.prototype, 'deviceMemory').get.toString(),
+            handler: get(window, 'ontouchstart').get.toString(),
+            self: printed(Function.prototype.toString),
+            eval: printed(eval),
+            evalLength: printed(eval).length,
+            native: printed(Object.keys),
+            plainSource: (function sample() {
+              return '[native code]';
+            }).toString(),
+            toStringLength: Function.prototype.toString.length,
+            toStringName: Function.prototype.toString.name,
+            getterOwn: Object.getOwnPropertyNames(get(Screen.prototype, 'width').get).sort().join(','),
+          };
+        })()
+        """).toDictionary() ?? [:]
+        #expect(shape["getter"] as? String == "function get width() { [native code] }")
+        #expect(shape["method"] as? String == "function matchMedia() { [native code] }")
+        #expect(shape["touch"] as? String == "function get maxTouchPoints() { [native code] }")
+        #expect(shape["memory"] as? String == "function get deviceMemory() { [native code] }")
+        #expect(shape["handler"] as? String == "function get ontouchstart() { [native code] }")
+        #expect(shape["self"] as? String == "function toString() { [native code] }")
+        #expect(shape["eval"] as? String == "function eval() { [native code] }")
+        #expect(shape["evalLength"] as? Int == 33)
+        #expect(shape["native"] as? String == "function keys() { [native code] }")
+        // A page function whose source merely mentions the marker keeps its own text.
+        #expect((shape["plainSource"] as? String)?.contains("return '[native code]'") == true)
+        #expect((shape["plainSource"] as? String)?.contains("\n") == true)
+        #expect(shape["toStringLength"] as? Int == 0)
+        #expect(shape["toStringName"] as? String == "toString")
+        #expect(shape["getterOwn"] as? String == "length,name")
+        // The wrapper itself is shaped like the native it replaced: not constructible, no prototype.
+        #expect(context.evaluateScript("'prototype' in Function.prototype.toString").toBool() == false)
+    }
+
+    @Test("Passkey Box replacements print as native whether it installed before or after")
+    func passkeyToString() throws {
+        let context = try realm()
+        func passkeySlots() {
+            context.evaluateScript("""
+            (() => {
+              globalThis.CredentialsContainer = function CredentialsContainer() { throw new TypeError('Illegal constructor'); };
+              Object.defineProperty(CredentialsContainer.prototype, 'create', {
+                value: function create(options) { return options; }, writable: true, enumerable: true, configurable: true });
+              Object.defineProperty(CredentialsContainer.prototype, 'get', {
+                value: function get(options) { return options; }, writable: true, enumerable: true, configurable: true });
+              globalThis.PublicKeyCredential = function PublicKeyCredential() { throw new TypeError('Illegal constructor'); };
+              Object.defineProperty(PublicKeyCredential, 'isUserVerifyingPlatformAuthenticatorAvailable', {
+                value: function isUserVerifyingPlatformAuthenticatorAvailable() { return Promise.resolve(true); },
+                writable: true, enumerable: true, configurable: true });
+              Object.defineProperty(Navigator.prototype, 'credentials', {
+                get: function () { return Object.create(CredentialsContainer.prototype); },
+                enumerable: true, configurable: true });
+            })();
+            """)
+        }
+        // Installed before the guard.
+        passkeySlots()
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values()))
+        #expect(context.evaluateScript("String(navigator.credentials.create)").toString()
+            == "function create() { [native code] }")
+        #expect(context.evaluateScript("String(navigator.credentials.get)").toString()
+            == "function get() { [native code] }")
+        #expect(context.evaluateScript("String(PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable)").toString()
+            == "function isUserVerifyingPlatformAuthenticatorAvailable() { [native code] }")
+
+        // Installed after the guard: recognized when asked for.
+        let late = try realm()
+        late.evaluateScript(IdentityShim.script(seed: 22223, values: values()))
+        late.evaluateScript("""
+        globalThis.CredentialsContainer = function CredentialsContainer() {};
+        Object.defineProperty(CredentialsContainer.prototype, 'create', {
+          value: function create() {}, writable: true, enumerable: true, configurable: true });
+        """)
+        #expect(late.evaluateScript("String(CredentialsContainer.prototype.create)").toString()
+            == "function create() { [native code] }")
     }
 
     @Test("navigator and document keep their own-key invariant")
@@ -152,18 +300,214 @@ struct ScreenGuardTests {
         let context = try realm()
         #expect(context.evaluateScript("Object.keys(navigator).join(',')").toString() == "")
         #expect(context.evaluateScript("Object.keys(document).join(',')").toString() == "location")
-        context.evaluateScript(IdentityShim.script(seed: 22223, values: values()))
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values(), isPrivate: true,
+                                                   connection: .fourG))
         #expect(context.evaluateScript("Object.keys(navigator).join(',')").toString() == "")
         #expect(context.evaluateScript("Object.keys(document).join(',')").toString() == "location")
+        #expect(context.evaluateScript("Object.keys(navigator.connection).join(',')").toString() == "")
+        #expect(context.evaluateScript("Object.keys(matchMedia('(width: 1280px)')).join(',')").toString() == "")
+        #expect(context.evaluateScript("Object.getOwnPropertyNames(matchMedia('(width: 1280px)')).join(',')")
+            .toString() == "")
+    }
+
+    @Test("A media query list is a proxy: answers from the guard, methods still reach the native list")
+    func mediaListProxy() throws {
+        let context = try realm()
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values()))
+        let list = context.evaluateScript("""
+        (() => {
+          const list = matchMedia('(width: 1280px)');
+          list.addEventListener('change', () => {});
+          const other = matchMedia('(width: 2000px)');
+          return {
+            matches: list.matches, media: list.media, query: list.query,
+            other: other.matches,
+            proto: Object.getPrototypeOf(list) === MediaQueryList.prototype,
+            add: typeof list.addEventListener,
+            calls: listenerCalls.join(','),
+          };
+        })()
+        """).toDictionary() ?? [:]
+        #expect(list["matches"] as? Bool == true)
+        #expect(list["media"] as? String == "(width: 1280px)")
+        #expect(list["query"] as? String == "(width: 1280px)")
+        #expect(list["other"] as? Bool == false)
+        #expect(list["proto"] as? Bool == true)
+        #expect(list["add"] as? String == "function")
+        #expect(list["calls"] as? String == "change")
     }
 
     @Test("A second injection changes nothing")
     func idempotent() throws {
         let context = try realm()
-        context.evaluateScript(IdentityShim.script(seed: 22223, values: values()))
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values(), isPrivate: true,
+                                                   connection: .threeG))
         let first = context.evaluateScript(snapshot()).toString()
-        context.evaluateScript(IdentityShim.script(seed: 22223, values: values()))
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values(), isPrivate: true,
+                                                   connection: .threeG))
         #expect(context.evaluateScript(snapshot()).toString() == first)
+    }
+
+    @Test("The plain script installs no toString wrapper")
+    func plainScriptLeavesToString() throws {
+        let context = try realm()
+        let source = context.evaluateScript("Function.prototype.toString")
+        context.evaluateScript(IdentityShim.script(seed: 22223))
+        #expect(context.evaluateScript("Function.prototype.toString").isEqual(to: source) == true)
+    }
+
+    // MARK: Private mode
+
+    @Test("Private mode compresses the storage quota below twice the heap")
+    func privateQuota() throws {
+        let context = try realm()
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values(), isPrivate: true))
+        context.evaluateScript("""
+        globalThis.__settled = false;
+        navigator.storage.estimate().then(
+          (value) => { globalThis.__settledValue = JSON.stringify(value); globalThis.__settled = true; },
+          (e) => { globalThis.__settledValue = 'rejected: ' + e.message; globalThis.__settled = true; });
+        """)
+        let result = settle(context)
+        #expect(!result.hasPrefix("rejected"))
+        let value = try #require(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
+        #expect(value["quota"] as? Int == 1500)   // 1.5 × 1000 byte heap
+        #expect(value["usage"] as? Int == 700)
+        #expect((value["quota"] as? Int ?? .max) < 2000)
+
+        // Usage above the compressed quota is clamped to it.
+        context.evaluateScript("storageUsage = 9000; storageQuota = 50000;")
+        context.evaluateScript("""
+        globalThis.__settled = false;
+        navigator.storage.estimate().then((value) => {
+          globalThis.__settledValue = JSON.stringify(value); globalThis.__settled = true; });
+        """)
+        let clampedValue = try #require(JSONSerialization.jsonObject(
+            with: Data(settle(context).utf8)) as? [String: Any])
+        #expect(clampedValue["quota"] as? Int == 1500)
+        #expect(clampedValue["usage"] as? Int == 1500)
+
+        // The callback form reports the same numbers.
+        let callback = context.evaluateScript("""
+        (() => {
+          let answer = '';
+          navigator.webkitTemporaryStorage.queryUsageAndQuota((usage, quota) => { answer = usage + '/' + quota; });
+          return answer;
+        })()
+        """).toString()
+        #expect(callback == "1500/1500")
+    }
+
+    @Test("Private mode leaves the quota alone when the API is healthy outside private mode")
+    func publicQuota() throws {
+        let context = try realm()
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values()))
+        let answer = context.evaluateScript("""
+        (() => {
+          let answer = '';
+          navigator.webkitTemporaryStorage.queryUsageAndQuota((usage, quota) => { answer = usage + '/' + quota; });
+          return answer;
+        })()
+        """).toString()
+        #expect(answer == "700/100000")
+    }
+
+    @Test("An opaque origin reports zero storage instead of rejecting")
+    func privateOpaqueOrigin() throws {
+        let context = try realm(storageFailure: true)
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values(), isPrivate: true))
+        context.evaluateScript("""
+        globalThis.__settled = false;
+        navigator.storage.estimate().then(
+          (value) => { globalThis.__settledValue = JSON.stringify(value); globalThis.__settled = true; },
+          (e) => { globalThis.__settledValue = 'rejected: ' + e.message; globalThis.__settled = true; });
+        """)
+        #expect(settle(context) == "{\"usage\":0,\"quota\":0}")
+        let callback = context.evaluateScript("""
+        (() => {
+          let answer = '';
+          navigator.webkitTemporaryStorage.queryUsageAndQuota((usage, quota) => { answer = usage + '/' + quota; });
+          return answer;
+        })()
+        """).toString()
+        #expect(callback == "0/0")
+    }
+
+    // MARK: Connection
+
+    @Test("A connection quality fills navigator.connection, creating it when missing")
+    func connectionCreation() throws {
+        let context = try realm()
+        #expect(context.evaluateScript("'connection' in navigator").toBool() == false)
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values(), connection: .threeG))
+        #expect(context.evaluateScript("navigator.connection.effectiveType").toString() == "3g")
+        #expect(context.evaluateScript("navigator.connection.rtt").toInt32() == 300)
+        #expect(context.evaluateScript("navigator.connection.downlink").toDouble() == 1.5)
+        #expect(context.evaluateScript("navigator.connection.saveData").toBool() == false)
+        #expect(context.evaluateScript("Object.keys(navigator.connection).length").toInt32() == 0)
+        #expect(context.evaluateScript("navigator.connection === navigator.connection").toBool())
+        #expect(context.evaluateScript("Object.keys(navigator).join(',')").toString() == "")
+    }
+
+    @Test("A host connection's getters are replaced in place")
+    func connectionOverride() throws {
+        let context = try realm(connection: true)
+        #expect(context.evaluateScript("navigator.connection.effectiveType").toString() == "slow-2g")
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values(), connection: .fourG))
+        #expect(context.evaluateScript("navigator.connection.effectiveType").toString() == "4g")
+        #expect(context.evaluateScript("navigator.connection.downlink").toDouble() == 10)
+        #expect(context.evaluateScript("navigator.connection.saveData").toBool() == false)
+        #expect(context.evaluateScript("Object.keys(navigator.connection).length").toInt32() == 0)
+        #expect(context.evaluateScript("String(Object.getOwnPropertyDescriptor(NetworkInformation.prototype, 'effectiveType').get)").toString()
+            == "function get effectiveType() { [native code] }")
+        // Slow 2g asks sites to save data.
+        let slow = try realm(connection: true)
+        slow.evaluateScript(IdentityShim.script(seed: 22223, values: values(), connection: .slow2G))
+        #expect(slow.evaluateScript("navigator.connection.saveData").toBool())
+        #expect(slow.evaluateScript("navigator.connection.effectiveType").toString() == "slow-2g")
+        #expect(slow.evaluateScript("navigator.connection.rtt").toInt32() == 2000)
+    }
+
+    @Test("Without a quality the host connection is left alone")
+    func connectionUntouched() throws {
+        let context = try realm(connection: true)
+        let getter = context.evaluateScript("Object.getOwnPropertyDescriptor(NetworkInformation.prototype, 'effectiveType').get")
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values()))
+        #expect(context.evaluateScript("Object.getOwnPropertyDescriptor(NetworkInformation.prototype, 'effectiveType').get")
+            .isEqual(to: getter) == true)
+        #expect(context.evaluateScript("navigator.connection.effectiveType").toString() == "slow-2g")
+    }
+
+    // MARK: Touch
+
+    @Test("A touch identity can build touch events and answers coarse pointers")
+    func touchSurface() throws {
+        let context = try realm()
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values(touch: true, screen: false, scale: false)))
+        #expect(context.evaluateScript("typeof Touch").toString() == "function")
+        #expect(context.evaluateScript("typeof TouchEvent").toString() == "function")
+        #expect(context.evaluateScript("new Touch({ identifier: 3 }).identifier").toInt32() == 3)
+        #expect(context.evaluateScript("document.createEvent('TouchEvent') instanceof TouchEvent").toBool())
+        #expect(context.evaluateScript("new TouchEvent('touchstart').touches.length").toInt32() == 0)
+        #expect(context.evaluateScript("String(Touch)").toString() == "function Touch() { [native code] }")
+        #expect(context.evaluateScript("matchMedia('(pointer: coarse)').matches").toBool())
+        #expect(context.evaluateScript("matchMedia('(pointer: fine)').matches").toBool() == false)
+        #expect(context.evaluateScript("matchMedia('(any-pointer: fine)').matches").toBool())
+        #expect(context.evaluateScript("matchMedia('(any-pointer: coarse)').matches").toBool())
+        // The worker interface is patched with the same value when the realm exposes it.
+        #expect(context.evaluateScript("WorkerNavigator.prototype.maxTouchPoints").toInt32() == 5)
+        #expect(context.evaluateScript("Object.keys(document).join(',')").toString() == "location")
+    }
+
+    @Test("A non-touch identity answers fine pointers")
+    func pointerQueriesWithoutTouch() throws {
+        let context = try realm()
+        context.evaluateScript(IdentityShim.script(seed: 22223, values: values(touch: false, screen: false, scale: false)))
+        #expect(context.evaluateScript("matchMedia('(pointer: coarse)').matches").toBool() == false)
+        #expect(context.evaluateScript("matchMedia('(pointer: fine)').matches").toBool())
+        #expect(context.evaluateScript("matchMedia('(any-pointer: fine)').matches").toBool())
+        #expect(context.evaluateScript("matchMedia('(any-pointer: coarse)').matches").toBool() == false)
+        #expect(context.evaluateScript("WorkerNavigator.prototype.maxTouchPoints").toInt32() == 0)
     }
 
     @Test("touch false pins maxTouchPoints to 0 and removes ontouchstart")
@@ -213,18 +557,35 @@ struct ScreenGuardTests {
             get(Screen.prototype, 'colorDepth'), get(Screen.prototype, 'pixelDepth'),
             get(window, 'devicePixelRatio'), get(window, 'matchMedia'),
             get(Navigator.prototype, 'deviceMemory'), get(Navigator.prototype, 'maxTouchPoints'),
-            get(window, 'ontouchstart'), screen.width, window.devicePixelRatio,
+            get(WorkerNavigator.prototype, 'maxTouchPoints'), get(window, 'ontouchstart'),
+            get(Function.prototype, 'toString'), get(StorageManager.prototype, 'estimate'),
+            get(StorageQuota.prototype, 'queryUsageAndQuota'), get(Navigator.prototype, 'connection'),
+            get(Document.prototype, 'createEvent'),
+            typeof Touch === 'function' ? get(Touch, 'prototype') : '',
+            typeof TouchEvent === 'function' ? get(TouchEvent, 'prototype') : '',
+            screen.width, window.devicePixelRatio,
             navigator.deviceMemory, navigator.maxTouchPoints,
-            Object.getOwnPropertyNames(window).join(','),
+            navigator.connection && navigator.connection.effectiveType,
+            Object.getOwnPropertyNames(window).join(','), Object.getOwnPropertyNames(document).join(','),
           ].join('|');
         })()
         """
     }
 
+    /// Drains JavaScriptCore's microtask queue until the last promise handler has stored its answer.
+    private func settle(_ context: JSContext) -> String {
+        for _ in 0..<16 {
+            if context.evaluateScript("globalThis.__settled === true").toBool() { break }
+            context.evaluateScript("void 0")
+        }
+        return context.evaluateScript("globalThis.__settledValue").toString()
+    }
+
     /// A document realm shaped like Chromium's: native-looking descriptors on the interfaces,
-    /// no own `ontouchstart` (desktop Chromium has none), and a matchMedia that answers the two
-    /// queries the guard uses for its own answers.
-    private func realm(touch: Bool = false) throws -> JSContext {
+    /// no own `ontouchstart` (desktop Chromium has none), and a matchMedia that keeps its query in
+    /// a slot instead of an own property like the real one.
+    private func realm(touch: Bool = false, connection: Bool = false, storage: Bool = true,
+                       storageFailure: Bool = false) throws -> JSContext {
         let context = try #require(JSContext())
         context.exceptionHandler = { _, exception in Issue.record("JavaScript error: \(exception?.toString() ?? "")") }
         context.evaluateScript("""
@@ -238,30 +599,91 @@ struct ScreenGuardTests {
           globalThis.Navigator = native(function Navigator() { throw new TypeError('Illegal constructor'); });
           define(Navigator.prototype, 'deviceMemory', { get: native(function () { return 8; }), enumerable: true, configurable: true });
           define(Navigator.prototype, 'maxTouchPoints', { get: native(function () { return 0; }), enumerable: true, configurable: true });
+          globalThis.WorkerNavigator = native(function WorkerNavigator() { throw new TypeError('Illegal constructor'); });
+          define(WorkerNavigator.prototype, 'maxTouchPoints', { get: native(function () { return 0; }), enumerable: true, configurable: true });
           define(globalThis, 'navigator', { value: Object.create(Navigator.prototype), configurable: true });
           define(globalThis, 'window', { value: globalThis, configurable: true });
           globalThis.screen = Object.create(Screen.prototype);
-          globalThis.document = { location: {} };
           globalThis.isSecureContext = true;
           define(globalThis, 'devicePixelRatio', {
             get: native(function () { return 1; }), set: native(function (value) {}),
             enumerable: true, configurable: true,
           });
+          globalThis.Document = native(function Document() { throw new TypeError('Illegal constructor'); });
+          define(Document.prototype, 'createEvent', {
+            value: native(function createEvent(name) { return { type: String(name) }; }),
+            writable: true, enumerable: true, configurable: true,
+          });
+          const documentObject = Object.create(Document.prototype);
+          define(documentObject, 'location', { value: {}, enumerable: true, configurable: true });
+          globalThis.document = documentObject;
           globalThis.MediaQueryList = native(function MediaQueryList() { throw new TypeError('Illegal constructor'); });
+          const queries = new WeakMap();
           define(MediaQueryList.prototype, 'matches', {
-            get: native(function () { return !this.query.includes('1000000'); }), enumerable: true, configurable: true });
+            get: native(function () { return !queries.get(this).includes('1000000'); }), enumerable: true, configurable: true });
           define(MediaQueryList.prototype, 'media', {
-            get: native(function () { return this.query; }), enumerable: true, configurable: true });
+            get: native(function () { return queries.get(this); }), enumerable: true, configurable: true });
+          define(MediaQueryList.prototype, 'query', {
+            get: native(function () { return queries.get(this); }), enumerable: true, configurable: true });
+          globalThis.listenerCalls = [];
+          define(MediaQueryList.prototype, 'addEventListener', {
+            value: native(function addEventListener(type) { listenerCalls.push(type); }),
+            writable: true, enumerable: true, configurable: true,
+          });
           globalThis.nativeCalls = [];
           define(globalThis, 'matchMedia', {
             value: native(function matchMedia(query) {
               globalThis.nativeCalls.push(String(query));
               const list = Object.create(MediaQueryList.prototype);
-              define(list, 'query', { value: String(query), configurable: true });
+              queries.set(list, String(query));
               return list;
             }),
             writable: true, enumerable: true, configurable: true,
           });
+          define(globalThis, 'performance', { value: { memory: { jsHeapSizeLimit: 1000 } }, configurable: true });
+          if (\(storage)) {
+            globalThis.storageUsage = 700;
+            globalThis.storageQuota = 100000;
+            globalThis.storageCalls = [];
+            globalThis.StorageManager = native(function StorageManager() { throw new TypeError('Illegal constructor'); });
+            define(StorageManager.prototype, 'estimate', {
+              value: native(function estimate() {
+                storageCalls.push('estimate');
+                if (\(storageFailure)) return Promise.reject(new Error('blocked'));
+                return Promise.resolve({ usage: storageUsage, quota: storageQuota });
+              }),
+              writable: true, enumerable: true, configurable: true,
+            });
+            const manager = Object.create(StorageManager.prototype);
+            define(Navigator.prototype, 'storage', {
+              get: native(function () { return manager; }), enumerable: true, configurable: true });
+            globalThis.StorageQuota = native(function StorageQuota() { throw new TypeError('Illegal constructor'); });
+            define(StorageQuota.prototype, 'queryUsageAndQuota', {
+              value: native(function queryUsageAndQuota(success, failure) {
+                storageCalls.push('query');
+                if (\(storageFailure)) { failure(new Error('blocked')); return; }
+                success(storageUsage, storageQuota);
+              }),
+              writable: true, enumerable: true, configurable: true,
+            });
+            const temporary = Object.create(StorageQuota.prototype);
+            define(Navigator.prototype, 'webkitTemporaryStorage', {
+              get: native(function () { return temporary; }), enumerable: true, configurable: true });
+          }
+          if (\(connection)) {
+            globalThis.NetworkInformation = native(function NetworkInformation() { throw new TypeError('Illegal constructor'); });
+            const info = Object.create(NetworkInformation.prototype);
+            define(NetworkInformation.prototype, 'effectiveType', {
+              get: native(function () { return 'slow-2g'; }), enumerable: true, configurable: true });
+            define(NetworkInformation.prototype, 'rtt', {
+              get: native(function () { return 4000; }), enumerable: true, configurable: true });
+            define(NetworkInformation.prototype, 'downlink', {
+              get: native(function () { return 0.05; }), enumerable: true, configurable: true });
+            define(NetworkInformation.prototype, 'saveData', {
+              get: native(function () { return true; }), enumerable: true, configurable: true });
+            define(Navigator.prototype, 'connection', {
+              get: native(function () { return info; }), enumerable: true, configurable: true });
+          }
           if (\(touch)) {
             define(window, 'ontouchstart', {
               get: native(function () { return null; }), set: native(function (value) {}),
