@@ -317,7 +317,7 @@ AI Agent 可以先用 `anybrowserctl start <Profile>` 拿到 `debug.http`，再�
 
 再设置 `ANYBROWSER_TEST_PASSKEY_SERVER`、`ANYBROWSER_TEST_PASSKEY_USERNAME`、`ANYBROWSER_TEST_PASSKEY_PASSWORD` 和 `ANYBROWSER_TEST_PASSKEY_RP`（[passkey-box](https://github.com/riba2534/passkey-box) 的 `e2e/rp` 测试网站，例如 `http://localhost:18422`），会额外启动一个带账号的 Profile，在要求用户验证的网站上完成注册和登录，并确认全程没有打开其他窗口。
 
-内置引擎和 Passkey Box 的版本与 SHA-256 统一写在 `scripts/versions.env`，构建脚本从这里读取，单元测试检查 `BundledVersions` 与它一致。`scripts/check-updates.sh` 把它们与上游最新发布对比，并列出 Chrome 稳定版和内核相差几个大版本；已是最新时以 0 退出，有可用更新或内核落后 2 个及以上大版本时以 10 退出，并给出新版本的 SHA-256 和需要修改的文件。CI 在每次推送和 PR 上打包应用，再对这个包跑全部测试（含真实浏览器测试）；推送 `v*` tag 时对即将发布的包跑同样的测试，通过后发布 ZIP 和 `SHA256SUMS`。每周一次的定时任务运行 `check-updates.sh`，有更新时开一个 issue，已有未关闭的同名 issue 时追加评论。
+内置引擎和 Passkey Box 的版本与 SHA-256 统一写在 `scripts/versions.env`，构建脚本从这里读取，单元测试检查 `BundledVersions` 与它一致。`scripts/check-updates.sh` 把它们与上游最新发布对比，并列出 Chrome 稳定版和内核相差几个大版本；已是最新时以 0 退出，有可用更新或内核落后 2 个及以上大版本时以 10 退出，并给出新版本的 SHA-256 和需要修改的文件。本地用 `scripts/test.sh` 跑全量测试，改动发布相关路径前再跑一次 `--engine` 的真实浏览器套件；推送 `v*` tag 时，发布流水线先对即将发布的包跑全部测试，通过后发布 ZIP 和 `SHA256SUMS`。每周一次的定时任务运行 `check-updates.sh`，有更新时开一个 issue，已有未关闭的同名 issue 时追加评论。
 
 ## 贡献
 
