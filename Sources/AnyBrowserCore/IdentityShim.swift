@@ -573,20 +573,50 @@ enum IdentityShim {
         // `StorageManager` is not defined yet at document_start, so the install is retried.
         const manager = () => globalThis.StorageManager ? StorageManager.prototype
           : (globalThis.navigator && navigator.storage && Object.getPrototypeOf(navigator.storage));
+        // Both the standard and the legacy callback API must agree, and both may be missing at
+        // document_start, so one installer covers them and the retry below drives it.
         const installEstimate = () => {
+          let ready = true;
           const descriptor = unpatched(manager(), 'estimate', false);
-          if (!descriptor) return false;
-          const native = descriptor.value;
-          replace(manager(), 'estimate', descriptor, mark({
-            async estimate() {
-              try {
-                return quota(await apply(native, this, []));
-              } catch (error) {
-                return { usage: 0, quota: 0 };
-              }
-            },
-          }.estimate), false);
-          return true;
+          if (descriptor) {
+            const native = descriptor.value;
+            replace(manager(), 'estimate', descriptor, mark({
+              async estimate() {
+                try {
+                  return quota(await apply(native, this, []));
+                } catch (error) {
+                  return { usage: 0, quota: 0 };
+                }
+              },
+            }.estimate), false);
+          } else if (globalThis.StorageManager || (globalThis.navigator && navigator.storage)) {
+            ready = false;
+          }
+          const temporary = globalThis.navigator && navigator.webkitTemporaryStorage;
+          const storagePrototype = temporary && Object.getPrototypeOf(temporary);
+          const queryDescriptor = unpatched(storagePrototype, 'queryUsageAndQuota', false);
+          if (queryDescriptor) {
+            const native = queryDescriptor.value;
+            replace(storagePrototype, 'queryUsageAndQuota', queryDescriptor, mark({
+              queryUsageAndQuota(success, failure) {
+                const report = (usage, granted) => {
+                  const capped = quota({ usage, quota: granted });
+                  if (typeof success === 'function') success(capped.usage, capped.quota);
+                };
+                try {
+                  apply(native, this, [report, (error) => {
+                    if (typeof success === 'function') success(0, 0);
+                    else if (typeof failure === 'function') failure(error);
+                  }]);
+                } catch (error) {
+                  report(0, 0);
+                }
+              },
+            }.queryUsageAndQuota), false);
+          } else if (temporary) {
+            ready = false;
+          }
+          return ready;
         };
         // A real page has a timer; a bare JavaScriptCore realm installs once.
         if (priv && !installEstimate() && typeof setInterval === 'function') {
@@ -594,29 +624,6 @@ enum IdentityShim {
           const timer = setInterval(() => {
             if (installEstimate() || ++tries > 100) clearInterval(timer);
           }, 10);
-        }
-        const temporary = globalThis.navigator && navigator.webkitTemporaryStorage;
-        const storagePrototype = temporary && Object.getPrototypeOf(temporary);
-        const queryDescriptor = unpatched(storagePrototype, 'queryUsageAndQuota', false);
-        if (queryDescriptor) {
-          const native = queryDescriptor.value;
-          const query = mark({
-            queryUsageAndQuota(success, failure) {
-              const report = (usage, granted) => {
-                const capped = quota({ usage, quota: granted });
-                if (typeof success === 'function') success(capped.usage, capped.quota);
-              };
-              try {
-                apply(native, this, [report, (error) => {
-                  if (typeof success === 'function') success(0, 0);
-                  else if (typeof failure === 'function') failure(error);
-                }]);
-              } catch (error) {
-                report(0, 0);
-              }
-            },
-          }.queryUsageAndQuota);
-          replace(storagePrototype, 'queryUsageAndQuota', queryDescriptor, query, false);
         }
       }
 

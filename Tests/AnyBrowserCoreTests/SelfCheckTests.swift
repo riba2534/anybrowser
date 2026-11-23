@@ -102,7 +102,8 @@ struct SelfCheckTests {
         #expect(locale.status == .fail)
         #expect(locale.note == "语言与 Profile 不一致：可能是浏览器自行重启过，请从 AnyBrowser 重启此 Profile")
         #expect(SelfCheck.report(for: try profile(), exit: nil, observation: hostLanguage).item("locale")?.note == nil)
-        #expect(SelfCheck.report(for: try profile(), exit: nil, observation: observation()).items.allSatisfy { $0.note == nil })
+        #expect(SelfCheck.report(for: try profile(), exit: nil, observation: observation())
+            .items.filter { $0.status != .info }.allSatisfy { $0.note == nil })
 
         var hostDate = observation()
         hostDate.main.dateString = "Thu Jan 15 2026 12:00:00 GMT+0100 (中欧标准时间)"
@@ -232,8 +233,13 @@ struct SelfCheckTests {
         spilledDown.screen.availTop = 60
         #expect(try failures(spilledDown) == ["screen-avail-consistency"])
         var spilledRight = observation()
-        spilledRight.screen.availLeft = 20
+        spilledRight.screen.availWidth = spilledRight.screen.width + 20
         #expect(try failures(spilledRight) == ["screen-avail-consistency"])
+
+        // A display placed right of the primary reports a large positive availLeft, which is fine.
+        var secondary = observation()
+        secondary.screen.availLeft = 2560
+        #expect(try failures(secondary).isEmpty)
 
         var noScreen = observation()
         noScreen.screen.availTop = nil

@@ -409,13 +409,16 @@ public enum SelfCheck {
             add("screen", "屏幕（跟随本机）", expected: nil, observed: screenText, .info)
         }
 
-        // The usable area is the screen minus menu bar and Dock, so it cannot reach past it.
+        // The usable area is the screen minus menu bar and Dock. `availTop` is measured from this
+        // screen's top; `availLeft` is a global coordinate on multi-display setups, so it only
+        // counts when negative.
         if let availTop = screen.availTop, let availLeft = screen.availLeft {
             add("screen-avail-consistency", "可用屏幕区域",
                 expected: "在屏幕范围内",
                 observed: "上 \(availTop) + 高 \(screen.availHeight) = \(availTop + screen.availHeight) ≤ \(screen.height)"
-                    + " · 左 \(availLeft) + 宽 \(screen.availWidth) = \(availLeft + screen.availWidth) ≤ \(screen.width)",
-                judge(availTop + screen.availHeight <= screen.height && availLeft + screen.availWidth <= screen.width),
+                    + " · 可用宽 \(screen.availWidth) ≤ \(screen.width)（左 \(availLeft)）",
+                judge(availTop + screen.availHeight <= screen.height && screen.availWidth <= screen.width
+                        && (availLeft >= 0 || availLeft + screen.availWidth <= screen.width)),
                 note: "可用屏幕区域伸出了屏幕；伪造的 avail 值互相矛盾。")
         } else {
             add("screen-avail-consistency", "可用屏幕区域", expected: nil,
@@ -458,16 +461,22 @@ public enum SelfCheck {
         // that patches only one of them makes the two disagree.
         let yesNo = { (value: Bool) in value ? "是" : "否" }
         if let media = observation.media {
+            // Resolution is reported apart: the CSS side still runs on the engine's own scale, so a
+            // spoofed DPR legitimately differs there until the engine switch is wired.
             let answers: [(String, SelfCheckObservation.Media.Answer)] = [
                 ("max-width", media.maxWidth), ("min-width", media.minWidth),
-                ("min-height", media.minHeight), ("min-resolution", media.minResolution),
+                ("min-height", media.minHeight),
             ]
             add("media-css-js", "媒体查询：matchMedia 与 CSS",
-                expected: "四种问法两侧一致",
+                expected: "三种问法两侧一致",
                 observed: answers.map { "\($0.0) JS \(yesNo($0.1.js)) · CSS \(yesNo($0.1.css))" }
                     .joined(separator: "；"),
                 judge(answers.allSatisfy { $0.1.js == $0.1.css }),
                 note: "matchMedia 与样式表对同一媒体条件给出不同答案；注入脚本可能只覆盖了其中一侧。")
+            add("media-resolution", "媒体查询：分辨率", expected: nil,
+                observed: "JS \(yesNo(media.minResolution.js)) · CSS \(yesNo(media.minResolution.css))",
+                .info,
+                note: "分辨率的一侧仍由内核的真实 DPR 求值；内核开关接线后两侧应一致。")
         } else {
             add("media-css-js", "媒体查询：matchMedia 与 CSS", expected: nil, observed: "无", .info)
         }

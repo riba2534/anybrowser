@@ -23,13 +23,17 @@ gn gen out/arm64 --args='is_debug=false target_cpu="arm64" is_component_build=fa
 
 ## 打补丁
 
-补丁按 `privacy-box-engine.md` 的 E1–E12 逐项落成 `patches/00NN-*.patch`，每个补丁只碰一个文件族的少量函数。
+补丁按 `privacy-box-engine.md` 的 E1–E12 逐项落成 `privacy-box-engine/patches/00NN-*.patch`，每个补丁只碰一个文件族的少量函数。该目录尚未提交，第一次落地时自建：
 
 ```bash
+mkdir -p ~/anybrowser/docs/privacy-box-engine/patches   # 放 E1–E12 的补丁
+shopt -s nullglob
 cd ~/engine/src
 for p in ~/anybrowser/docs/privacy-box-engine/patches/*.patch; do git apply --3way "$p"; done
 autoninja -C out/arm64 chrome
 ```
+
+目录为空时 `nullglob` 让循环空转，不会传进去一个字面量通配符。
 
 产物：`out/arm64/Chromium.app`，按上游打包成 dmg，替换 `scripts/versions.env` 的 `engine_version`、`engine_revision`、`engine_sha256`。
 

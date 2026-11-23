@@ -13,10 +13,12 @@ name="privacy-smoke-$$"
 site=$(mktemp -d /tmp/privacy-smoke.XXXXXX)
 trap '/bin/rm -rf "$site"' EXIT
 
+command -v python3 >/dev/null || { echo "python3 is required for the local page" >&2; exit 1; }
 printf '<!doctype html><meta charset=utf-8><title>smoke</title>' > "$site/index.html"
 (cd "$site" && exec python3 -m http.server "$port" >/dev/null 2>&1) &
 server=$!
-sleep 1
+for _ in $(seq 50); do curl -sf "http://127.0.0.1:$port/" >/dev/null && break; sleep 0.1; done
+curl -sf "http://127.0.0.1:$port/" >/dev/null || { echo "local page did not come up on $port" >&2; exit 1; }
 
 cleanup() {
     "$ctl" stop "$name" >/dev/null 2>&1 || true
@@ -55,10 +57,16 @@ const expression = `(() => {
   })
 })()`
 ws.onopen = () => ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression, returnByValue: true } }))
+ws.onerror = () => { console.error('devtools socket failed'); process.exit(1) }
 ws.onmessage = event => {
   const message = JSON.parse(event.data)
   if (message.id !== 1) return
-  const seen = JSON.parse(message.result.result.value)
+  if (message.result?.exceptionDetails) {
+    console.error('evaluate threw: ' + message.result.exceptionDetails.text); process.exit(1)
+  }
+  const raw = message.result?.result?.value
+  if (typeof raw !== 'string') { console.error('no value from the page'); process.exit(1) }
+  const seen = JSON.parse(raw)
   const fail = []
   if (seen.outer[0] > seen.screen[0]) fail.push('outer wider than screen')
   if (seen.outer[1] > seen.screen[1]) fail.push('outer taller than screen')
