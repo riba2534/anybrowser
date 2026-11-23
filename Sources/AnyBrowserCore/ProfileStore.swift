@@ -264,12 +264,21 @@ public final class ProfileStore: ObservableObject {
         Set(profiles.map(\.fingerprint.seed)).union(trashed.map(\.profile.fingerprint.seed))
             .union(unreadableRows.map(\.seed))
     }
+    /// Screen and font combinations in use, including those of trashed Profiles. Rows that could not
+    /// be read bring none: their payload cannot be trusted to decode.
+    public var takenScreenFontCombinations: Set<ScreenFontCombination> {
+        Set(profiles.compactMap { ScreenFontCombination($0.fingerprint) }
+            + trashed.compactMap { ScreenFontCombination($0.profile.fingerprint) })
+    }
 
     public func makeDraft() throws -> BrowserProfile {
         let port = try ProfileLibrary.freePort(excluding: takenPorts)
         let names = Set(profiles.map(\.name))
         let index = (1...(names.count + 1)).first { !names.contains("Profile \($0)") }!
-        let fingerprint = IdentitySampler.sample(seed: FingerprintSettings.newSeed(excluding: takenSeeds))
+        var fingerprint = IdentitySampler.sample(seed: FingerprintSettings.newSeed(excluding: takenSeeds))
+        // Two Profiles that look like the same machine are told apart by their display and font,
+        // so a new one moves off the combinations in use.
+        ProfileLibrary.freshCombination(in: &fingerprint, excluding: takenScreenFontCombinations)
         return BrowserProfile(name: "Profile \(index)", port: port, fingerprint: fingerprint,
                               deviceIdentity: DeviceIdentity.mint())
     }
@@ -285,6 +294,9 @@ public final class ProfileStore: ObservableObject {
             seed: FingerprintSettings.newSeed(excluding: seeds),
             constraints: .init(platforms: platforms, preset: preset, locale: locale))
         // The old device id would otherwise survive the new seed and become the new device's.
+        // Draws the display and font away from the combinations in use, and clears that id.
+        ProfileLibrary.renewDevice(in: &value, excluding: takenScreenFontCombinations,
+                                   seeds: seeds)
         value.deviceIdentity = DeviceIdentity.mint()
         return try value.validated()
     }
@@ -355,9 +367,10 @@ public final class ProfileStore: ObservableObject {
     }
 
     /// Built once per write, so saving a large import stays linear.
-    private func holders() -> (ports: [Int: Holder], seeds: [Int: Holder]) {
+    private func holders() -> (ports: [Int: Holder], seeds: [Int: Holder], combinations: [ScreenFontCombination: Holder]) {
         var ports: [Int: Holder] = [:]
         var seeds: [Int: Holder] = [:]
+        var combinations: [ScreenFontCombination: Holder] = [:]
         for row in unreadableRows {
             ports[row.port] = .unreadable
             seeds[row.seed] = .unreadable
@@ -365,12 +378,18 @@ public final class ProfileStore: ObservableObject {
         for entry in trashed {
             ports[entry.profile.port] = .trashed(entry.id, entry.profile.name)
             seeds[entry.profile.fingerprint.seed] = .trashed(entry.id, entry.profile.name)
+            if let combination = ScreenFontCombination(entry.profile.fingerprint) {
+                combinations[combination] = .trashed(entry.id, entry.profile.name)
+            }
         }
         for profile in profiles {
             ports[profile.port] = .profile(profile.id, profile.name)
             seeds[profile.fingerprint.seed] = .profile(profile.id, profile.name)
+            if let combination = ScreenFontCombination(profile.fingerprint) {
+                combinations[combination] = .profile(profile.id, profile.name)
+            }
         }
-        return (ports, seeds)
+        return (ports, seeds, combinations)
     }
 
     private struct WrittenRow {
@@ -380,7 +399,7 @@ public final class ProfileStore: ObservableObject {
     }
 
     /// Validates and writes one row; the caller updates what is kept in memory once the write is final.
-    private func insert(_ profile: BrowserProfile, holders: inout (ports: [Int: Holder], seeds: [Int: Holder])) throws -> WrittenRow {
+    private func insert(_ profile: BrowserProfile, holders: inout (ports: [Int: Holder], seeds: [Int: Holder], combinations: [ScreenFontCombination: Holder])) throws -> WrittenRow {
         let profile = try profile.validated()
         if trashed.contains(where: { $0.id == profile.id }) {
             throw ProfileError.invalid("「\(profile.name)」在回收站中，恢复后才能修改。")
@@ -412,6 +431,9 @@ public final class ProfileStore: ObservableObject {
         }
         holders.ports[profile.port] = .profile(profile.id, profile.name)
         holders.seeds[profile.fingerprint.seed] = .profile(profile.id, profile.name)
+        if let combination = ScreenFontCombination(profile.fingerprint) {
+            holders.combinations[combination] = .profile(profile.id, profile.name)
+        }
         // Only read for new rows; an upsert that updates leaves it at an older insert.
         return WrittenRow(profile: profile, payload: payload, rowid: sqlite3_last_insert_rowid(database))
     }
@@ -627,6 +649,11 @@ public final class ProfileStore: ObservableObject {
         }
         var draft = profile
         draft.fingerprint.randomize(fields, excluding: takenSeeds)
+        // A redrawn platform takes a display of its own, which may be another Profile's; move off it.
+        let others = takenScreenFontCombinations.subtracting(ScreenFontCombination.set(ScreenFontCombination(profile.fingerprint)))
+        if let combination = ScreenFontCombination(draft.fingerprint), others.contains(combination) {
+            ProfileLibrary.freshCombination(in: &draft.fingerprint, excluding: others)
+        }
         return draft
     }
 
@@ -698,7 +725,8 @@ public final class ProfileStore: ObservableObject {
         }
     }
 
-    private func checkForConflicts(_ profile: BrowserProfile, holders: (ports: [Int: Holder], seeds: [Int: Holder])) throws {
+    private func checkForConflicts(_ profile: BrowserProfile,
+                                   holders: (ports: [Int: Holder], seeds: [Int: Holder], combinations: [ScreenFontCombination: Holder])) throws {
         // Seeds are unique, so a derived id is too; an explicit id could still be copied by hand.
         if let identity = profile.deviceIdentity,
            let holder = profiles.first(where: { $0.id != profile.id && $0.deviceIdentity == identity }) {
@@ -716,6 +744,22 @@ public final class ProfileStore: ObservableObject {
             case .profile(_, let name): throw ProfileError.invalid("指纹种子已分配给 \(name)。")
             case .trashed(_, let name): throw ProfileError.invalid("指纹种子已分配给回收站中的 \(name)。")
             case .unreadable: throw ProfileError.invalid("指纹种子已被一份无法读取的 Profile 占用。")
+            }
+        }
+        // The display and font are compared together: the same screen with another font, or the
+        // same font on another screen, still tells two Profiles apart. Once every combination of
+        // the platform is in use a repeat cannot be avoided, so it is let through.
+        if let combination = ScreenFontCombination(profile.fingerprint),
+           let holder = holders.combinations[combination], !holder.owns(profile.id) {
+            let others = Set(holders.combinations.filter { !$0.value.owns(profile.id) }.keys)
+            let platform = profile.fingerprint.platform ?? .macOS
+            let fonts = ProfileLibrary.fonts(for: platform, claimed: profile.fingerprint.platform != nil)
+            guard ProfileLibrary.hasFreeCombination(for: platform, fonts: fonts, excluding: others) else { return }
+            switch holder {
+            case .profile(_, let name), .trashed(_, let name):
+                throw ProfileError.invalid("屏幕与字体组合与「\(name)」相同。")
+            case .unreadable:
+                throw ProfileError.invalid("屏幕与字体组合被一份无法读取的 Profile 占用。")
             }
         }
     }
