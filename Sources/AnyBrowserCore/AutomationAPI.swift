@@ -678,6 +678,11 @@ extension AutomationHTTP {
                     let text = value.fingerprint[keyPath: field]
                     value.fingerprint[keyPath: field] = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
+                // A new seed is a new device; the id would otherwise keep pointing at the old one.
+                if let existing = store.profiles.first(where: { $0.id == value.id }),
+                   existing.fingerprint.seed != value.fingerprint.seed {
+                    value.deviceIdentity = nil
+                }
                 return try value.validated()
             }
         } catch {
