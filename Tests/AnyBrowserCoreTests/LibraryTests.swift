@@ -27,6 +27,7 @@ private let allDisplays: [(width: Int, height: Int, font: FontProfile)] = [
     (1512, 982, .macos26), (1512, 982, .macos15),
     (2560, 1440, .macos26), (2560, 1440, .macos15),
     (1440, 900, .macos26), (1440, 900, .macos15),
+    (1920, 1080, .macos26), (1920, 1080, .macos15),
 ]
 
 private func combination(_ profile: BrowserProfile) -> ScreenFontCombination? {
@@ -323,7 +324,7 @@ struct LibraryTests {
         try store.save(BrowserProfile(name: "Mac", port: 9700, fingerprint: display(1728, 1117, font: .macos26, seed: 9700)))
 
         var combinations = Set([try #require(combination(store.profiles[0]))])
-        for _ in 0..<7 {
+        for _ in 0..<(allDisplays.count - 1) {
             let copy = try store.saveClone(of: store.profiles[0].id)
             let drawn = try #require(combination(copy))
             #expect(!combinations.contains(drawn))

@@ -125,6 +125,7 @@ private let allDisplays: [(width: Int, height: Int, font: FontProfile)] = [
     (1512, 982, .macos26), (1512, 982, .macos15),
     (2560, 1440, .macos26), (2560, 1440, .macos15),
     (1440, 900, .macos26), (1440, 900, .macos15),
+    (1920, 1080, .macos26), (1920, 1080, .macos15),
 ]
 
 @MainActor
