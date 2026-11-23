@@ -337,7 +337,7 @@ extension BrowserProfile {
             // Chromium parses --load-extension as a comma-separated list.
             arguments.append("--load-extension=\(extensions.map(\.path).joined(separator: ","))")
         }
-        arguments += launch.arguments()
+        arguments += launch.arguments(for: fingerprint)
         return arguments
     }
 }
