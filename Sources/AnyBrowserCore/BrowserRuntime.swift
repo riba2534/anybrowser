@@ -287,6 +287,9 @@ public final class BrowserRuntime: ObservableObject {
                 // Under the directory lock and before the browser exists, so nothing writes the old data back.
                 try await removeSiteData(for: id)
             }
+            // The bundled engine blocks third-party cookies by default; a stock Chrome does not, and
+            // Stripe's `.m.stripe.com` anchor only exists while they are allowed.
+            try? ThirdPartyCookiePosture.apply(in: directory)
             stopWatching(id)
             let log = LaunchLog()
             logs[id] = log
@@ -341,6 +344,14 @@ public final class BrowserRuntime: ObservableObject {
                     if let endpoint = await verifiedEndpoint(receipt, directory: directory) {
                         let placeholders = Self.placeholderCount(arguments)
                         var warnings: [String] = []
+                        // Before the first navigation, so the identity is settled when the page loads.
+                        if !startURLs.isEmpty {
+                            warnings += await Self.seedStripeIdentity(profile, startURLs: startURLs,
+                                                                      endpoint: endpoint)
+                            if profile.launch.restoreSession {
+                                warnings.append("已恢复上次会话：旧标签页可能早于设备 Cookie 写入。")
+                            }
+                        }
                         if !startURLs.isEmpty || placeholders > 0 || profile.launch.restoreSession {
                             warnings = await Self.openStartPages(startURLs, endpoint: endpoint, placeholders: placeholders,
                                                                  budget: startPageBudget)
