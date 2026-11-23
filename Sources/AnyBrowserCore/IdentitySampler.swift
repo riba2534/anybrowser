@@ -461,8 +461,7 @@ public enum IdentitySampler {
     private static func isAcceptable(_ fingerprint: FingerprintSettings, constraints: Constraints) -> Bool {
         if let accepting = constraints.accepting, !accepting(fingerprint) { return false }
         let profile = BrowserProfile(name: "Sample", port: 9301, fingerprint: fingerprint)
-        return !profile.consistencyIssues(engineVersion: BundledVersions.engine, exit: nil)
-            .contains(where: \.isBlocking)
+        return profile.blockingConsistencyIssues(engineVersion: BundledVersions.engine, exit: nil).isEmpty
     }
 
     // MARK: Hardware
@@ -587,6 +586,14 @@ public enum IdentitySampler {
         if let width = fingerprint.screenWidth, widths.contains(width) { return }
         guard let family = family(for: fingerprint, platform: platform) else { return }
         applyRandomScreen(to: &fingerprint, family: family)
+    }
+
+    /// Every screen tier of `platform`, for an exact enumeration of the combination space.
+    static func screenTiers(for platform: BrowserPlatform)
+        -> [(width: Int, height: Int, availWidth: Int, availHeight: Int, scale: Double)] {
+        screenProfiles(for: platform).map {
+            ($0.value.width, $0.value.height, $0.value.availWidth, $0.value.availHeight, $0.value.scale)
+        }
     }
 
     /// Draws one of the family's screens, so a re-randomized screen stays on the same machine.

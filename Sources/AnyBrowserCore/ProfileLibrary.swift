@@ -173,7 +173,20 @@ public enum ProfileLibrary {
     /// Whether `taken` leaves any display and font free for `platform`.
     static func hasFreeCombination(for platform: BrowserPlatform, fonts: [FontProfile?],
                                    excluding taken: Set<ScreenFontCombination>) -> Bool {
-        drawDisplay(for: platform, fonts: fonts, excluding: taken).isFree
+        // The space is small and bounded; enumerate it instead of sampling for an answer.
+        for tier in IdentitySampler.screenTiers(for: platform) {
+            for font in fonts {
+                var probe = FingerprintSettings(seed: 1)
+                probe.screenWidth = tier.width
+                probe.screenHeight = tier.height
+                probe.availWidth = tier.availWidth
+                probe.availHeight = tier.availHeight
+                probe.deviceScaleFactor = tier.scale
+                probe.fontProfile = font
+                if let combination = ScreenFontCombination(probe), !taken.contains(combination) { return true }
+            }
+        }
+        return false
     }
 
     /// One random display and font for `platform` outside `taken`, with whether a free one was
