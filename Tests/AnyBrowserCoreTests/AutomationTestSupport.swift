@@ -83,6 +83,9 @@ final class FakeBackend: AutomationBackend {
 
     private(set) var started: [UUID] = []
     private(set) var restarted: [UUID] = []
+    /// Profiles given a new identity, and the steps of each reset in order.
+    private(set) var reset: [UUID] = []
+    private(set) var resetSteps: [String] = []
     private(set) var overrides: [LaunchOverrides] = []
     private(set) var stopped: [UUID] = []
     private(set) var forced: [Bool] = []
@@ -133,6 +136,24 @@ final class FakeBackend: AutomationBackend {
     func restart(_ id: UUID, overrides: LaunchOverrides, fingerprintChange: FingerprintChangeHandling) async throws -> LaunchOutcome {
         restarted.append(id)
         return try await launch(id, overrides)
+    }
+
+    func resetAndRandomize(_ id: UUID) async throws -> LaunchOutcome {
+        guard profiles.contains(where: { $0.id == id }) else { throw ProfileError.invalid("找不到这个 Profile。") }
+        guard !isBusy(id) else { throw ProfileError.invalid("该 Profile 正在执行另一个操作。") }
+        if case .running = state(for: id) {
+            resetSteps.append("stop")
+            try await stop(id, force: false)
+        }
+        resetSteps.append("reset")
+        let fresh = try store.resetIdentity(id)
+        var value = fresh
+        value.launch.restoreSession = false
+        try store.save(value)
+        try store.setPendingIdentityReset(id, true)
+        reset.append(id)
+        resetSteps.append("start")
+        return try await start(id, overrides: LaunchOverrides(), fingerprintChange: .keepSiteData)
     }
 
     private func launch(_ id: UUID, _ overrides: LaunchOverrides) async throws -> LaunchOutcome {

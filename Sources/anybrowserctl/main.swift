@@ -23,6 +23,8 @@ Profile（<Profile> 为 id 或名称）：
   start <Profile> [--headless] [--url 网址]... [--arg 开关]...
   stop <Profile> [--force]
   restart <Profile> [--headless] [--url 网址]... [--arg 开关]...
+  reset-identity <Profile>
+      停止浏览器（必要时强制），清空全部网站登录与数据，换新身份后启动。
 
 运维：
   log <Profile>
@@ -55,6 +57,7 @@ let commandOptions: [String: (valued: Set<String>, flags: Set<String>)] = [
     "start": (["url", "arg"], ["headless"]),
     "stop": ([], ["force"]),
     "restart": (["url", "arg"], ["headless"]),
+    "reset-identity": ([], []),
     "log": ([], []),
     "cookies": (["format", "output"], []),
     "selfcheck": ([], []),
@@ -164,6 +167,9 @@ func run(_ command: String, _ subcommand: String?, _ arguments: Arguments, _ cli
     case "start", "restart":
         try arguments.expect(1...1, "\(command) <Profile> [--headless] [--url 网址]... [--arg 开关]...")
         return try await client.send("POST", "/api/v1/profiles/\(try await profile())/\(command)", json: launchBody(arguments))
+    case "reset-identity":
+        try arguments.expect(1...1, "reset-identity <Profile>")
+        return try await client.send("POST", "/api/v1/profiles/\(try await profile())/reset-identity")
     case "stop":
         try arguments.expect(1...1, "stop <Profile> [--force]")
         return try await client.send("POST", "/api/v1/profiles/\(try await profile())/stop",

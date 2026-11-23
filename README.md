@@ -157,6 +157,7 @@ anybrowserctl create --name 店铺 --preset win11-chrome --proxy-from-library un
 anybrowserctl create --count 5 --prefix 店铺 --group 电商 --proxy-from-library unused
 anybrowserctl update 店铺 --tag 美区 --json '{"fingerprint":{"timeZone":"America/New_York"}}'
 anybrowserctl start 店铺 --headless --url https://example.com --arg --mute-audio
+anybrowserctl reset-identity 店铺
 anybrowserctl cookies export 店铺 --output cookies.json
 anybrowserctl cookies import 店铺 cookies.txt
 anybrowserctl selfcheck 店铺 --pretty
@@ -182,6 +183,7 @@ Profile 可以用 id 或名称指定，重名时须用 id；`restore` 在回收�
 | `POST /api/v1/profiles/{id}/start` | 启动，请求体可选 `{"headless","urls","args"}`；返回 `{"profile","debug":{"http","webSocket"},"startedFresh","warnings"}`，已在运行时同样返回 |
 | `POST /api/v1/profiles/{id}/restart` | 停止后按保存的配置重新启动，请求体同 start |
 | `POST /api/v1/profiles/{id}/stop` | 停止，`?force=1` 强制结束；返回 `{"profile"}` |
+| `POST /api/v1/profiles/{id}/reset-identity` | 重置且随机指纹：停止（必要时强制）、清空全部网站数据、换新身份并启动；返回 `{"profile","config","warnings"}` |
 | `GET /api/v1/profiles/{id}/log` | 本次运行 AnyBrowser 启动它时的浏览器输出：`{"log"}`，没有时为 `null` |
 | `GET /api/v1/profiles/{id}/cookies` | 导出 Cookie：`{"cookies":[…],"count","skipped","format","startedHeadless","warnings"}`；`?format=devTools` 改用 DevTools 格式 |
 | `POST /api/v1/profiles/{id}/cookies` | 导入 Cookie，请求体是 Cookie 文件本身；返回 `{"imported","skipped","evicted","displaced","summary","startedHeadless","warnings"}` |
@@ -207,7 +209,7 @@ Proxy 对象为 `{"id","url","hasCredentials","label","tags","note","createdAt",
 | 404、405 | `not_found`、`method_not_allowed` | 没有这个接口、Profile 或代理；方法不对时 `Allow` 头列出可用的方法 |
 | 409 | `busy`、`running`、`trashed`、`not_running`、`conflict`、`read_only` | 正在执行另一个操作、需要先停止、已在回收站、需要先启动、端口种子或代理地址已被占用、数据库由更新版本写入 |
 | 413 | `payload_too_large` | 请求头和请求体合计超过 64 KB |
-| 500、503 | `start_failed`、`stop_failed`、`cookies_failed`、`selfcheck_failed` 等；`unavailable` | 操作失败；浏览器在运行但调试端口尚未就绪 |
+| 500、503 | `start_failed`、`stop_failed`、`reset_failed`、`cookies_failed`、`selfcheck_failed` 等；`unavailable` | 操作失败；浏览器在运行但调试端口尚未就绪 |
 
 #### 新建与修改
 

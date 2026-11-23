@@ -10,6 +10,7 @@ struct FingerprintCard: View {
     @State private var showPresets = false
     @State private var randomFields: Set<FingerprintField> = [.seed]
     @State private var confirmingRegeneration = false
+    @State private var confirmingResetAndRandomize = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -17,6 +18,23 @@ struct FingerprintCard: View {
                 HStack(alignment: .center, spacing: 12) {
                     CardHeading(title: "浏览器指纹", icon: "switch.2")
                     Spacer(minLength: 1)
+                    Button {
+                        confirmingResetAndRandomize = true
+                    } label: {
+                        Label("重置且随机指纹", systemImage: "arrow.counterclockwise.circle")
+                    }
+                    .buttonStyle(WorkbenchButtonStyle(.primary))
+                    .disabled(workbench.isBusy(draft.profile.id) || workbench.saved == nil)
+                    .help(workbench.saved == nil ? "先保存这个新 Profile。" : "停止并清空此 Profile 的全部网站登录与数据，再换新身份启动。")
+                    .accessibilityIdentifier("reset-and-randomize")
+                    .alert("重置且随机指纹？", isPresented: $confirmingResetAndRandomize) {
+                        Button("重置并启动", role: .destructive) {
+                            Task { await workbench.resetAndRandomize() }
+                        }
+                        Button("取消", role: .cancel) {}
+                    } message: {
+                        Text(resetAndRandomizeWarning)
+                    }
                     Button {
                         showPresets.toggle()
                     } label: {
@@ -60,6 +78,19 @@ struct FingerprintCard: View {
                         Text(regenerationWarning)
                     }
                 }
+                HStack(spacing: 8) {
+                    Text("「重置且随机指纹」停止浏览器、清空此 Profile 的全部网站登录与数据，再以全新身份启动；「整套重新生成」只换身份，数据在保存时才清除。")
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    if let phase = workbench.resetPhase(draft.profile.id) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(phase.progress)
+                            .accessibilityIdentifier("reset-and-randomize-phase")
+                    }
+                }
+                .font(.system(size: 12))
+                .foregroundColor(WorkbenchPalette.muted)
                 fingerprintFields
                 deviceIdentityRow
                 identitySummary
@@ -95,6 +126,15 @@ struct FingerprintCard: View {
         .onChange(of: draft.profile.fingerprint.brand) { brand in
             if brand == nil { draft.profile.fingerprint.brandVersion = "" }
         }
+    }
+
+    /// What "重置且随机指纹" deletes, and what replaces the identity: everything, at once.
+    private var resetAndRandomizeWarning: String {
+        let when = workbench.state(for: draft.profile.id).isRunning ? "先停止它的浏览器，" : ""
+        return "将\(when)删除此 Profile 的全部网站数据：Cookie、Local Storage 与 Session Storage、"
+            + "IndexedDB、Service Worker、HTTP 缓存和 Code Cache，以及会话，所有网站都要重新登录；"
+            + "随后换一个新的设备标识、种子、内存、屏幕与字体组合、语言/时区和隐私姿态，立即以新身份启动。"
+            + "偏好设置，以及扩展存放在 chrome.storage、IndexedDB 和 Cache Storage 里的数据保留。"
     }
 
     /// What saving a new identity deletes, and when: a running browser is cleared only once it has quit.

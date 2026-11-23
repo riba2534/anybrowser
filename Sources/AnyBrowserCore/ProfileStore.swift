@@ -301,6 +301,30 @@ public final class ProfileStore: ObservableObject {
         return try value.validated()
     }
 
+    /// A whole new identity for the saved Profile `id`, saved and returned: a new seed, device
+    /// identifier, memory, display and font combination (outside the ones in use, its own
+    /// included), locale and privacy posture. The name, port, proxy, group, tags and the other
+    /// Profile settings stay. The caller clears the old site data and launches the result; unlike
+    /// "整套重新生成", this is made to be applied at once.
+    @discardableResult
+    public func resetIdentity(_ id: UUID, locale: IdentitySampler.LocaleHint? = nil) throws -> BrowserProfile {
+        try requireWritable()
+        guard let original = profiles.first(where: { $0.id == id }) else {
+            throw ProfileError.invalid("找不到这个 Profile。")
+        }
+        let seeds = takenSeeds
+        let platforms = original.fingerprint.platform.map { [$0] }
+        var fingerprint = IdentitySampler.sample(
+            seed: FingerprintSettings.newSeed(excluding: seeds),
+            constraints: .init(platforms: platforms, locale: locale))
+        // A combination of its own would let two identities look alike; its old one counts as taken.
+        ProfileLibrary.freshCombination(in: &fingerprint, excluding: takenScreenFontCombinations)
+        var value = original
+        value.fingerprint = fingerprint
+        value.deviceIdentity = DeviceIdentity.mint()
+        return try saveAll([value])[0]
+    }
+
     public func save(_ profile: BrowserProfile) throws {
         try saveAll([profile])
     }

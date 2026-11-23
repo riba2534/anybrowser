@@ -76,6 +76,8 @@ public protocol AutomationBackend: AnyObject, Sendable {
     func refresh(_ id: UUID) async
     func start(_ id: UUID, overrides: LaunchOverrides, fingerprintChange: FingerprintChangeHandling) async throws -> LaunchOutcome
     func restart(_ id: UUID, overrides: LaunchOverrides, fingerprintChange: FingerprintChangeHandling) async throws -> LaunchOutcome
+    /// Stops the Profile if it runs, deletes its site data, gives it a new identity and starts it.
+    func resetAndRandomize(_ id: UUID) async throws -> LaunchOutcome
     func stop(_ id: UUID, force: Bool) async throws
     func launchLog(for id: UUID) -> String?
     func lastExit(for id: UUID) -> (exit: ProxyExit, checkedAt: Date)?

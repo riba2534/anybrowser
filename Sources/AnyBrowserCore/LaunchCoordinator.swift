@@ -271,7 +271,7 @@ public final class LaunchCoordinator: ObservableObject {
     /// The running Profile's launch output, for showing after a failure.
     public func launchLog(for id: UUID) -> String? { runtime.launchLog(for: id) }
 
-    private func forgetLaunch(_ id: UUID) {
+    func forgetLaunch(_ id: UUID) {
         launched[id] = nil
         // Stopped here: it will not relaunch itself.
         exits[id] = nil
