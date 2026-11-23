@@ -17,8 +17,7 @@ extension LaunchCoordinator {
     /// Tiles the windows on the main display, the one with the menu bar, below it and beside the Dock.
     public func arrangeWindows(_ ids: [UUID], columns: Int?) async throws -> [WindowArrangement.Outcome] {
         guard let screen = NSScreen.screens.first else { throw ProfileError.invalid("没有可用的显示器，无法排列窗口。") }
-        let wanted = Set(ids)
-        let chosen = store.profiles.filter { wanted.contains($0.id) }
+        let chosen = ids.compactMap { id in store.profiles.first { $0.id == id } }
         return await runtime.arrangeWindows(chosen, in: WindowArrangement.visibleArea(of: screen), columns: columns)
     }
 }

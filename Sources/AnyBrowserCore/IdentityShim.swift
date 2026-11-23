@@ -59,7 +59,8 @@ enum IdentityShim {
         let files = [
             "manifest.json": Data(manifest.utf8),
             "content.js": Data(script(seed: profile.fingerprint.seed,
-                                      values: .from(profile.fingerprint)).utf8),
+                                      values: .from(profile.fingerprint),
+                                      connection: .from(profile)).utf8),
         ]
         for (name, data) in files {
             try PrivateFile.update(data, at: target.appendingPathComponent(name),
@@ -146,6 +147,11 @@ enum IdentityShim {
         case fourG = "4g"
         case threeG = "3g"
         case slow2G = "slow-2g"
+
+        /// A proxied Profile is rarely on a poor link; an unproxied one keeps the host's values.
+        static func from(_ profile: BrowserProfile) -> ConnectionQuality? {
+            profile.proxy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : .fourG
+        }
 
         var rtt: Int {
             switch self {
@@ -480,8 +486,10 @@ enum IdentityShim {
         // Desktop Chromium carries no own ontouchstart at all: a touch identity adds one, a
         // non-touch one drops what a touch-enabled host left behind.
         if (fake.touch === true && !describe(globalThis, 'ontouchstart')) {
+          // A page that assigns a handler must read it back, as a real touch browser does.
+          let assigned = null;
           const handler = describe({
-            get ontouchstart() { return null; }, set ontouchstart(value) {},
+            get ontouchstart() { return assigned; }, set ontouchstart(value) { assigned = value ?? null; },
           }, 'ontouchstart');
           define(globalThis, 'ontouchstart', {
             get: mark(handler.get), set: mark(handler.set),

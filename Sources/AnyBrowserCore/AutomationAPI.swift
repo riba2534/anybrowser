@@ -924,7 +924,8 @@ extension AutomationHTTP {
         guard !isBusy(id, backend) else { throw Failure(busy) }
         let outcome: LaunchOutcome
         do {
-            outcome = try await backend.resetAndRandomize(id)
+            // Serialized with creations, which hold their drawn seed until they save.
+            outcome = try await oneCreationAtATime(backend) { try await backend.resetAndRandomize(id) }
         } catch {
             throw Failure(500, "reset_failed", error.localizedDescription)
         }

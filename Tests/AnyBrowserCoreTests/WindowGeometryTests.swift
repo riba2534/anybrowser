@@ -200,12 +200,13 @@ struct SelfCheckWindowTests {
         SelfCheck.report(for: try profile(platform), exit: nil, observation: seen)
     }
 
-    @Test("A window inside the screen with the platform's chrome passes, on every platform")
+    @Test("A window with this Mac's chrome passes, on every platform")
     func plausibleWindowsPass() throws {
+        // The frame belongs to the host Mac whatever the fingerprint claims.
         let cases: [(platform: BrowserPlatform, outer: (Int, Int), inner: (Int, Int))] = [
             (.macOS, (2048, 1210), (2048, 1122)),
-            (.windows, (2064, 1250), (2048, 1210)),
-            (.linux, (2048, 1242), (2048, 1210)),
+            (.windows, (2048, 1210), (2048, 1122)),
+            (.linux, (2048, 1210), (2048, 1122)),
         ]
         for item in cases {
             let report = try report(observation(item.platform, outerWidth: item.outer.0,

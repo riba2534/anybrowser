@@ -324,7 +324,7 @@ public enum IdentitySampler {
         }
 
         // The default family is a well-known machine; only duplicate triples can still push away.
-        let family = defaultFamily(for: fallbackPlatform(for: constraints))
+        let family = defaultFamily(for: fallbackPlatform(for: constraints), constraints: constraints)
         var fallback: FingerprintSettings?
         for _ in 0..<maximumAttempts {
             let fingerprint = generate(seed: seed, family: family, locale: constraints.locale)
@@ -404,10 +404,15 @@ public enum IdentitySampler {
         return list.first { $0.gpuIndex == index } ?? list.first
     }
 
-    /// The most common family of a platform, used when every attempt was rejected.
-    private static func defaultFamily(for platform: BrowserPlatform) -> MachineFamily {
-        familyCatalog.filter { $0.platform == platform }.max { $0.weight < $1.weight }
-            ?? familyCatalog[0]
+    /// The most common family of a platform, used when every attempt was rejected. A family the
+    /// caller asked for by preset wins, so a rejected `win10-chrome` stays Windows 10.
+    private static func defaultFamily(for platform: BrowserPlatform, constraints: Constraints) -> MachineFamily {
+        let wanted = Set([constraints.preset?.id].compactMap { $0 } + (constraints.presets ?? []))
+        let onPlatform = familyCatalog.filter { $0.platform == platform }
+        if let asked = onPlatform.filter({ wanted.contains($0.presetID) }).max(by: { $0.weight < $1.weight }) {
+            return asked
+        }
+        return onPlatform.max { $0.weight < $1.weight } ?? familyCatalog[0]
     }
 
     private static func fallbackPlatform(for constraints: Constraints) -> BrowserPlatform {
@@ -582,8 +587,14 @@ public enum IdentitySampler {
     /// same coherent display a sampled one would, from the family the seed selects.
     static func applyScreen(to fingerprint: inout FingerprintSettings, for platform: BrowserPlatform) {
         // A screen from another platform's catalogue does not fit the new one.
-        let widths = Set(screenProfiles(for: platform).map(\.value.width))
-        if let width = fingerprint.screenWidth, widths.contains(width) { return }
+        // A width alone is not enough: the catalogues overlap, and another platform's scale or
+        // depth would stay behind.
+        let fits = screenProfiles(for: platform).contains { tier in
+            tier.value.width == fingerprint.screenWidth
+                && (fingerprint.deviceScaleFactor == nil || tier.value.scale == fingerprint.deviceScaleFactor)
+                && (fingerprint.colorDepth == nil || tier.value.colorDepth == fingerprint.colorDepth)
+        }
+        if fits { return }
         guard let family = family(for: fingerprint, platform: platform) else { return }
         applyRandomScreen(to: &fingerprint, family: family)
     }

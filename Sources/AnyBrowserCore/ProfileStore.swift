@@ -432,7 +432,7 @@ public final class ProfileStore: ObservableObject {
         if unreadableRows.contains(where: { UUID(uuidString: $0.id) == profile.id }) {
             throw ProfileError.invalid("已保存的这份 Profile 配置无法读取，不能覆盖。")
         }
-        try checkForConflicts(profile, holders: holders)
+        try checkForConflicts(profile, holders: holders, isExisting: profiles.contains { $0.id == profile.id })
         let payload = try payload(for: profile)
         let write = try statement("""
             INSERT INTO profiles(id, port, seed, payload) VALUES(?, ?, ?, ?)
@@ -750,7 +750,8 @@ public final class ProfileStore: ObservableObject {
     }
 
     private func checkForConflicts(_ profile: BrowserProfile,
-                                   holders: (ports: [Int: Holder], seeds: [Int: Holder], combinations: [ScreenFontCombination: Holder])) throws {
+                                   holders: (ports: [Int: Holder], seeds: [Int: Holder], combinations: [ScreenFontCombination: Holder]),
+                                   isExisting: Bool) throws {
         // Seeds are unique, so a derived id is too; an explicit id could still be copied by hand.
         if let identity = profile.deviceIdentity,
            let holder = profiles.first(where: { $0.id != profile.id && $0.deviceIdentity == identity }) {
@@ -776,6 +777,9 @@ public final class ProfileStore: ObservableObject {
         if let combination = ScreenFontCombination(profile.fingerprint),
            let holder = holders.combinations[combination], !holder.owns(profile.id) {
             let others = Set(holders.combinations.filter { !$0.value.owns(profile.id) }.keys)
+            // Rows written before the rule existed may already share a combination; editing one
+            // must still save, otherwise an upgrade would lock the whole library.
+            if isExisting { return }
             let platform = profile.fingerprint.platform ?? .macOS
             let fonts = ProfileLibrary.fonts(for: platform, claimed: profile.fingerprint.platform != nil)
             guard ProfileLibrary.hasFreeCombination(for: platform, fonts: fonts, excluding: others) else { return }

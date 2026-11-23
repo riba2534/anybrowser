@@ -388,15 +388,11 @@ public enum SelfCheck {
             add("window-inner-height", "视口高度", expected: "≤ \(screen.availHeight)", observed: String(window.innerHeight),
                 judge(window.innerHeight <= screen.availHeight),
                 note: "视口比可用屏幕高；用 AnyBrowser 启动会按伪屏夹取窗口。")
-            // Browser chrome has a fixed size per platform; a viewport almost as tall as the
-            // window shows the platform's frame is missing or spoofed inconsistently. A headless
-            // page reads 0 for both outer sizes and has no frame to compare.
-            let headless = window.outerWidth == 0 && window.outerHeight == 0
-            let chrome: (width: Int, height: Int) = switch platform {
-            case .macOS: (0, 88)
-            case .windows: (16, 40)
-            case .linux: (0, 32)
-            }
+            // The window frame is drawn by this Mac whatever the fingerprint claims, so the
+            // expectation is macOS. A headless page has no frame: both sizes read 0, or outer
+            // equals inner.
+            let headless = window.outerWidth == 0 || (window.outerWidth == window.innerWidth && window.outerHeight == window.innerHeight)
+            let chrome: (width: Int, height: Int) = (0, 88)
             let widthChrome = window.outerWidth - window.innerWidth
             let heightChrome = window.outerHeight - window.innerHeight
             if headless {

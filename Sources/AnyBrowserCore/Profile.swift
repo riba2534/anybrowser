@@ -540,8 +540,17 @@ extension FingerprintSettings {
         if fields.contains(.platformVersion) || fields.contains(.platform) && !platformVersion.isEmpty {
             platformVersion = Self.randomPlatformVersion(for: platform)
         }
-        if fields.contains(.font), let font = family.flatMap({ IdentitySampler.fontCandidates(for: $0.presetID).randomElement() }) {
-            fontProfile = font
+        if fields.contains(.font), let platform {
+            // A preset names one font, so drawing inside the family could pick the same one;
+            // take the platform's other table and move the version with it.
+            let alternatives = ProfileLibrary.fonts(for: platform, claimed: true)
+                .compactMap { $0 }.filter { $0 != fontProfile }
+            if let next = alternatives.randomElement() {
+                for _ in 0..<8 where FontProfile.default(for: platform, version: platformVersion) != next {
+                    platformVersion = Self.randomPlatformVersion(for: platform)
+                }
+                fontProfile = FontProfile.default(for: platform, version: platformVersion)
+            }
         } else if fields.contains(.platform), let platform {
             fontProfile = FontProfile.default(for: platform, version: platformVersion)
         } else if fields.contains(.platformVersion), let platform, fontProfile != nil {

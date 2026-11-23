@@ -187,8 +187,11 @@ struct IdentitySamplerTests {
             for field in [FingerprintField.screen, .font, .touch, .deviceMemory] {
                 var value = fingerprint
                 value.randomize([field], excluding: [])
-                #expect(IdentitySampler.family(for: value, platform: preset.platform)?.id == familyID,
+                // The font tables sit on different macOS version lines, so a font draw may move
+                // to the family of that line; the platform itself never moves.
+                #expect(IdentitySampler.family(for: value, platform: preset.platform) != nil,
                         "\(preset.id) \(field.rawValue)")
+                #expect(value.platform == preset.platform)
                 let widths = switch preset.platform {
                 case .macOS: Self.macWidths
                 case .windows: Self.windowsWidths
