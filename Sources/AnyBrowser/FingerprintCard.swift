@@ -61,6 +61,7 @@ struct FingerprintCard: View {
                     }
                 }
                 fingerprintFields
+                deviceIdentityRow
                 identitySummary
                 consistencyWarnings
             }
@@ -76,11 +77,11 @@ struct FingerprintCard: View {
                             .accessibilityIdentifier("adjustment-\(adjustment.rawValue)")
                     }
                 }
-                Text("新建 Profile 会自动生成一套身份；「整套重新生成」会换种子、语言/时区、CPU 与字体表，保存时清除此 Profile 的网站数据。设备内存和 WebGL 显卡由内核按种子决定。")
+                Text("新建 Profile 会自动生成一套身份；「整套重新生成」会换设备标识、种子、语言/时区、CPU 与字体表，保存时清除此 Profile 的网站数据。设备内存和 WebGL 显卡由内核按种子决定。")
                     .font(.system(size: 12))
                     .foregroundColor(WorkbenchPalette.muted)
                     .fixedSize(horizontal: false, vertical: true)
-                Label("屏幕分辨率、色深、字体、语音列表和 WebGPU 显卡还没有内核开关：同一台 Mac 上的所有 Profile 在这些特征上都与本机相同，网站可以据此把它们关联起来。",
+                Label("屏幕分辨率、色深和字体由页面层注入，语音列表和 WebGPU 显卡仍由宿主决定；未配置时所有 Profile 都报本机值，网站可以据此把它们关联起来。",
                       systemImage: "desktopcomputer")
                     .font(.system(size: 12))
                     .foregroundColor(WorkbenchPalette.muted)
@@ -101,7 +102,7 @@ struct FingerprintCard: View {
         let when = workbench.state(for: draft.profile.id).isRunning
             ? "点击「保存并重启」后，浏览器先退出，再清除"
             : "保存后立即清除"
-        return "将换掉种子、语言/时区、CPU 与字体表。\(when)此 Profile 的全部网站数据：Cookie、Local Storage 与 Session Storage、"
+        return "将换掉设备标识、种子、语言/时区、CPU 与字体表。\(when)此 Profile 的全部网站数据：Cookie、Local Storage 与 Session Storage、"
             + "IndexedDB、Service Worker、HTTP 缓存和 Code Cache，所有网站都要重新登录；偏好设置，以及扩展存放在 chrome.storage、"
             + "IndexedDB 和 Cache Storage 里的数据保留，扩展的 Local Storage 和文件系统（OPFS）数据会一并清除。"
             + "放弃修改则不删除任何数据。"
@@ -133,6 +134,27 @@ struct FingerprintCard: View {
         }
     }
 
+    /// Read-only: the Stripe device id pages see, shortened; hovering reveals the whole value.
+    private var deviceIdentityRow: some View {
+        let identity = DeviceIdentity.effective(draft.preview)
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("设备标识")
+                .font(.system(size: 12, weight: .medium))
+            Text(verbatim: "\(identity.prefix(8))…")
+                .font(.system(size: 13, design: .monospaced))
+                .foregroundColor(WorkbenchPalette.ink)
+                .textSelection(.enabled)
+                .help(identity)
+            Text("「整套重新生成」会换一个新的。")
+                .font(.system(size: 11))
+                .foregroundColor(WorkbenchPalette.muted)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("设备标识")
+        .accessibilityValue(identity)
+        .accessibilityIdentifier("device-identity")
+    }
+
     /// Opera and Vivaldi identities only change the UA string; the engine gives UA-CH no brand for them.
     private static func title(_ brand: BrowserBrand) -> String {
         switch brand {
@@ -157,12 +179,14 @@ struct FingerprintCard: View {
                 return "\(width)×\(height) @\(scale)x · \(fingerprint.colorDepth ?? 24)bit"
             }
         } ?? "跟随本机"
+        let hasScreen = fingerprint.screenWidth != nil && fingerprint.screenHeight != nil
         let languages = fingerprint.languages?.joined(separator: ", ")
             ?? (fingerprint.language.isEmpty ? "跟随本机" : fingerprint.language)
         let locale = "\(languages) · \(fingerprint.timeZone.isEmpty ? "本机时区" : fingerprint.timeZone)"
         let fonts = fingerprint.fontProfile.map {
             $0.platform == .macOS ? "macOS 字体（宿主）" : "\($0.title)（待引擎）"
         } ?? "宿主字体"
+        let fontSpoofed = fingerprint.adjustments.contains(.font)
         let memory = "\(hardware.deviceMemory(seed: fingerprint.seed)) GB"
         let cpu = fingerprint.cpuCount.map { "\($0) 个逻辑 CPU" }
             ?? "\(hardware.defaultCPUCount(seed: fingerprint.seed)) 个逻辑 CPU（由种子决定）"
@@ -170,8 +194,27 @@ struct FingerprintCard: View {
             Text("身份摘要")
                 .font(.system(size: 12, weight: .semibold))
             Text("\(platform) · \(brand) · \(cpu)")
-            Text("\(screen) · \(locale)")
-            Text("\(fonts) · 设备内存 \(memory) · 种子 \(fingerprint.seed)")
+            Text(locale)
+            Text("屏幕 \(screen)")
+            Text(hasScreen ? "由页面层注入，当前内核参数不生效。"
+                 : "没有屏幕值：所有 Profile 会报同一块本机屏幕。")
+                .font(.system(size: 11))
+            Text("字体 \(fonts)")
+                .foregroundColor(fontSpoofed ? WorkbenchPalette.muted : WorkbenchPalette.amber)
+            if fingerprint.fontProfile != nil {
+                Text(fontSpoofed
+                     ? "由当前内核按平台增删本机字体，不是真实平台字体表。"
+                     : "「字体」改写未开，网页仍会读到本机字体；打开后也只是按平台增删本机字体，不是真实平台字体表。")
+                    .font(.system(size: 11))
+                    .foregroundColor(fontSpoofed ? WorkbenchPalette.muted : WorkbenchPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if !fontSpoofed {
+                Text("「字体」改写未开，网页会读到本机字体表。")
+                    .font(.system(size: 11))
+                    .foregroundColor(WorkbenchPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text("设备内存 \(memory) · 种子 \(fingerprint.seed)")
         }
         .font(.system(size: 12))
         .foregroundColor(WorkbenchPalette.muted)
