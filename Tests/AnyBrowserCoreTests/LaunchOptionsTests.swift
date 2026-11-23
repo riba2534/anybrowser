@@ -107,6 +107,24 @@ struct LaunchOptionsTests {
         }
     }
 
+    @Test("Incognito is off by default, survives validation and adds its switch")
+    func incognito() throws {
+        #expect(LaunchOptions().incognito == false)
+        let options = try LaunchOptions(incognito: true).validated()
+        #expect(options.incognito)
+        #expect(options.arguments() == ["--incognito"])
+        #expect(try LaunchOptions(window: WindowLayout(width: 800, height: 600), incognito: true).arguments()
+            == ["--window-size=800,600", "--incognito"])
+
+        // The field survives a round trip and reads as off when an older file lacks it.
+        let encoded = try JSONEncoder().encode(options)
+        #expect(try JSONDecoder().decode(LaunchOptions.self, from: encoded).incognito)
+        let legacy = try JSONDecoder().decode(LaunchOptions.self, from: Data(#"{"restoreSession":true}"#.utf8))
+        #expect(legacy.incognito == false && legacy.restoreSession)
+        let written = try #require(String(data: JSONEncoder().encode(options), encoding: .utf8))
+        #expect(written.contains("\"incognito\":true"))
+    }
+
     @Test("Window and session switches are arguments; start URLs open later, over DevTools")
     func argumentOrder() {
         let urls = ["https://one.example/", "https://two.example/"]

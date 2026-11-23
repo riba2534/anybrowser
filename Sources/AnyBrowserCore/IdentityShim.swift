@@ -60,6 +60,7 @@ enum IdentityShim {
             "manifest.json": Data(manifest.utf8),
             "content.js": Data(script(seed: profile.fingerprint.seed,
                                       values: .from(profile.fingerprint),
+                                      isPrivate: profile.launch.incognito,
                                       connection: .from(profile)).utf8),
         ]
         for (name, data) in files {
@@ -148,9 +149,24 @@ enum IdentityShim {
         case threeG = "3g"
         case slow2G = "slow-2g"
 
-        /// A proxied Profile is rarely on a poor link; an unproxied one keeps the host's values.
+        /// The class a page should read for this Profile's exit. Without a proxy the host's own
+        /// values stay. A plain HTTP(S) hop to a literal address without sign-in is a direct
+        /// connection, so `4g`; a SOCKS5 proxy, a proxy with credentials or a host name (one more
+        /// resolution and hop) is conservatively `3g`, the same whatever the region. An address
+        /// that does not parse also leaves the host alone.
         static func from(_ profile: BrowserProfile) -> ConnectionQuality? {
-            profile.proxy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : .fourG
+            guard let endpoint = try? ProxyEndpoint.parse(profile.proxy) else { return nil }
+            if endpoint.scheme == "socks5" || endpoint.hasCredentials || !isLiteralAddress(endpoint.host) {
+                return .threeG
+            }
+            return .fourG
+        }
+
+        /// An IPv4 address or a bracketed IPv6 one, as `ProxyEndpoint.parse` stores hosts.
+        private static func isLiteralAddress(_ host: String) -> Bool {
+            if host.hasPrefix("[") { return true }
+            var address = in_addr()
+            return inet_pton(AF_INET, host, &address) == 1
         }
 
         var rtt: Int {

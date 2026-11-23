@@ -53,7 +53,7 @@ public struct SelfCheckObservation: Codable, Equatable, Sendable {
         public var devicePixelRatio: Double
     }
 
-    /// The window's outer and inner sizes; the difference is the browser chrome a real window
+    /// A window's outer and inner sizes; the difference is the browser chrome a real window
     /// carries, and `outer` must not outgrow the screen.
     public struct Window: Codable, Equatable, Sendable {
         public var outerWidth: Int
@@ -69,6 +69,20 @@ public struct SelfCheckObservation: Codable, Equatable, Sendable {
         }
     }
 
+    /// `navigator.storage.estimate()` on the probe page, with the JS heap limit that bounds the
+    /// quota in private mode. `heapLimit` is zero when the page cannot read it.
+    public struct Storage: Codable, Equatable, Sendable {
+        public var usage: Double
+        public var quota: Double
+        public var heapLimit: Double
+
+        public init(usage: Double, quota: Double, heapLimit: Double) {
+            self.usage = usage
+            self.quota = quota
+            self.heapLimit = heapLimit
+        }
+    }
+
     public var main: Realm
     public var worker: Realm?
     public var frame: Frame?
@@ -76,6 +90,8 @@ public struct SelfCheckObservation: Codable, Equatable, Sendable {
     public var screen: Screen
     /// The window sizes; nil only for a page that could not read them.
     public var window: Window? = nil
+    /// The storage estimate; nil when the page could not read it.
+    public var storage: Storage? = nil
     /// The same measurement on a page `<canvas>`.
     public var canvasMeasureText: Double?
     /// Whether drawing the same Canvas twice gives the same pixels.
@@ -405,6 +421,23 @@ public enum SelfCheck {
             }
         }
 
+        // An incognito window's quota is tied to the JS heap: the identity script caps it below
+        // 1.5 × the heap limit. A normal window's quota follows the disk and is only reported.
+        if let storage = observation.storage {
+            let observed = "配额 \(Self.number(storage.quota)) · 用量 \(Self.number(storage.usage))"
+            if profile.launch.incognito {
+                // The script falls back to the claimed memory, then to 1 GB, when the heap is unreadable.
+                let heap = storage.heapLimit > 0 ? storage.heapLimit
+                    : fingerprint.deviceMemory.map { Double($0) * 536_870_912 } ?? 1_073_741_824
+                let limit = (heap * 1.5).rounded(.down)
+                add("storage-quota", "无痕存储配额", expected: "≤ \(Self.number(limit))",
+                    observed: observed, judge(storage.quota > 0 && storage.quota <= limit),
+                    note: "配额没有被压到 1.5 × JS 堆上限；无痕标记只在从 AnyBrowser 无痕启动时生效。")
+            } else {
+                add("storage-quota", "存储配额", expected: nil, observed: observed, .info)
+            }
+        }
+
         // Workers are not affected by the engine's text-metrics factor, so they are the reference.
         let measured = [seen.measureText, observation.canvasMeasureText, observation.frame?.measureText]
         let reference = observation.worker?.measureText
@@ -536,6 +569,17 @@ public enum SelfCheck {
         };
       } catch (e) {}
 
+      let storage = null;
+      try {
+        const estimate = await navigator.storage.estimate();
+        storage = {
+          usage: Number(estimate.usage) || 0,
+          quota: Number(estimate.quota) || 0,
+          heapLimit: (globalThis.performance && performance.memory
+            && Number(performance.memory.jsHeapSizeLimit)) || 0,
+        };
+      } catch (e) {}
+
       const draw = () => {
         const canvas = document.createElement('canvas');
         canvas.width = 240;
@@ -602,6 +646,7 @@ public enum SelfCheck {
           availHeight: screen.availHeight, colorDepth: screen.colorDepth, devicePixelRatio },
         window: { outerWidth: window.outerWidth, outerHeight: window.outerHeight,
           innerWidth: window.innerWidth, innerHeight: window.innerHeight },
+        storage,
         canvasMeasureText: page.measureText(text).width,
         canvasStable: draw() === draw(),
         markers: markersOf(window),
