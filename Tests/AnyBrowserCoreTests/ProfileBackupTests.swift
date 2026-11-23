@@ -13,6 +13,33 @@ private func profile(port: Int, name: String = "Backup") -> BrowserProfile {
     BrowserProfile(name: name, port: port, fingerprint: FingerprintSettings(seed: port), proxy: "")
 }
 
+/// A valid macOS fingerprint on a given display and font.
+private func display(_ width: Int, _ height: Int, font: FontProfile, seed: Int) -> FingerprintSettings {
+    var fingerprint = FingerprintSettings(seed: seed)
+    fingerprint.platform = .macOS
+    fingerprint.platformVersion = font == .macos15 ? "15.0.0" : "26.0.0"
+    fingerprint.screenWidth = width
+    fingerprint.screenHeight = height
+    fingerprint.availWidth = width
+    fingerprint.availHeight = height - 30
+    fingerprint.colorDepth = 24
+    fingerprint.deviceScaleFactor = 2
+    fingerprint.fontProfile = font
+    return fingerprint
+}
+
+/// Every display of the Mac catalogue, in both fonts.
+private let allDisplays: [(width: Int, height: Int, font: FontProfile)] = [
+    (1728, 1117, .macos26), (1728, 1117, .macos15),
+    (1512, 982, .macos26), (1512, 982, .macos15),
+    (2560, 1440, .macos26), (2560, 1440, .macos15),
+    (1440, 900, .macos26), (1440, 900, .macos15),
+]
+
+private func combination(_ profile: BrowserProfile) -> ScreenFontCombination? {
+    ScreenFontCombination(profile.fingerprint)
+}
+
 private func manifest(_ entries: [Entry], version: Int = ProfileBackup.version) -> Manifest {
     Manifest(format: ProfileBackup.format, version: version, createdAt: Date(timeIntervalSince1970: 1_700_000_000),
              appVersion: "0.5.0", engineVersion: BundledVersions.engine, profiles: entries)
@@ -58,6 +85,20 @@ private func failure(_ body: () throws -> Void) -> String? {
     } catch {
         return error.localizedDescription
     }
+}
+
+/// `profile` with the display and font it drew replaced by `original`'s, which a restore renews.
+private func withoutDisplay(_ profile: BrowserProfile, like original: BrowserProfile) -> BrowserProfile {
+    var value = profile
+    value.fingerprint.screenWidth = original.fingerprint.screenWidth
+    value.fingerprint.screenHeight = original.fingerprint.screenHeight
+    value.fingerprint.availWidth = original.fingerprint.availWidth
+    value.fingerprint.availHeight = original.fingerprint.availHeight
+    value.fingerprint.colorDepth = original.fingerprint.colorDepth
+    value.fingerprint.deviceScaleFactor = original.fingerprint.deviceScaleFactor
+    value.fingerprint.fontProfile = original.fingerprint.fontProfile
+    value.fingerprint.platformVersion = original.fingerprint.platformVersion
+    return value
 }
 
 struct ProfileBackupTests {
@@ -251,6 +292,50 @@ struct ProfileBackupTests {
         #expect(Set(ids).isDisjoint(with: entries.map(\.id)))
         #expect(Set(fresh.compactMap(\.profile?.port)).count == 3)
     }
+
+    @Test("Restored Profiles take displays and fonts of their own, away from the store's")
+    func planCombinations() throws {
+        let entries = [
+            profile(port: 9300, name: "A"), profile(port: 9301, name: "B"), profile(port: 9302, name: "C"),
+        ].enumerated().map { index, stored in
+            var stored = stored
+            // The first catalogue entry is the store's; the others are free here.
+            let screen = allDisplays[index + 1]
+            stored.fingerprint = display(screen.width, screen.height, font: screen.font, seed: stored.fingerprint.seed)
+            return Entry(id: stored.id, name: stored.name, cookies: 0, browserData: false, profile: stored)
+        }
+        let held = display(1728, 1117, font: .macos26, seed: 9000)
+        let taken = try #require(ScreenFontCombination(held))
+
+        let renewed = ProfileBackup.plan(entries, identity: .renew, takenIDs: [:], takenPorts: [], takenSeeds: [],
+                                         takenCombinations: [taken])
+        let combinations = renewed.compactMap { $0.profile.flatMap(combination) }
+        #expect(combinations.count == 3)
+        #expect(Set(combinations).count == 3)
+        #expect(!Set(combinations).contains(taken))
+        #expect(renewed.allSatisfy { $0.warning == nil })
+
+        // Keeping the original id and seed keeps the display too, unless another entry wants it.
+        let kept = ProfileBackup.plan(entries, identity: .keepOriginal, takenIDs: [:], takenPorts: [], takenSeeds: [],
+                                      takenCombinations: [taken])
+        #expect(kept.map { $0.profile.flatMap(combination) } == entries.map { $0.profile.flatMap(combination) })
+    }
+
+    @Test("A restore into a store with every combination warns and keeps the Profile")
+    func planWhenCombinationsAreExhausted() throws {
+        var stored = profile(port: 9300, name: "A")
+        stored.fingerprint = display(1728, 1117, font: .macos26, seed: 9300)
+        let entry = Entry(id: stored.id, name: stored.name, cookies: 0, browserData: false, profile: stored)
+        let taken = Set(allDisplays.map { display($0.width, $0.height, font: $0.font, seed: 9000) }
+            .compactMap { ScreenFontCombination($0) })
+
+        let plan = ProfileBackup.plan([entry], identity: .renew, takenIDs: [:], takenPorts: [], takenSeeds: [],
+                                      takenCombinations: taken)
+        let planned = try #require(plan.first)
+        #expect(planned.skipped == nil)
+        #expect(planned.profile != nil)
+        #expect(planned.warning == ProfileLibrary.exhaustedCombinations)
+    }
 }
 
 /// Whether the browser the runtime runs for `id` right now was started without windows.
@@ -375,7 +460,8 @@ struct ProfileBackupFlowTests {
             defer { try? FileManager.default.removeItem(at: other.directory) }
             let runtime = BrowserRuntime(engine: fixture.engine, storage: other.directory)
             let restored = try await ProfileBackup.restore(from: file, store: other, runtime: runtime, identity: .keepOriginal)
-            #expect(restored.profiles.map(\.profile) == [saved])
+            #expect(restored.profiles.map { $0.profile.map { withoutDisplay($0, like: saved) } } == [saved])
+            #expect(restored.profiles[0].warnings.isEmpty)
             #expect(restored.profiles[0].browserData == false)
             #expect(!FileManager.default.fileExists(atPath: runtime.dataDirectory(for: saved.id).path))
         }
@@ -409,10 +495,11 @@ struct ProfileBackupFlowTests {
             }
             // The fake engine lists no cookies, which the import needs before it sets any; the engine
             // test covers a real browser's.
-            #expect(restored.profiles == [ProfileBackup.RestoredProfile(
-                originalID: saved.id, name: saved.name, profile: saved,
-                warnings: ["Cookie 未能导入，在另一台 Mac 上恢复时可能需要重新登录：浏览器返回的 Cookie 数据无法识别。"])])
-            #expect(store.profiles == [saved])
+            let entry = try #require(restored.profiles.first)
+            #expect(entry.originalID == saved.id && entry.name == saved.name)
+            #expect(entry.warnings == ["Cookie 未能导入，在另一台 Mac 上恢复时可能需要重新登录：浏览器返回的 Cookie 数据无法识别。"])
+            #expect(entry.profile.map { withoutDisplay($0, like: saved) } == saved)
+            #expect(store.profiles.map { withoutDisplay($0, like: saved) } == [saved])
             #expect(headless == [true])
             #expect(fixture.commands(saved).map { $0["method"] as? String } == ["Storage.getCookies", "Browser.close"])
             #expect(fixture.runtime.status(for: saved.id) == .stopped)

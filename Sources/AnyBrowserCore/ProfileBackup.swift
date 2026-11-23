@@ -345,7 +345,8 @@ public enum ProfileBackup {
         }
         let entries = manifest.profiles.filter { selection?.contains($0.id) ?? true }
         let plans = plan(entries, identity: identity, takenIDs: takenIDs(for: entries, store: store, runtime: runtime),
-                         takenPorts: store.takenPorts, takenSeeds: store.takenSeeds)
+                         takenPorts: store.takenPorts, takenSeeds: store.takenSeeds,
+                         takenCombinations: store.takenScreenFontCombinations)
         var results: [RestoredProfile] = []
         for (index, planned) in plans.enumerated() {
             func report(_ message: String) {
@@ -357,6 +358,7 @@ public enum ProfileBackup {
                 results.append(result)
                 continue
             }
+            if let warning = planned.warning { result.warnings.append(warning) }
             report("正在恢复「\(profile.name)」")
             let folder = entryFolder(planned.entry.id, in: staging)
             let target = runtime.dataDirectory(for: profile.id)
@@ -366,8 +368,10 @@ public enum ProfileBackup {
                     try await Task.detached { try place(data, at: target) }.value
                     result.browserData = true
                 }
-                profile = try avoidingTaken(profile, store: store, planned: plans)
+                let avoided = try avoidingTaken(profile, store: store, planned: plans)
+                profile = avoided.profile
                 profile = try store.saveAll([profile])[0]
+                if let warning = avoided.warning { result.warnings.append(warning) }
             } catch {
                 // The directory was only just put there, for a Profile that is not saved.
                 if result.browserData { try? FileManager.default.removeItem(at: target) }
@@ -401,10 +405,12 @@ public enum ProfileBackup {
                              engineVersion: manifest.engineVersion, profiles: results, warnings: warnings)
     }
 
-    /// `profile` with a new port or seed for one taken here since `plan` ran: the automation API
-    /// may create a Profile while a restore runs. What `planned` gives the other entries is avoided.
+    /// `profile` with a new port, seed, display or font for one taken here since `plan` ran: the
+    /// automation API may create a Profile while a restore runs. What `planned` gives the other
+    /// entries is avoided.
     @MainActor
-    private static func avoidingTaken(_ profile: BrowserProfile, store: ProfileStore, planned: [Planned]) throws -> BrowserProfile {
+    private static func avoidingTaken(_ profile: BrowserProfile, store: ProfileStore,
+                                      planned: [Planned]) throws -> (profile: BrowserProfile, warning: String?) {
         var profile = profile
         let others = planned.compactMap(\.profile).filter { $0.id != profile.id }
         if store.takenPorts.contains(profile.port) {
@@ -414,8 +420,11 @@ public enum ProfileBackup {
             profile.fingerprint.seed = FingerprintSettings.newSeed(excluding: store.takenSeeds.union(others.map(\.fingerprint.seed)),
                                                                    sameHardwareAs: profile.fingerprint.seed)
         }
-        ProfileLibrary.renewDevice(in: &profile)
-        return profile
+        let warning = ProfileLibrary.renewDevice(
+            in: &profile,
+            excluding: store.takenScreenFontCombinations.union(others.compactMap { ScreenFontCombination($0.fingerprint) }),
+            seeds: store.takenSeeds.union(others.map(\.fingerprint.seed)))
+        return (profile, warning)
     }
 
     /// Sets the cookies in the restored Profile's browser, started without windows. This is what
@@ -462,19 +471,24 @@ public enum ProfileBackup {
 
     struct Planned: Equatable {
         var entry: Entry
-        /// What to save, with its id, port and seed; nil when the entry is skipped.
+        /// What to save, with its id, port, seed, display and font; nil when the entry is skipped.
         var profile: BrowserProfile?
         var skipped: String?
+        /// A combination that had to repeat because every display and font is in use.
+        var warning: String? = nil
     }
 
-    /// Decides each entry's id, port and seed. Ids follow `identity`; ports and seeds taken here
-    /// or by an earlier entry are replaced as `ProfileLibrary.importProfiles` does. Entries this
-    /// version cannot read or that fail validation are skipped with the reason.
+    /// Decides each entry's id, port, seed, display and font. Ids follow `identity`; ports, seeds
+    /// and combinations taken here or by an earlier entry are replaced as
+    /// `ProfileLibrary.importProfiles` does. Entries this version cannot read or that fail
+    /// validation are skipped with the reason.
     nonisolated static func plan(_ entries: [Entry], identity: IdentityPolicy, takenIDs: [UUID: String],
-                                 takenPorts: Set<Int>, takenSeeds: Set<Int>) -> [Planned] {
+                                 takenPorts: Set<Int>, takenSeeds: Set<Int>,
+                                 takenCombinations: Set<ScreenFontCombination> = []) -> [Planned] {
         var ids = takenIDs
         var ports = takenPorts
         var seeds = takenSeeds
+        var combinations = takenCombinations
         return entries.map { entry in
             func skip(_ reason: String) -> Planned { Planned(entry: entry, profile: nil, skipped: reason) }
             guard let stored = entry.profile else { return skip(entry.unreadable ?? "无法读取此 Profile 的配置。") }
@@ -500,20 +514,28 @@ public enum ProfileBackup {
                 profile.id = UUID()
                 renewed = true
             }
-            // Keeping the original id also keeps its device; a new id is a new device.
-            if renewed { ProfileLibrary.renewDevice(in: &profile) }
             if ports.contains(profile.port) {
                 guard let port = try? ProfileLibrary.freePort(excluding: ports) else { return skip("没有可分配的调试端口。") }
                 profile.port = port
             }
             if seeds.contains(profile.fingerprint.seed) {
                 profile.fingerprint.seed = FingerprintSettings.newSeed(excluding: seeds, sameHardwareAs: profile.fingerprint.seed)
-                ProfileLibrary.renewDevice(in: &profile)
+                renewed = true
             }
+            var warning: String?
+            if renewed {
+                // Keeping the original id also keeps its device; a new id is a new device.
+                warning = ProfileLibrary.renewDevice(in: &profile, excluding: combinations, seeds: seeds)
+            } else if let combination = ScreenFontCombination(profile.fingerprint), combinations.contains(combination),
+                      !ProfileLibrary.freshCombination(in: &profile.fingerprint, excluding: combinations) {
+                // The id and seed stay, but two entries of the same backup may share a display.
+                warning = ProfileLibrary.exhaustedCombinations
+            }
+            combinations.formUnion(ScreenFontCombination.set(ScreenFontCombination(profile.fingerprint)))
             ids[profile.id] = "备份中有两个 ID 相同的 Profile。"
             ports.insert(profile.port)
             seeds.insert(profile.fingerprint.seed)
-            return Planned(entry: entry, profile: profile, skipped: nil)
+            return Planned(entry: entry, profile: profile, skipped: nil, warning: warning)
         }
     }
 
