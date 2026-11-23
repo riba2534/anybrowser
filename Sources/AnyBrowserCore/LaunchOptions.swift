@@ -251,9 +251,9 @@ public struct LaunchOptions: Codable, Equatable, Sendable {
                 arguments.append("--window-position=\(x),\(y)")
             }
         }
-        if incognito {
-            arguments.append("--incognito")
-        }
+        // Not `--incognito`: an unpacked extension is not enabled there, so the guard would not
+        // load. The window stays normal and the guard compresses the quota instead.
+
         if restoreSession {
             arguments.append("--restore-last-session")
         }

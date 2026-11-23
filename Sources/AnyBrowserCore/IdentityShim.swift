@@ -200,6 +200,7 @@ enum IdentityShim {
       "version": "1.3.0",
       "description": "Keeps Canvas text metrics and screen values consistent with this Profile.",
       "minimum_chrome_version": "111",
+      "incognito": "spanning",
       "host_permissions": ["<all_urls>"],
       "content_scripts": [{
         "matches": ["<all_urls>"],
@@ -569,12 +570,14 @@ enum IdentityShim {
           return result;
         };
         // about:blank has an opaque origin and rejects; zero reads as an incognito window.
-        const manager = globalThis.StorageManager ? StorageManager.prototype
+        // `StorageManager` is not defined yet at document_start, so the install is retried.
+        const manager = () => globalThis.StorageManager ? StorageManager.prototype
           : (globalThis.navigator && navigator.storage && Object.getPrototypeOf(navigator.storage));
-        const estimateDescriptor = unpatched(manager, 'estimate', false);
-        if (estimateDescriptor) {
-          const native = estimateDescriptor.value;
-          const estimate = mark({
+        const installEstimate = () => {
+          const descriptor = unpatched(manager(), 'estimate', false);
+          if (!descriptor) return false;
+          const native = descriptor.value;
+          replace(manager(), 'estimate', descriptor, mark({
             async estimate() {
               try {
                 return quota(await apply(native, this, []));
@@ -582,8 +585,15 @@ enum IdentityShim {
                 return { usage: 0, quota: 0 };
               }
             },
-          }.estimate);
-          replace(manager, 'estimate', estimateDescriptor, estimate, false);
+          }.estimate), false);
+          return true;
+        };
+        // A real page has a timer; a bare JavaScriptCore realm installs once.
+        if (priv && !installEstimate() && typeof setInterval === 'function') {
+          let tries = 0;
+          const timer = setInterval(() => {
+            if (installEstimate() || ++tries > 100) clearInterval(timer);
+          }, 10);
         }
         const temporary = globalThis.navigator && navigator.webkitTemporaryStorage;
         const storagePrototype = temporary && Object.getPrototypeOf(temporary);

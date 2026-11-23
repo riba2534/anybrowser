@@ -107,14 +107,16 @@ struct LaunchOptionsTests {
         }
     }
 
-    @Test("Incognito is off by default, survives validation and adds its switch")
+    @Test("Incognito is off by default, survives validation and marks the script")
     func incognito() throws {
         #expect(LaunchOptions().incognito == false)
         let options = try LaunchOptions(incognito: true).validated()
         #expect(options.incognito)
-        #expect(options.arguments() == ["--incognito"])
+        // An unpacked extension is not enabled in a real incognito window, so the switch stays off
+        // the command line and the guard fakes the window instead.
+        #expect(options.arguments() == [])
         #expect(try LaunchOptions(window: WindowLayout(width: 800, height: 600), incognito: true).arguments()
-            == ["--window-size=800,600", "--incognito"])
+            == ["--window-size=800,600"])
 
         // The field survives a round trip and reads as off when an older file lacks it.
         let encoded = try JSONEncoder().encode(options)
@@ -154,5 +156,11 @@ struct LaunchOptionsTests {
         #expect(arguments[load].hasSuffix(",/Ext/One"))
         #expect(arguments.firstIndex(of: "--timezone=UTC").map { $0 < load } == true)
         #expect(Array(arguments[(load + 1)...]) == ["--window-size=1000,700", "--window-position=10,20"])
+    }
+
+    @Test("launch encodes incognito")
+    func launchEncodesIncognito() throws {
+        let data = try JSONEncoder().encode(LaunchOptions(incognito: true))
+        #expect(String(decoding: data, as: UTF8.self).contains("incognito"))
     }
 }
