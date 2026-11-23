@@ -62,7 +62,7 @@ cd anybrowser
 open dist/AnyBrowser.app
 ```
 
-首次构建会下载并校验固定版本的引擎和扩展，随后复用本地缓存。构建产物 `dist/AnyBrowser.app` 内置 [Fingerprint Chromium 148.0.7778.215](https://github.com/adryfish/fingerprint-chromium/releases/tag/148.0.7778.215) 和 [Passkey Box v0.5.0](https://github.com/riba2534/passkey-box/releases/tag/v0.5.0)，采用本机 ad-hoc 签名。自己构建的应用没有隔离属性，可以直接打开。
+首次构建会下载并校验固定版本的引擎和扩展，随后复用本地缓存。构建产物 `dist/AnyBrowser.app` 内置 [Fingerprint Chromium 148.0.7778.215](https://github.com/adryfish/fingerprint-chromium/releases/tag/148.0.7778.215) 和 [Passkey Box v0.7.0](https://github.com/riba2534/passkey-box/releases/tag/v0.7.0)，采用本机 ad-hoc 签名。自己构建的应用没有隔离属性，可以直接打开。
 
 ## 日常使用
 
