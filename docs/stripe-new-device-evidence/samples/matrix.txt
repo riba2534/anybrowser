@@ -1,0 +1,32 @@
+Matrix (2026-11-23, macOS, engine 148.0.7778.215 d918c691… vs Chrome for Testing 148.0.7778.178 vs Google Chrome 158.0.8127.37)
+
+== Cross-site SameSite=None document cookie (top 127.0.0.1, iframe localhost:8802) ==
+engine default            : read=""        jar []
+engine + profile.cookie_controls_mode=0 : read="probenone=one" jar [probenone@localhost]
+Chrome for Testing 148 def: read="probenone=one" jar [probenone@localhost]
+Google Chrome 158 def     : read="probenone=one" jar [probenone@localhost]
+
+== Real js.stripe.com v3 page, fresh profile, 127.0.0.1 top ==
+engine default            : jar = [__stripe_mid@127.0.0.1, __stripe_sid@127.0.0.1]; no m; load1 guid != load2 guid; same muid+sid
+engine + mode0            : jar adds [m@m.stripe.com HttpOnly SameSite=None Secure expires≈400d]; guid identical on load1/load2
+Chrome for Testing 148 def: jar adds [m@m.stripe.com ...400d]; guid identical on load1/load2
+Google Chrome 158 def     : jar adds [m@m.stripe.com ...400d]; guid identical on load1/load2
+
+== Controlled m.stripe.com server: three POSTs in one page ==
+engine default: req1{no m, sfsa=none, guid A}, req2{no m, none, guid B}, req3{no m, none, guid C}
+engine + mode0: req1{no m, active, guid X}, req2{m=X, active, guid X}, req3{m=X, active, guid X}
+CFT 148 default: same as mode0.
+
+== cookie_controls_mode scope/value ==
+profile.cookie_controls_mode=0 -> allow (m lands)
+profile.cookie_controls_mode=1 -> block
+profile.cookie_controls_mode=2 -> allow (regular profile)
+top-level cookie_controls_mode=0 -> block (no effect)
+profile.block_third_party_cookies=false alone -> block (no effect)
+profile.block_third_party_cookies=true + mode0 -> allow (mode wins)
+profile.block_third_party_cookies=false + mode1 -> block (mode wins)
+
+== --disable-features on engine (topnone) ==
+TrackingProtection3pcd / ForceThirdPartyCookieBlockingEnabled / ThirdPartyCookieDeprecation all together -> still blocked
+--enable-features=TrackingProtection3pcd -> blocked
+(CFT 148: default allow; --enable-features=TrackingProtection3pcd -> block; --disable-features=TrackingProtection3pcd -> allow)

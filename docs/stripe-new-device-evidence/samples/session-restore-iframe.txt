@@ -1,0 +1,5 @@
+FIRST-TARGETS [('page', 'http://127.0.0.1:8822/echo/top.html'), ('iframe', 'http://localhost:8822/echo/frame.html')]
+FIRST-IFRAME 1100
+REMOVED True
+TARGETS [('page', 'http://127.0.0.1:8822/echo/top.html'), ('iframe', 'http://localhost:8822/echo/frame.html')]
+SECOND-IFRAME http://localhost:8822/echo/frame.html 1100
