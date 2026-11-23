@@ -270,7 +270,8 @@ public final class ProfileStore: ObservableObject {
         let names = Set(profiles.map(\.name))
         let index = (1...(names.count + 1)).first { !names.contains("Profile \($0)") }!
         let fingerprint = IdentitySampler.sample(seed: FingerprintSettings.newSeed(excluding: takenSeeds))
-        return BrowserProfile(name: "Profile \(index)", port: port, fingerprint: fingerprint)
+        return BrowserProfile(name: "Profile \(index)", port: port, fingerprint: fingerprint,
+                              deviceIdentity: DeviceIdentity.mint())
     }
 
     /// A new identity for an existing Profile, keeping its name, port, proxy, account and launch options.
@@ -283,6 +284,8 @@ public final class ProfileStore: ObservableObject {
         value.fingerprint = IdentitySampler.sample(
             seed: FingerprintSettings.newSeed(excluding: seeds),
             constraints: .init(platforms: platforms, preset: preset, locale: locale))
+        // The old device id would otherwise survive the new seed and become the new device's.
+        value.deviceIdentity = DeviceIdentity.mint()
         return try value.validated()
     }
 
@@ -696,6 +699,11 @@ public final class ProfileStore: ObservableObject {
     }
 
     private func checkForConflicts(_ profile: BrowserProfile, holders: (ports: [Int: Holder], seeds: [Int: Holder])) throws {
+        // Seeds are unique, so a derived id is too; an explicit id could still be copied by hand.
+        if let identity = profile.deviceIdentity,
+           let holder = profiles.first(where: { $0.id != profile.id && $0.deviceIdentity == identity }) {
+            throw ProfileError.invalid("设备标识与「\(holder.name)」重复。")
+        }
         if let holder = holders.ports[profile.port], !holder.owns(profile.id) {
             switch holder {
             case .profile(_, let name): throw ProfileError.invalid("调试端口 \(profile.port) 已分配给 \(name)。")
